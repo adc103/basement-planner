@@ -1,4 +1,4 @@
-import { deleteOpening, deleteWall, locateOnWall, wallById } from '../../core/ops.js';
+import { deleteMarker, deleteOpening, deleteWall, locateOnWall, wallById } from '../../core/ops.js';
 import type { AimHit, Tool, ToolContext } from './tool.js';
 
 /** Point at a wall or opening and press to delete it. */
@@ -12,10 +12,11 @@ export class DeleteTool implements Tool {
   }
 
   hint(): string {
-    return 'Delete: point at a wall or door';
+    return 'Delete: point at a wall, door or pin';
   }
 
-  private target(aim: AimHit): { kind: 'wall' | 'opening'; id: string; wallId: string } | null {
+  private target(aim: AimHit): { kind: 'wall' | 'opening' | 'marker'; id: string; wallId: string } | null {
+    if (aim.marker && (!aim.wall || aim.marker.distM <= aim.wall.distM + 0.05)) return { kind: 'marker', id: aim.marker.id, wallId: '' };
     if (!aim.wall) return null;
     const plan = this.ctx.store.plan;
     const wall = wallById(plan, aim.wall.wallId);
@@ -30,8 +31,9 @@ export class DeleteTool implements Tool {
     const pv = this.ctx.preview;
     pv.clear();
     const t = aim ? this.target(aim) : null;
-    this.ctx.view.setHighlight(t?.wallId ?? null);
-    if (t && aim?.wall) {
+    this.ctx.view.setHighlight(t?.wallId || null);
+    if (t?.kind === 'marker' && aim?.floor) pv.showHint('Delete pin', aim.floor, 20);
+    if (t && t.kind !== 'marker' && aim?.wall) {
       const kind = wallById(this.ctx.store.plan, t.wallId)?.kind;
       pv.showHint(t.kind === 'opening' ? 'Delete opening' : kind === 'existing' ? 'Delete scanned wall' : 'Delete wall', aim.wall.point, 60);
     }
@@ -40,7 +42,8 @@ export class DeleteTool implements Tool {
   commit(aim: AimHit): void {
     const t = this.target(aim);
     if (!t) return;
-    if (t.kind === 'opening') this.ctx.store.edit('Delete opening', (d) => deleteOpening(d, t.id));
+    if (t.kind === 'marker') this.ctx.store.edit('Delete pin', (d) => deleteMarker(d, t.id));
+    else if (t.kind === 'opening') this.ctx.store.edit('Delete opening', (d) => deleteOpening(d, t.id));
     else this.ctx.store.edit('Delete wall', (d) => deleteWall(d, t.id));
     this.ctx.view.setHighlight(null);
     this.ctx.toast('Deleted. Undo brings it back.');

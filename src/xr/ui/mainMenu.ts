@@ -52,6 +52,7 @@ export interface MenuApi {
   viewMode(): string;
   setViewMode(m: string): void;
   viewModes(): Array<{ id: string; label: string }>;
+  viewText(): string;
   labels(): boolean;
   toggleLabels(): void;
   occlusion(): boolean;
@@ -396,7 +397,7 @@ export class MainMenu {
         label: 'View',
         icon: 'eye',
         tiles: [],
-        text: () => 'Display',
+        text: () => a.viewText(),
         rows: [
           a.viewModes().map((m) => ({ id: `mode-${m.id}`, label: () => m.label, onClick: () => a.setViewMode(m.id), active: () => a.viewMode() === m.id })),
           [

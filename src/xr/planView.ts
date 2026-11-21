@@ -1,6 +1,11 @@
 import {
+  BoxGeometry,
   BufferGeometry,
   Color,
+  InstancedMesh,
+  Matrix4,
+  Quaternion,
+  SphereGeometry,
   CylinderGeometry,
   MeshBasicMaterial,
   DoubleSide,
@@ -20,13 +25,23 @@ import {
 import { add, scale, type Vec2 } from '../core/geom2d.js';
 import { wallEnds } from '../core/ops.js';
 import type { Finish, Plan, Wall } from '../core/plan.js';
-import { FINISH_COLORS, FINISH_NAMES } from '../core/plan2d.js';
+import { FINISH_COLORS, FINISH_NAMES, MARKER_INFO } from '../core/plan2d.js';
+import { generateFraming, type Member, type MemberKind } from '../core/framing.js';
+
+const LUMBER_COLORS: Record<MemberKind, string> = {
+  plate: '#d8b47e',
+  stud: '#e3c48f',
+  king: '#c99d5e',
+  jack: '#b8874a',
+  header: '#9a6a35',
+  cripple: '#e3c48f',
+};
 import { findRoomFaces, resolveRooms } from '../core/rooms.js';
 import { formatLength, INCH_M } from '../core/units.js';
 import { computeFootprints, footprintPoly, wallPrisms, type WallFootprint } from '../core/wallGeometry.js';
 import { TextLabel } from './labels.js';
 
-export type WallViewMode = 'solid' | 'ghost';
+export type WallViewMode = 'solid' | 'ghost' | 'xray';
 
 /** Plan (inches) -> plan-root local (meters). y is height. */
 export function planToLocal(p: Vec2, heightIn = 0, out = new Vector3()): Vector3 {
@@ -120,29 +135,41 @@ export class PlanView {
   }
 
   setMode(mode: WallViewMode): void {
+    const rebuild = (mode === 'xray') !== (this.mode === 'xray');
     this.mode = mode;
     this.applyMode();
+    if (rebuild && this.lastPlan) this.rebuild(this.lastPlan);
   }
 
   /** Materials that real-world depth should be able to hide (planned content only). */
   occludableMaterials(): Material[] {
-    return [this.matNew, this.matHover, this.matSelected, this.matHighlight];
+    return [this.matNew, this.matHover, this.matSelected, this.matHighlight, this.matLumber];
   }
 
   private applyMode(): void {
     const ghost = this.mode === 'ghost';
+    const xray = this.mode === 'xray';
     // Stays transparent in solid mode too: depth occlusion fades pixels via alpha.
     this.matNew.transparent = true;
-    this.matNew.opacity = ghost ? 0.38 : 1;
-    this.matNew.depthWrite = !ghost;
+    this.matNew.opacity = xray ? 0.1 : ghost ? 0.38 : 1;
+    this.matNew.depthWrite = !ghost && !xray;
     this.matNew.needsUpdate = true;
   }
 
+  private lastPlan: Plan | null = null;
+  private matLumber = new MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0 });
+  private lumberGeo = new BoxGeometry(1, 1, 1);
+  framing: Member[] = [];
+  private markerGeo = new SphereGeometry(1.6 * INCH_M, 16, 12);
+  private markerMats = new Map<string, MeshStandardMaterial>();
+
   rebuild(plan: Plan): void {
+    this.lastPlan = plan;
     for (const c of [...this.content.children]) {
       this.content.remove(c);
       c.traverse((o) => {
-        if ((o instanceof Mesh || o instanceof LineSegments) && !o.userData.shared) o.geometry.dispose();
+        if (o instanceof InstancedMesh) o.dispose();
+        else if ((o instanceof Mesh || o instanceof LineSegments) && !o.userData.shared) o.geometry.dispose();
       });
     }
     for (const l of this.labels) l.label.dispose();
@@ -163,6 +190,9 @@ export class PlanView {
 
     this.buildRooms(plan);
     this.buildObstacles(plan);
+    this.buildMarkers(plan);
+    this.framing = [];
+    if (this.mode === 'xray') this.buildFraming(plan);
     this.buildMeasures(plan);
 
     if (plan.reference) {
@@ -237,6 +267,63 @@ export class PlanView {
 
   private applyRoomSelection(): void {
     for (const [key, m] of this.roomMeshes) m.material = key === this.selectedRoom ? this.matRoomSelected : (m.userData.baseMat as MeshBasicMaterial);
+  }
+
+  private buildFraming(plan: Plan): void {
+    const members = generateFraming(plan);
+    this.framing = members;
+    if (!members.length) return;
+    const mesh = new InstancedMesh(this.lumberGeo, this.matLumber, members.length);
+    mesh.userData.shared = true;
+    mesh.raycast = () => {};
+    const m4 = new Matrix4();
+    const q = new Quaternion();
+    const pos = new Vector3();
+    const size = new Vector3();
+    const up = new Vector3(0, 1, 0);
+    const color = new Color();
+    const byWall = new Map(plan.walls.map((w) => [w.id, w]));
+    members.forEach((mb, i) => {
+      const w = byWall.get(mb.wallId)!;
+      const { a, b } = wallEnds(plan, w);
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      const dir = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+      const c = { x: a.x + dir.x * mb.s, y: a.y + dir.y * mb.s };
+      planToLocal(c, (mb.z0 + mb.z1) / 2, pos);
+      q.setFromAxisAngle(up, -Math.atan2(dir.y, dir.x));
+      size.set(mb.len * INCH_M, (mb.z1 - mb.z0) * INCH_M, mb.depth * INCH_M);
+      m4.compose(pos, q, size);
+      mesh.setMatrixAt(i, m4);
+      mesh.setColorAt(i, color.set(LUMBER_COLORS[mb.kind]));
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    this.content.add(mesh);
+  }
+
+  private markerMat(color: string): MeshStandardMaterial {
+    let m = this.markerMats.get(color);
+    if (!m) {
+      m = new MeshStandardMaterial({ color: new Color(color), emissive: new Color(color).multiplyScalar(0.35), roughness: 0.6 });
+      this.markerMats.set(color, m);
+    }
+    return m;
+  }
+
+  private buildMarkers(plan: Plan): void {
+    for (const mk of plan.markers) {
+      const info = MARKER_INFO[mk.type];
+      const z = mk.z > 0 ? mk.z : 3;
+      const mesh = new Mesh(this.markerGeo, this.markerMat(info.color));
+      mesh.userData.shared = true;
+      mesh.userData.markerId = mk.id;
+      planToLocal(mk, z, mesh.position);
+      this.content.add(mesh);
+      this.markerMeshes.push(mesh);
+      const l = new TextLabel(info.name, { height: 0.03, bg: 'rgba(20,24,32,0.85)' });
+      planToLocal(mk, z + (mk.z >= 90 ? -5 : 4), l.sprite.position);
+      this.content.add(l.sprite);
+      this.extraLabels.push(l);
+    }
   }
 
   private buildObstacles(plan: Plan): void {

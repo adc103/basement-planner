@@ -150,20 +150,6 @@ try {
     await frames(6);
     await press('right');
     await frames(4);
-    if (process.env.E2E_DEBUG) console.log('debug', await page.evaluate(() => {
-      const app = window.basementPlanner;
-      const mesh = app.menuPanel.root.children.find((c) => c.name === 'btn:tool-doors');
-      const scene = app.world.scene;
-      return {
-        rayDesc: (scene.rayDescendants || []).length,
-        hasMesh: (scene.rayDescendants || []).includes(mesh),
-        pe: mesh.pointerEvents,
-        panelQuat: app.menuPanel.root.quaternion.toArray(),
-        panelPos: app.menuPanel.root.position.toArray(),
-        rightSrc: !!app.world.input.xr.getPrimaryInputSource('right'),
-        log: window.__clicks || [],
-      };
-    }));
     const tool = await page.evaluate(() => window.basementPlanner.toolName);
     check(tool === 'doors', `menu click switches to the door tool (tool=${tool})`);
     p = await plan();
@@ -347,6 +333,60 @@ try {
     check(!(await page.evaluate(() => window.basementPlanner.occlusionOn)), 'occlusion can be turned off');
     await clickButton(menu, 'btn:occlusion');
     check(await page.evaluate(() => window.basementPlanner.occlusionOn), 'and back on');
+  }
+
+  // Pins: an outlet on a wall and a water heater on the floor.
+  {
+    check(await clickButton(menu, 'btn:tab-pins'), 'Pins tab opens');
+    await clickButton(menu, 'btn:pin-outlet');
+    const p0 = await plan();
+    const w = p0.walls.find((x) => x.kind === 'new');
+    const A = p0.nodes.find((n) => n.id === w.a);
+    const B = p0.nodes.find((n) => n.id === w.b);
+    // Near the far end of the wall (the door is nearer the middle).
+    const mid = { x: (A.x + (B.x - A.x) * 0.85) * 0.0254, z: (A.y + (B.y - A.y) * 0.85) * 0.0254 };
+    // Aim horizontally at the wall from 1 m away along its normal, at outlet height.
+    const len = Math.hypot(B.x - A.x, B.y - A.y);
+    const n = { x: -(B.y - A.y) / len, z: (B.x - A.x) / len };
+    await page.evaluate(({ mid, n }) => {
+      const c = window.__dev.controllers.right;
+      c.position.set(mid.x + n.x, 0.31, mid.z + n.z);
+      const t = [-n.x, 0, -n.z];
+      const cx = t[1], cy = -t[0], cz = 0, ww = 1 - t[2];
+      const l = Math.hypot(cx, cy, cz, ww) || 1;
+      c.quaternion.set(cx / l, cy / l, cz / l, ww / l);
+    }, { mid, n });
+    await frames(6);
+    await press('right');
+    const p1 = await plan();
+    const outlet = p1.markers.find((m) => m.type === 'outlet');
+    check(!!outlet && outlet.wallId === w.id && outlet.z === 12, `outlet pinned to the wall at 12" (${outlet?.z})`);
+    await clickButton(menu, 'btn:pin-water-heater');
+    await aimDown('right', 2.5, -2);
+    await frames(5);
+    await press('right');
+    const p2 = await plan();
+    check(p2.markers.some((m) => m.type === 'water-heater' && m.z === 0), 'water heater pinned on the floor');
+  }
+
+  // X-ray: framing appears with studs and headers.
+  {
+    await clickButton(menu, 'btn:tab-view');
+    check(await clickButton(menu, 'btn:mode-xray'), 'X-ray view button');
+    const f = await page.evaluate(() => {
+      const v = window.basementPlanner.view;
+      return { members: v.framing.length, headers: v.framing.filter((m) => m.kind === 'header').length, text: window.basementPlanner.menu.panel.root.getObjectByName('btn:text-view') ? 'ok' : '' };
+    });
+    check(f.members > 20 && f.headers >= 1, `framing generated (${f.members} pieces, ${f.headers} headers)`);
+    await page.evaluate(() => {
+      const d = window.__dev;
+      d.position.set(1, 1.7, 1.2);
+    });
+    await frames(10);
+    await page.screenshot({ path: 'artifacts/e2e-xray.png' });
+    await clickButton(menu, 'btn:mode-ghost');
+    await page.evaluate(() => window.__dev.position.set(0, 1.6, 0));
+    await frames(10);
   }
 
   // Rooms: draw a closed 2 m square, name it and give it a floor.

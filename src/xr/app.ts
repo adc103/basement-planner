@@ -39,6 +39,10 @@ import { OpeningTool } from './tools/openingTool.js';
 import type { AimHit, Tool, ToolContext } from './tools/tool.js';
 import { WallTool } from './tools/wallTool.js';
 import { RoomsTool } from './tools/roomsTool.js';
+import { PinsTool } from './tools/pinsTool.js';
+import { MARKER_INFO } from '../core/plan2d.js';
+import { MARKER_TYPES } from '../core/plan.js';
+import { summarizeFraming } from '../core/framing.js';
 import type { Finish } from '../core/plan.js';
 import { MainMenu, MENU_H, type MenuApi, type ToolName } from './ui/mainMenu.js';
 import { Sfx } from './ui/sfx.js';
@@ -52,7 +56,7 @@ interface SavedTransform extends PlanTransform {
 }
 
 /** Thumbstick-flick order for controllers. */
-const TOOL_CYCLE: ToolName[] = ['walls', 'doors', 'edit', 'measure', 'rooms', 'capture', 'delete'];
+const TOOL_CYCLE: ToolName[] = ['walls', 'doors', 'edit', 'measure', 'rooms', 'pins', 'capture', 'delete'];
 const TOOL_LABEL: Record<ToolName, string> = {
   walls: 'Walls',
   doors: 'Doors',
@@ -91,6 +95,7 @@ export class PlannerApp {
   editTool!: EditTool;
   measureTool!: MeasureTool;
   roomsTool!: RoomsTool;
+  pinsTool!: PinsTool;
   menu!: MainMenu;
   keypad!: Keypad;
   private wrist!: WristMenu;
@@ -181,7 +186,9 @@ export class PlannerApp {
     this.editTool = new EditTool(ctx);
     this.measureTool = new MeasureTool(ctx);
     this.roomsTool = new RoomsTool(ctx);
+    this.pinsTool = new PinsTool(ctx);
     this.tools = {
+      pins: this.pinsTool,
       rooms: this.roomsTool,
       walls: this.wallTool,
       doors: new OpeningTool(ctx),
@@ -274,7 +281,13 @@ export class PlannerApp {
       viewModes: () => [
         { id: 'ghost', label: 'Ghost' },
         { id: 'solid', label: 'Solid' },
+        { id: 'xray', label: 'X-ray' },
       ],
+      viewText: () => {
+        if (this.view.mode !== 'xray') return 'Display';
+        const f = summarizeFraming(this.view.framing);
+        return `Framing: ${f.studs} studs, ${f.plateFeet.toFixed(0)} ft of plate, ${f.headers} headers`;
+      },
       occlusion: () => this.occlusionOn,
       toggleOcclusion: () => this.toggleOcclusion(),
       labels: () => this.view.showLabels,
@@ -284,7 +297,34 @@ export class PlannerApp {
       pinned: () => !!this.wrist?.pinned,
       togglePin: () => this.wrist.togglePin(),
       exit: () => this.world.exitXR(),
-      extraTabs: [this.roomsTab()],
+      extraTabs: [this.roomsTab(), this.pinsTab()],
+    };
+  }
+
+  private pinsTab(): NonNullable<MenuApi['extraTabs']>[number] {
+    const short: Record<string, string> = { 'water-heater': 'Water htr' };
+    const chip = (t: (typeof MARKER_TYPES)[number]) => ({
+      id: `pin-${t}`,
+      label: () => short[t] ?? MARKER_INFO[t].name.replace('Electrical panel', 'Panel').replace('Floor drain', 'Drain'),
+      onClick: () => {
+        this.pinsTool.type = t;
+        this.setTool('pins');
+      },
+      active: () => this.pinsTool.type === t,
+    });
+    const T = MARKER_TYPES;
+    return {
+      name: 'pins',
+      label: 'Pins',
+      icon: 'pin',
+      defaultTool: 'pins',
+      tiles: [],
+      text: () => `${this.store.plan.markers.length} pins placed`,
+      rows: [
+        [chip(T[0]), chip(T[1]), chip(T[2]), chip(T[3])],
+        [chip(T[4]), chip(T[5]), chip(T[6]), chip(T[7])],
+        [chip(T[8])],
+      ],
     };
   }
 

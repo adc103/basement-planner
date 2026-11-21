@@ -5,42 +5,30 @@ Quest Browser (WebXR) and is built on Meta's [Immersive Web SDK](https://iwsdk.d
 
 ## Using it
 
-1. Open the site in the **Meta Quest Browser** and tap **Enter AR**.
-2. Optional: **Import scan** (menu) pulls in the foundation walls, floor and ceiling height
-   from your Quest *Space Setup*. New walls then snap 1" off the foundation.
-3. **Walls**: aim at the floor and pinch (or pull the trigger). The point is placed when you
-   release. Keep clicking to chain walls; click the same spot twice, close the loop, or press
-   **Finish** to end the chain.
-4. **Length...** types an exact length for the last wall (`10'4 1/2`; a bare number is inches).
-5. **Doors**: pick a size (30/32/36" doors, 36" opening, or **Width...**) and point at a wall.
-6. **Align** the first time: click two real floor corners. They're saved as *Ref 1* / *Ref 2*.
-   If the plan ever shows up in the wrong place later, use **Align** and click the same two
-   corners in the same order.
+Open the site in the **Meta Quest Browser** and tap **Enter AR**. Your Quest Space Setup
+(foundation walls, ceiling height, furniture boxes such as the furnace or storage) loads
+automatically.
 
-| Action | Hands | Controllers |
-| --- | --- | --- |
-| Place / select | Pinch | Trigger |
-| Fine placement | Hold the pinch 0.5 s, then move (1/4 speed) | Hold the trigger 0.5 s |
-| Menu | Turn your left palm toward you; poke with your right index finger | Above the left controller (X hides it) |
-| Undo | Menu **Undo** | B / Y |
-| Finish chain | Menu **Finish** | A |
-| Wall height | Menu **H ...** | Right thumbstick up/down |
+The **wrist menu** appears when you turn your left palm toward you (or above the left
+controller). Tabs down the left side:
 
-The plan autosaves in the browser. Use **Export plan** on the flat page to keep a copy, and
-**Import plan** to load it back.
+| Tab | What it does |
+| --- | --- |
+| **Build** | **Walls** (pinch corners; same spot twice, close the loop or **Finish** to end), **Doors** (30/32/36", 36" opening, custom), **Capture** (point at a real wall the scan missed, near each end) |
+| **Edit** | **Select**: drag corners, slide doors, move pins; tap a wall for length, height, 2x4/2x6, delete. **Delete** tool |
+| **Measure** | Tape measure between any two spots on the floor or walls; saved lines appear in the plan |
+| **Rooms** | Tap inside a closed area, pick a name and floor finish; area in sq ft |
+| **Pins** | Outlets, switches, panel (on walls, snapping to 12"/48"/54"), lights (ceiling), water heater, furnace, drain, pipe, post (floor) |
+| **Room** | Re-import the room scan, auto-import on/off, **Align** with two reference corners |
+| **View** | Ghost / Solid / **X-ray** (generated framing: studs at 16" o.c., plates, kings, jacks, headers), labels, snapping, real objects hide walls, pin menu, exit |
 
-### Snapping
+Undo/redo sit in the menu's top-right corner (B/Y on controllers). Controllers: flick the
+right thumbstick left/right to switch tools; up/down changes wall height in the Walls tool.
+Precise placement: hold the pinch or trigger for half a second (1/4 speed fine mode).
 
-SketchUp-style inference: endpoints, midpoints, points on walls, 45°/90° from the last
-corner (relative to the room's main axis), alignment with other corners, intersections of
-those guides, and a 1" grid. In fine mode the snap radius shrinks and the grid becomes 1/4".
-**Snap: off** in the menu turns it off.
-
-### Staying in place between sessions
-
-The plan is attached to IWSDK's persistent scene anchor, so it normally reappears exactly
-where you left it. If the headset loses that anchor (e.g. you cleared your space), the app
-tells you, and **Align** with the two reference corners puts the plan back.
+On the flat page: a dimensioned **2D floor plan** (print / save PDF / SVG), a room list with
+floor-finish totals (+10% waste), and plan export/import. Everything stays on the headset
+(browser storage, marked persistent); export the JSON to keep a backup.
 
 ## Development
 
@@ -84,6 +72,5 @@ Deploys to GitHub Pages from `main` via `.github/workflows/pages.yml`.
 
 ## Roadmap
 
-- v1.1: top-down 2D plan view with dimensions (print / PDF), DXF export
-- v2: framing generation (studs, plates, headers), x-ray view, materials list, drag-to-edit, windows
-- v3: ceiling zones / soffits, floor finishes, editing in the 2D view
+- Windows, ceiling zones / soffits, materials list from the framing, DXF export
+- Editing in the 2D view, wall end style option
