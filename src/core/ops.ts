@@ -391,3 +391,49 @@ export function wallNormalToward(plan: AnyPlan, wallId: string, toward: Vec2): V
   const side = (toward.x - a.x) * n.x + (toward.y - a.y) * n.y;
   return side >= 0 ? n : { x: -n.x, y: -n.y };
 }
+
+/**
+ * Split every wall that has another wall's corner lying on it (a tee added
+ * before the wall it butts into). Keeps the wall graph connected for rooms.
+ */
+export function splitAtNodes(d: Draft<Plan>): void {
+  for (let guard = 0; guard < 200; guard++) {
+    let did = false;
+    for (const n of d.nodes) {
+      const through = findWallThrough(d, n, 0.1);
+      if (through && through.wall.a !== n.id && through.wall.b !== n.id) {
+        // Reuse the node: split, then merge the new node into it.
+        const nid = splitWall(d, through.wall.id, through.t);
+        for (const w of d.walls) {
+          if (w.a === nid) w.a = n.id;
+          if (w.b === nid) w.b = n.id;
+        }
+        d.nodes = d.nodes.filter((x) => x.id !== nid);
+        did = true;
+        break;
+      }
+    }
+    if (!did) return;
+  }
+}
+
+/** Slide a wall sideways (both corners move; walls meeting it stretch to follow). */
+export function moveWall(d: Draft<Plan>, wallId: string, delta: Vec2): void {
+  const w = d.walls.find((x) => x.id === wallId);
+  if (!w) return;
+  for (const id of [w.a, w.b]) {
+    const n = d.nodes.find((x) => x.id === id);
+    if (n) {
+      n.x += delta.x;
+      n.y += delta.y;
+    }
+  }
+}
+
+/** Real (existing) <-> planned (new) wall. */
+export function setWallKind(d: Draft<Plan>, wallId: string, kind: 'new' | 'existing'): void {
+  const w = d.walls.find((x) => x.id === wallId);
+  if (!w) return;
+  w.kind = kind;
+  if (kind === 'existing' && w.source === 'draw') w.source = 'capture';
+}

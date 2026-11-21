@@ -302,6 +302,44 @@ try {
       const a3 = p3.nodes.find((n) => n.id === sw.a);
       const b3 = p3.nodes.find((n) => n.id === sw.b);
       check(Math.abs(Math.hypot(a3.x - b3.x, a3.y - b3.y) - 96) < 1e-6, 'selected wall set to 8\' 0" from the keypad');
+
+      // Slide the selected wall sideways by dragging it.
+      const n0 = p3.nodes.find((n) => n.id === sw.a);
+      // a quarter of the way along (the middle has the door in it)
+      const wa = { x: (a3.x * 0.8 + b3.x * 0.2) * 0.0254, z: (a3.y * 0.8 + b3.y * 0.2) * 0.0254 };
+      const pose = async (dz) =>
+        page.evaluate(({ m0, dz }) => {
+          // plan -> world through the plan root (the floor finder may have moved it)
+          const r = window.basementPlanner.view.root;
+          r.updateWorldMatrix(true, false);
+          const e = r.matrixWorld.elements;
+          const lx = m0.x, ly = 0.6, lz = m0.z;
+          const m = { x: e[0] * lx + e[4] * ly + e[8] * lz + e[12], y: e[1] * lx + e[5] * ly + e[9] * lz + e[13], z: e[2] * lx + e[6] * ly + e[10] * lz + e[14] };
+          const c = window.__dev.controllers.right;
+          c.position.set(m.x + 0.6, m.y + 0.5, m.z + 0.6 + dz);
+          const dx = -0.6, dy = -0.5, ddz = -0.6;
+          const l = Math.hypot(dx, dy, ddz);
+          const t = [dx / l, dy / l, ddz / l];
+          const cx = t[1], cy = -t[0], cz = 0, ww = 1 - t[2];
+          const n = Math.hypot(cx, cy, cz, ww);
+          c.quaternion.set(cx / n, cy / n, cz / n, ww / n);
+        }, { m0: wa, dz });
+      await pose(0);
+      await frames(6);
+      await page.evaluate(() => window.__dev.controllers.right.updateButtonValue('trigger', 1));
+      await frames(4);
+      for (let i = 1; i <= 6; i++) {
+        await pose(-0.05 * i);
+        await frames(2);
+      }
+      await page.evaluate(() => window.__dev.controllers.right.updateButtonValue('trigger', 0));
+      await frames(4);
+      const p4 = await plan();
+      const n1 = p4.nodes.find((n) => n.id === sw.a);
+      const slid = n1 ? Math.hypot(n1.x - n0.x, n1.y - n0.y) : 0;
+      check(slid > 8 && slid < 16 && p4.walls.length === p3.walls.length, `dragging a wall slides it sideways (${slid.toFixed(1)}")`);
+      const und = await page.evaluate(() => window.basementPlanner.store.undoLabel);
+      check(und === 'Slide wall', `wall slide is one undo step (${und})`);
     }
   }
 
@@ -524,6 +562,7 @@ try {
       }
     });
     check(await clickButton(menu, 'btn:scan-depth'), 'Scan button stops the scan');
+    await page.waitForFunction(() => window.basementPlanner.scan.reviewing, null, { timeout: 15000 }).catch(() => {});
     const found = await page.evaluate(() => window.basementPlanner.scan.count());
     check(found >= 4, `scan finds the walls (${found} items)`);
     const review = await page.evaluate(() => {
@@ -555,6 +594,18 @@ try {
     check(await clickButton(menu, 'btn:tab-ceiling'), 'Ceiling tab opens again');
     check(await clickButton(menu, 'btn:ceil-open'), 'ceiling type button');
     check(await page.evaluate(() => window.basementPlanner.store.plan.settings.showCeiling), 'picking a ceiling type shows the ceiling');
+    await clickButton(menu, 'btn:tab-build');
+  }
+
+  // Real walls: shown -> outlines -> hidden, via the View tab.
+  {
+    check(await clickButton(menu, 'btn:tab-view'), 'View tab opens');
+    check(await clickButton(menu, 'btn:realwalls'), 'real walls display chip');
+    const st1 = await page.evaluate(() => window.basementPlanner.store.plan.settings.realWalls);
+    await clickButton(menu, 'btn:realwalls');
+    const st2 = await page.evaluate(() => window.basementPlanner.store.plan.settings.realWalls);
+    await clickButton(menu, 'btn:realwalls');
+    check(st1 === 'outline' && st2 === 'hidden', `real walls cycle through outline and hidden (${st1}, ${st2})`);
     await clickButton(menu, 'btn:tab-build');
   }
 

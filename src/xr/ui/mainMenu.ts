@@ -39,6 +39,9 @@ export interface MenuApi {
   editStud(s: '2x4' | '2x6'): void;
   editWidth(): void;
   deleteSelection(): void;
+  edit(action: 'thickness' | 'split' | 'kind' | 'openingHeight' | 'openingType' | 'flip'): void;
+  openingType(): string;
+  selectedIsReal(): boolean;
   deselect(): void;
   // measure
   lastMeasure(): string;
@@ -69,6 +72,8 @@ export interface MenuApi {
   setViewMode(m: string): void;
   viewModes(): Array<{ id: string; label: string }>;
   viewText(): string;
+  realWalls(): 'shown' | 'outline' | 'hidden';
+  cycleRealWalls(): void;
   labels(): boolean;
   toggleLabels(): void;
   occlusion(): boolean;
@@ -363,7 +368,15 @@ export class MainMenu {
             { id: 'e-h', label: () => 'Height', icon: 'height', onClick: () => a.editHeight(), visible: sel('wall') },
             { id: 'e-2x4', label: () => '2x4', onClick: () => a.editStud('2x4'), active: () => a.selectedStud() === '2x4', visible: sel('wall') },
             { id: 'e-2x6', label: () => '2x6', onClick: () => a.editStud('2x6'), active: () => a.selectedStud() === '2x6', visible: sel('wall') },
-            { id: 'e-w', label: () => 'Width', icon: 'keypad', span: 2, onClick: () => a.editWidth(), visible: sel('opening') },
+            { id: 'e-w', label: () => 'Width', icon: 'keypad', col: 0, onClick: () => a.editWidth(), visible: sel('opening') },
+            { id: 'e-oh', label: () => 'Height', icon: 'height', col: 1, onClick: () => a.edit('openingHeight'), visible: sel('opening') },
+            { id: 'e-type', label: () => a.openingType(), col: 2, onClick: () => a.edit('openingType'), visible: sel('opening') },
+            { id: 'e-flip', label: () => 'Flip', col: 3, onClick: () => a.edit('flip'), visible: () => a.selectionKind() === 'opening' && a.openingType() === 'Door' },
+          ],
+          [
+            { id: 'e-thick', label: () => 'Thickness', icon: 'keypad', col: 0, onClick: () => a.edit('thickness'), visible: sel('wall') },
+            { id: 'e-split', label: () => 'Split', col: 1, onClick: () => a.edit('split'), visible: sel('wall') },
+            { id: 'e-kind', label: () => (a.selectedIsReal() ? 'Make planned' : 'Make real'), span: 2, col: 2, onClick: () => a.edit('kind'), visible: sel('wall') },
           ],
           [
             {
@@ -413,7 +426,7 @@ export class MainMenu {
         text: () => a.scanStatus(),
         rows: [
           [
-            { id: 'scan-accept', label: () => `Add ${a.scanProposals()} found`, tone: 'primary', span: 2, onClick: () => a.acceptScan(), visible: () => a.scanReviewing(), enabled: () => a.scanProposals() > 0 },
+            { id: 'scan-accept', label: () => `Add ${a.scanProposals()} found`, tone: 'primary', span: 2, onClick: () => a.acceptScan(), visible: () => a.scanReviewing() },
             { id: 'scan-discard', label: () => 'Discard', span: 2, onClick: () => a.discardScan(), visible: () => a.scanReviewing() },
             { id: 'auto', label: () => (a.autoImport() ? 'Auto-import on' : 'Auto-import off'), span: 2, col: 0, onClick: () => a.toggleAutoImport(), active: () => a.autoImport(), visible: () => !a.scanReviewing() },
             { id: 'refreset', label: () => 'Reset refs', span: 2, onClick: () => a.resetRefs(), enabled: () => a.hasRefs(), visible: () => !a.scanReviewing() },
@@ -447,7 +460,15 @@ export class MainMenu {
         tiles: [],
         text: () => a.viewText(),
         rows: [
-          a.viewModes().map((m) => ({ id: `mode-${m.id}`, label: () => m.label, onClick: () => a.setViewMode(m.id), active: () => a.viewMode() === m.id })),
+          [
+            ...a.viewModes().map((m) => ({ id: `mode-${m.id}`, label: () => m.label, onClick: () => a.setViewMode(m.id), active: () => a.viewMode() === m.id })),
+            {
+              id: 'realwalls',
+              label: () => `Real: ${a.realWalls() === 'shown' ? 'shown' : a.realWalls() === 'outline' ? 'lines' : 'hidden'}`,
+              onClick: () => a.cycleRealWalls(),
+              active: () => a.realWalls() !== 'shown',
+            },
+          ],
           [
             { id: 'labels', label: () => 'Labels', span: 2, onClick: () => a.toggleLabels(), active: () => a.labels() },
             { id: 'snap', label: () => 'Snapping', icon: 'magnet', span: 2, onClick: () => a.toggleSnap(), active: () => a.snap() },

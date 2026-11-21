@@ -5,9 +5,19 @@ Quest Browser (WebXR) and is built on Meta's [Immersive Web SDK](https://iwsdk.d
 
 ## Using it
 
-Open the site in the **Meta Quest Browser** and tap **Enter AR**. Your Quest Space Setup
-(foundation walls, ceiling height, furniture boxes such as the furnace or storage) loads
-automatically.
+Open the site in the **Meta Quest Browser** and tap **Enter AR** (large-space mode is on by
+default: no Quest boundary, walk the whole basement).
+
+**Scan the basement** from the Room tab: walk slowly and look at every wall, the floor and the
+ceiling. Walls appear while you walk; **Stop** finds the real walls (with their doors, wide
+openings and windows), the ceiling height, low areas under ducts and beams, posts and the
+floor area. Click any found item to skip it, then **Add**. Walls join at exact corners and
+tees, so rooms close and can be named. Space Setup (if you have one) still imports too.
+
+How the scan finds walls: every depth ray also proves the space it crossed is empty, so a
+doorway (seen through) is told apart from a wall hidden behind a shelf (never seen). Walls must
+reach up to the joists, so shelves and appliances don't become walls. See
+`src/core/wallFinder.ts`.
 
 The **wrist menu** appears when you turn your left palm toward you (or above the left
 controller). Tabs down the left side:
@@ -15,13 +25,13 @@ controller). Tabs down the left side:
 | Tab | What it does |
 | --- | --- |
 | **Build** | **Walls** (pinch corners; same spot twice, close the loop or **Finish** to end), **Doors** (30/32/36", 36" opening, custom), **Capture** (tap a real wall the scan missed to find its full length, tap again to add; or hold and sweep along it) |
-| **Edit** | **Select**: drag corners, slide doors, move pins; tap a wall for length, height, 2x4/2x6, delete. **Delete** tool |
+| **Edit** | **Select**: drag corners, drag a wall to slide it, slide doors, move pins; tap a wall for length, height, thickness, 2x4/2x6, split, real/planned; tap a door for width, height, type (door / opening / window), flip. **Delete** tool |
 | **Measure** | Tape measure between any two spots on the floor or walls; saved lines appear in the plan |
 | **Rooms** | Tap inside a closed area, pick a name and floor finish; area in sq ft |
 | **Pins** | Outlets, switches, panel (on walls, snapping to 12"/48"/54"), lights (ceiling), water heater, furnace, drain, pipe, post (floor) |
 | **Ceiling** | Ceiling type (drywall / drop / open joists) and height, plan-wide or for the selected room; show it in AR; **Soffit** tool (drag a rectangle under a duct or beam) |
-| **Room** | Re-import the room scan, auto-import on/off, **Align** with two reference corners (saved as persistent anchors: the plan relocks itself next session) |
-| **View** | Ghost / Solid / **X-ray** (generated framing: studs at 16" o.c., plates, kings, jacks, headers), labels, snapping, real objects hide walls, menu on wrist / floating / pinned, exit |
+| **Room** | **Scan** the basement (see above), import Space Setup, auto-import on/off, **Align** with two reference corners (saved as persistent anchors: the plan relocks itself next session) |
+| **View** | Ghost / Solid / **X-ray** (generated framing: layout at 16" o.c. from the corner, corner and tee backing, kings, jacks, headers, cripples, sills; real stud walls too), real walls shown / as outlines / hidden, labels, snapping, real objects hide walls, menu on wrist / floating / pinned, exit |
 
 Undo/redo sit in the menu's top-right corner (B/Y on controllers). Controllers: flick the
 right thumbstick left/right to switch tools; up/down changes wall height in the Walls tool.

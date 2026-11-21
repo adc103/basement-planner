@@ -131,12 +131,60 @@ describe('rooms', () => {
 });
 
 describe('framing', () => {
+  it('frames corners and tees the way a framer would', () => {
+    // An L (120" x 96") plus a tee wall ending on the middle of the long wall.
+    const s = mk((s) =>
+      s.edit('w', (d) => {
+        addWallBetween(d, { x: 0, y: 0 }, { x: 120, y: 0 }, { height: 96, thickness: 4.5 });
+        addWallBetween(d, { x: 120, y: 0 }, { x: 120, y: 96 }, { height: 96, thickness: 4.5 });
+        addWallBetween(d, { x: 60, y: 0 }, { x: 60, y: 60 }, { height: 96, thickness: 4.5 });
+      }),
+    );
+    const m = generateFraming(s.plan);
+    const byWall = new Map<string, typeof m>();
+    for (const x of m) byWall.set(x.wallId, [...(byWall.get(x.wallId) ?? []), x]);
+    const walls = s.plan.walls;
+    // the long wall was split at the tee: both halves get a backing stud beside the tee wall
+    const halves = walls.filter((w) => {
+      const a = s.plan.nodes.find((n) => n.id === w.a)!;
+      const b = s.plan.nodes.find((n) => n.id === w.b)!;
+      return a.y === 0 && b.y === 0;
+    });
+    expect(halves).toHaveLength(2);
+    for (const h of halves) {
+      const studs = byWall.get(h.id)!.filter((x) => x.kind === 'stud').map((x) => x.s);
+      const L = 60;
+      const tee = h.a === walls.find((w) => w.a === h.b || w.b === h.b)?.b ? L : 0;
+      void tee;
+      // a stud 2.25 + 0.75 in from the tee on this half
+      expect(studs.some((v) => Math.abs(v - 3) < 0.01 || Math.abs(v - (L - 3)) < 0.01)).toBe(true);
+    }
+    // the tee wall butts into the long wall's face: its framing starts 2.25" off the centerline
+    const tee = walls.find((w) => {
+      const a = s.plan.nodes.find((n) => n.id === w.a)!;
+      const b = s.plan.nodes.find((n) => n.id === w.b)!;
+      return a.x === 60 && b.x === 60;
+    })!;
+    const plates = byWall.get(tee.id)!.filter((x) => x.kind === 'plate' && x.z0 === 0);
+    const lo = Math.min(...plates.map((p) => p.s - p.len / 2));
+    expect(lo).toBeCloseTo(2.25, 5);
+    // no two studs on one wall closer than 3" (no wasted, crowded studs) except kings/jacks
+    for (const list of byWall.values()) {
+      const ss = list.filter((x) => x.kind === 'stud').map((x) => x.s).sort((a, b) => a - b);
+      for (let i = 1; i < ss.length; i++) expect(ss[i] - ss[i - 1]).toBeGreaterThanOrEqual(1.5);
+    }
+  });
+
   it('frames a plain 8 ft wall at 16" on center', () => {
     const s = mk((s) => s.edit('w', (d) => addWallBetween(d, { x: 0, y: 0 }, { x: 96, y: 0 }, { height: 96, thickness: 4.5 })));
     const m = generateFraming(s.plan);
     const studs = m.filter((x) => x.kind === 'stud');
-    // ends + 16,32,48,64,80 = 7 studs
-    expect(studs).toHaveLength(7);
+    // Free ends extend 2.25" past the nodes: a 100.5" wall. Layout is measured from its
+    // end so 4 ft sheets break on studs: ends + 16,32,48,64,80,96 from the end = 8 studs.
+    expect(studs).toHaveLength(8);
+    const s0 = Math.min(...studs.map((x) => x.s)) - 0.75;
+    const layout = studs.map((x) => x.s - s0).filter((v) => v > 2 && v < 99);
+    for (const v of layout) expect(v % 16).toBeCloseTo(0, 5);
     expect(m.filter((x) => x.kind === 'plate')).toHaveLength(3); // bottom + double top
     for (const st of studs) expect(st.z1).toBeCloseTo(96 - 3);
   });

@@ -154,6 +154,8 @@ export const PlanSchema = z.object({
     autoImportScan: z.boolean().default(true),
     ceilingType: z.enum(CEILING_TYPES).default('drywall'),
     showCeiling: z.boolean().default(false),
+    /** How real (existing) walls are drawn: like planned walls, as outlines, or not at all. */
+    realWalls: z.enum(['shown', 'outline', 'hidden']).default('shown'),
     /** Floor finish for the area outside named rooms. */
     floorFinish: z.enum(FINISHES).default('none'),
     /** Default underside height for new soffits, inches. */
@@ -167,6 +169,11 @@ export const PlanSchema = z.object({
   rooms: z.array(RoomSchema).default([]),
   measures: z.array(MeasureSchema).default([]),
   soffits: z.array(SoffitSchema).default([]),
+  /** Scanned floor area, cells in the room's axis frame (see core/footprint.ts). */
+  footprint: z
+    .object({ axis: z.number(), cell: z.number().positive(), rows: z.array(z.tuple([z.number(), z.number(), z.number()])) })
+    .nullable()
+    .default(null),
   /**
    * Two reference points (plan space) recorded on real-world corners.
    * Re-clicking the same two physical corners realigns the plan.

@@ -1,8 +1,9 @@
 import { dot, sub } from './geom2d.js';
 import type { Opening, Plan, Wall } from './plan.js';
 import { computeFootprints, type WallFootprint } from './wallGeometry.js';
+import { wallEnds, wallLength, wallsAtNode } from './ops.js';
 
-export type MemberKind = 'plate' | 'stud' | 'king' | 'jack' | 'header' | 'cripple';
+export type MemberKind = 'plate' | 'stud' | 'king' | 'jack' | 'header' | 'cripple' | 'block';
 
 /** One piece of lumber in wall-local coordinates (inches). */
 export interface Member {
@@ -44,25 +45,104 @@ export function isConcreteWall(w: { kind: string; thickness: number }): boolean 
   return w.kind === 'existing' && w.thickness >= 7;
 }
 
+/** How a wall's framing ends and what backing it needs from walls meeting it. */
+export interface WallEnds {
+  /** Framing extent along the wall from node a, inches. */
+  s0: number;
+  s1: number;
+  /** Extra studs where other walls butt into this one (drywall backing). */
+  backers: number[];
+}
+
+const COLLINEAR = 0.05;
+
+function dirOf(plan: Plan, w: Wall, fromNode: string): { x: number; y: number } {
+  const { a, b } = wallEnds(plan, w);
+  const [p, q] = w.a === fromNode ? [a, b] : [b, a];
+  const L = Math.hypot(q.x - p.x, q.y - p.y) || 1;
+  return { x: (q.x - p.x) / L, y: (q.y - p.y) / L };
+}
+
+/**
+ * Work out each framed wall's ends the way a framer would:
+ * - free end: frame to the end of the wall
+ * - L corner: the longer wall runs through to the outside corner and gets a
+ *   backing stud for the other wall's drywall; the other butts into it
+ * - T: the wall that ends on another butts into it; the through wall gets a
+ *   pair of backing studs either side of it
+ * - against concrete: frame up to the concrete face
+ */
+export function wallFramingEnds(plan: Plan, w: Wall, fp: WallFootprint, framed: (x: Wall) => boolean): WallEnds {
+  const [spanLo, spanHi] = span(fp);
+  const L = fp.length;
+  const out: WallEnds = { s0: spanLo, s1: spanHi, backers: [] };
+  for (const end of ['a', 'b'] as const) {
+    const node = end === 'a' ? w.a : w.b;
+    const sNode = end === 'a' ? 0 : L;
+    const inward = end === 'a' ? 1 : -1;
+    const myDir = dirOf(plan, w, node);
+    const others = wallsAtNode(plan, node).filter((x) => x.id !== w.id);
+    if (!others.length) continue; // free end
+    const cross = (x: Wall) => {
+      const d = dirOf(plan, x, node);
+      return { d, c: Math.abs(myDir.x * d.y - myDir.y * d.x), dot: myDir.x * d.x + myDir.y * d.y };
+    };
+    const continues = others.find((x) => cross(x).c < COLLINEAR && cross(x).dot < 0);
+    const butting = others.filter((x) => cross(x).c >= COLLINEAR);
+    const throughPair = butting.find((x) => butting.some((y) => y !== x && cross(y).c >= COLLINEAR && Math.abs(dirOf(plan, x, node).x * dirOf(plan, y, node).y - dirOf(plan, x, node).y * dirOf(plan, y, node).x) < COLLINEAR));
+    const setEnd = (s: number) => {
+      if (end === 'a') out.s0 = s;
+      else out.s1 = s;
+    };
+    if (continues) {
+      // This wall carries on through the node: frame to the node; backing for walls butting here.
+      setEnd(sNode);
+      for (const b of butting) out.backers.push(sNode + inward * (b.thickness / 2 + T / 2));
+      continue;
+    }
+    if (throughPair) {
+      // A tee: this wall ends on another wall running through.
+      setEnd(sNode + inward * (throughPair.thickness / 2));
+      continue;
+    }
+    const v = butting[0];
+    if (!v) continue;
+    // L corner. Concrete always wins; otherwise the longer framed wall runs through.
+    const vLen = wallLength(plan, v);
+    const iRunThrough = framed(v) && !isConcreteWall(v) && (L > vLen + 0.01 || (Math.abs(L - vLen) <= 0.01 && w.id < v.id));
+    if (iRunThrough) {
+      // keep the outside corner; back the other wall's inside face
+      out.backers.push(sNode + inward * (v.thickness / 2 + T / 2));
+    } else {
+      setEnd(sNode + inward * (v.thickness / 2));
+    }
+  }
+  // Tees landing in this wall's middle: other walls whose end node sits on this wall.
+  // (After the plan splits walls at tees these show up as "continues" above.)
+  return out;
+}
+
 /**
  * Stud framing for every new wall; with `includeExisting`, also for existing
  * framed partitions (for the x-ray view; they aren't part of the materials list).
  */
 export function generateFraming(plan: Plan, includeExisting = false): Member[] {
   const fps = computeFootprints(plan);
+  const framed = (x: Wall) => x.kind === 'new' || (includeExisting && !isConcreteWall(x));
   const out: Member[] = [];
   for (const w of plan.walls) {
-    if (w.kind !== 'new' && !(includeExisting && !isConcreteWall(w))) continue;
+    if (!framed(w)) continue;
     const fp = fps.get(w.id);
-    if (fp) out.push(...frameWall(w, fp, plan.openings.filter((o) => o.wallId === w.id)));
+    if (!fp) continue;
+    out.push(...frameWall(w, fp, plan.openings.filter((o) => o.wallId === w.id), wallFramingEnds(plan, w, fp, framed)));
   }
   return out;
 }
 
-export function frameWall(w: Wall, fp: WallFootprint, openings: Opening[]): Member[] {
+export function frameWall(w: Wall, fp: WallFootprint, openings: Opening[], ends?: WallEnds): Member[] {
   const depth = studDepth(w);
   const H = w.height;
-  const [s0, s1] = span(fp);
+  const [s0, s1] = ends ? [ends.s0, ends.s1] : span(fp);
   const plates = w.framing.topPlates;
   const studTop = H - plates * T;
   const m: Member[] = [];
@@ -93,20 +173,24 @@ export function frameWall(w: Wall, fp: WallFootprint, openings: Opening[]): Memb
   // Top plates.
   for (let k = 0; k < plates; k++) add('plate', s0, s1, H - (k + 1) * T, H - k * T);
 
-  // Regular studs on layout, plus end studs.
+  // Fixed studs first: ends, corner/tee backing, kings and jacks.
+  const fixed: number[] = [s0 + T / 2, s1 - T / 2];
+  for (const b of ends?.backers ?? []) if (b > s0 + T && b < s1 - T && !blocked(b)) fixed.push(b);
+  for (const r of ros) fixed.push(r.a - 1.5 * T, r.a - T / 2, r.b + T / 2, r.b + 1.5 * T);
+  for (const s of fixed.slice(0, 2)) if (!blocked(s)) add('stud', s - T / 2, s + T / 2, T, studTop);
+  for (const s of (ends?.backers ?? []).filter((b) => fixed.includes(b))) add('stud', s - T / 2, s + T / 2, T, studTop);
+
+  // Layout: 16" on center measured from the starting end, so sheet edges land on studs.
+  // Skip a layout stud that would crowd one already there (it'd be a wasted stud).
   const spacing = w.framing.spacing;
-  const studs = new Set<number>();
-  studs.add(s0 + T / 2);
-  studs.add(s1 - T / 2);
-  // Layout studs, skipping any that would crowd an end stud.
-  const clear = (s: number) => s > s0 + 2.5 * T && s < s1 - 2.5 * T;
-  if (w.framing.layoutFrom === 'a') {
-    for (let s = spacing; s < s1; s += spacing) if (clear(s)) studs.add(s);
-  } else {
-    for (let s = fp.length - spacing; s > s0; s -= spacing) if (clear(s)) studs.add(s);
-  }
-  for (const s of [...studs].sort((a, b) => a - b)) {
+  const layout: number[] = [];
+  if (w.framing.layoutFrom === 'a') for (let s = s0 + spacing; s < s1 - T; s += spacing) layout.push(s);
+  else for (let s = s1 - spacing; s > s0 + T; s -= spacing) layout.push(s);
+  const studs: number[] = [];
+  for (const s of layout) {
     if (blocked(s)) continue;
+    if (fixed.some((f) => Math.abs(f - s) < 3)) continue;
+    studs.push(s);
     add('stud', s - T / 2, s + T / 2, T, studTop);
   }
 
@@ -118,12 +202,23 @@ export function frameWall(w: Wall, fp: WallFootprint, openings: Opening[]): Memb
     add('jack', r.b, r.b + T, T, r.top);
     add('header', r.a - T, r.b + T, r.top, r.top + r.hd);
     // Cripples above the header and below a window sill, on layout.
-    for (const s of studs) {
+    for (const s of layout) {
       if (s <= r.a || s >= r.b) continue;
       add('cripple', s - T / 2, s + T / 2, r.top + r.hd, studTop);
       if (!r.door) add('cripple', s - T / 2, s + T / 2, T, r.o.sill - T);
     }
     if (!r.door) add('plate', r.a, r.b, r.o.sill - T, r.o.sill); // rough sill
+  }
+
+  // Fire blocking for walls over 10 ft: a row of blocks between studs at mid-height.
+  if (H > 120) {
+    const all = [...m.filter((x) => x.kind === 'stud' || x.kind === 'king').map((x) => x.s)].sort((a, b) => a - b);
+    const zb = Math.round(H / 2);
+    for (let i = 0; i + 1 < all.length; i++) {
+      const a = all[i] + T / 2;
+      const b = all[i + 1] - T / 2;
+      if (b - a > 2 && !ros.some((r) => a < r.b && b > r.a && zb < r.top + r.hd)) add('block', a, b, zb, zb + T);
+    }
   }
   return m;
 }
@@ -139,7 +234,7 @@ export function summarizeFraming(members: Member[]): FramingSummary {
   let plate = 0;
   let headers = 0;
   for (const m of members) {
-    if (m.kind === 'plate') plate += m.len;
+    if (m.kind === 'plate' || m.kind === 'block') plate += m.len;
     else if (m.kind === 'header') headers++;
     else studs++;
   }

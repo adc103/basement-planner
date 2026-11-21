@@ -3,6 +3,9 @@ import { wallEnds } from './ops.js';
 import type { Plan } from './plan.js';
 import { convexHull } from './poly.js';
 import type { DetectedFace, PP } from './wallDetect.js';
+import { findWalls, type FoundOpening, type FreeLookup } from './wallFinder.js';
+import { connectWalls } from './wallGraph.js';
+import { footprintFromFloor, type Footprint } from './footprint.js';
 
 /**
  * Find basement structure in a scanned point cloud (plan inches, z = height):
@@ -28,14 +31,9 @@ export interface WallProposal {
   openings: OpeningProposal[];
 }
 
-export interface OpeningProposal {
-  center: Vec2;
-  width: number;
-  height: number;
-  type: 'door' | 'opening';
-}
+export type OpeningProposal = FoundOpening;
 
-const DOOR_WIDTHS = [24, 28, 30, 32, 36];
+const NO_FREE: FreeLookup = { count: () => 0 };
 
 export interface SoffitProposal {
   poly: Vec2[];
@@ -55,6 +53,8 @@ export interface StructureResult {
   walls: WallProposal[];
   soffits: SoffitProposal[];
   posts: PostProposal[];
+  /** Scanned floor area (for whole-basement floor and ceiling). */
+  footprint: Footprint | null;
 }
 
 export interface StructureOptions {
@@ -123,250 +123,50 @@ export function estimateAxis(pts: Vec2[]): number {
   return (fine * Math.PI) / 180;
 }
 
-interface Face {
-  /** Offset along the normal direction (plan inches). */
-  c: number;
-  t0: number;
-  t1: number;
-  /** Seen fraction (length x height). */
-  coverage: number;
-  /** Which way the room is: +1 / -1 along the normal. */
-  roomSide: number;
-  dirIdx: 0 | 1;
-  /** Along-wall spans (t0, t1) with a header but nothing below: doorways. */
-  gaps: Array<{ t0: number; t1: number; top: number }>;
-}
-
-export function findStructure(points: PP[], plan: Plan, opts: StructureOptions): StructureResult {
+export function findStructure(points: PP[], plan: Plan, opts: StructureOptions, free: FreeLookup = NO_FREE): StructureResult {
   const floor = modeZ(points, -18, 18);
   const ceiling = modeZ(points, 66, 180, 40);
   const z0 = floor ?? 0;
   const H = ceiling ?? z0 + plan.settings.wallHeight;
+  const ZS = 6;
 
   const band = points.filter((p) => p.z > z0 + 10 && p.z < H - 10);
   const axis = opts.axisAngle ?? estimateAxis(band);
-  const dirs: Vec2[] = [
-    { x: Math.cos(axis), y: Math.sin(axis) },
-    { x: -Math.sin(axis), y: Math.cos(axis) },
-  ];
 
-  // Height levels (6") the wall should cover between floor and ceiling.
-  const ZS = 6;
-  const levels = Math.max(1, Math.floor((H - z0 - 20) / ZS));
-  const TS = 6; // along-wall cell
-  const faces: Face[] = [];
-
-  for (const dirIdx of [0, 1] as const) {
-    const d = dirs[dirIdx]; // along the wall
-    const n = { x: -d.y, y: d.x }; // wall normal
-    const hist = new Map<number, number>();
-    for (const p of band) {
-      const c = Math.round(p.x * n.x + p.y * n.y);
-      hist.set(c, (hist.get(c) ?? 0) + 1);
-    }
-    const peaks = [...hist.keys()]
-      .map((c) => ({ c, s: (hist.get(c - 1) ?? 0) + (hist.get(c) ?? 0) + (hist.get(c + 1) ?? 0) }))
-      .filter((p) => p.s >= 60)
-      .sort((a, b) => b.s - a.s);
-    const taken: number[] = [];
-    for (const pk of peaks) {
-      if (taken.some((c) => Math.abs(c - pk.c) < 3)) continue;
-      taken.push(pk.c);
-      const near = band.filter((p) => Math.abs(p.x * n.x + p.y * n.y - pk.c) <= 2);
-      if (near.length < 60) continue;
-      const cMean = near.reduce((s, p) => s + p.x * n.x + p.y * n.y, 0) / near.length;
-      // Along-wall cells: which height levels were seen.
-      const cells = new Map<number, Set<number>>();
-      const cellTop = new Map<number, number>(); // lowest point above door height
-      for (const p of near) {
-        const t = Math.floor((p.x * d.x + p.y * d.y) / TS);
-        const lv = Math.floor((p.z - z0 - 10) / ZS);
-        let set = cells.get(t);
-        if (!set) cells.set(t, (set = new Set()));
-        set.add(lv);
-        if (p.z - z0 > 70) cellTop.set(t, Math.min(cellTop.get(t) ?? Infinity, p.z - z0));
-      }
-      // Doorway cell: header seen above ~80", (almost) nothing below it.
-      const lowTop = Math.floor((76 - 10) / ZS);
-      const isDoorCell = (t: number) => {
-        const set = cells.get(t);
-        if (!set) return false;
-        let low = 0;
-        let high = 0;
-        for (const lv of set) {
-          if (lv <= lowTop) low++;
-          else high++;
-        }
-        return low <= 1 && high >= 1;
-      };
-      // A cell is wall when it spans much of the height; clutter doesn't.
-      const solid = [...cells.entries()].filter(([, s]) => s.size >= levels * 0.6).map(([t]) => t).sort((a, b) => a - b);
-      if (solid.length < 4) continue;
-      // Join runs, bridging gaps up to 4 ft (something in front, or a doorway to add later).
-      let runStart = solid[0];
-      let prev = solid[0];
-      const runs: Array<[number, number]> = [];
-      for (const t of solid.slice(1)) {
-        const gap = (t - prev - 1) * TS;
-        let header = gap > 0;
-        for (let k = prev + 1; k < t && header; k++) header = isDoorCell(k);
-        if (gap > (header ? 96 : 48)) {
-          runs.push([runStart, prev]);
-          runStart = t;
-        }
-        prev = t;
-      }
-      runs.push([runStart, prev]);
-      for (const [r0, r1] of runs) {
-        const len = (r1 - r0 + 1) * TS;
-        if (len < 30) continue;
-        let seen = 0;
-        for (let t = r0; t <= r1; t++) seen += Math.min(levels, cells.get(t)?.size ?? 0);
-        const coverage = seen / ((r1 - r0 + 1) * levels);
-        if (coverage < 0.5) continue; // mostly clutter
-        // Room side: where most other points are (floor, clutter, other walls).
-        let plus = 0;
-        let minus = 0;
-        for (const p of points) {
-          const t = (p.x * d.x + p.y * d.y) / TS;
-          if (t < r0 || t > r1 + 1) continue;
-          const off = p.x * n.x + p.y * n.y - cMean;
-          if (off > 6 && off < 60) plus++;
-          else if (off < -6 && off > -60) minus++;
-        }
-        const gaps: Face['gaps'] = [];
-        for (let t = r0; t <= r1; t++) {
-          if (!isDoorCell(t)) continue;
-          let e = t;
-          let top = Infinity;
-          while (e <= r1 && isDoorCell(e)) top = Math.min(top, cellTop.get(e++) ?? Infinity);
-          const w = (e - t) * TS;
-          if (w >= 24 && w <= 96) gaps.push({ t0: t * TS, t1: e * TS, top });
-          t = e;
-        }
-        faces.push({ c: cMean, t0: r0 * TS, t1: (r1 + 1) * TS, coverage, roomSide: plus >= minus ? 1 : -1, dirIdx, gaps });
-      }
-    }
-  }
-
-  // Inside a wall nothing is visible: few points strictly between two faces.
-  const hollowBetween = (f: Face, g: Face) => {
-    const d = dirs[f.dirIdx];
-    const n = { x: -d.y, y: d.x };
-    const lo = Math.min(f.c, g.c) + 1;
-    const hi = Math.max(f.c, g.c) - 1;
-    const t0 = Math.max(f.t0, g.t0);
-    const t1 = Math.min(f.t1, g.t1);
-    let inside = 0;
-    for (const p of band) {
-      const c = p.x * n.x + p.y * n.y;
-      if (c <= lo || c >= hi) continue;
-      const t = p.x * d.x + p.y * d.y;
-      if (t > t0 && t < t1) inside++;
-    }
-    return inside < 0.05 * ((t1 - t0) / TS) * levels * 4;
-  };
-
-  // Pair the two faces of a thin wall (3-9" apart, nothing between them).
-  const used = new Set<Face>();
-  const walls: WallProposal[] = [];
+  // --- Walls ---------------------------------------------------------------------
   const known: Array<{ a: Vec2; b: Vec2 }> = plan.walls.map((w) => wallEnds(plan, w));
-  faces.sort((a, b) => (b.t1 - b.t0) * b.coverage - (a.t1 - a.t0) * a.coverage);
-  for (const f of faces) {
-    if (used.has(f)) continue;
-    used.add(f);
-    const d = dirs[f.dirIdx];
-    const n = { x: -d.y, y: d.x };
-    const mate = faces.find(
-      (g) =>
-        !used.has(g) &&
-        g.dirIdx === f.dirIdx &&
-        Math.abs(g.c - f.c) >= 3 &&
-        Math.abs(g.c - f.c) <= 9 &&
-        Math.min(g.t1, f.t1) - Math.max(g.t0, f.t0) > 0.5 * Math.min(g.t1 - g.t0, f.t1 - f.t0) &&
-        hollowBetween(f, g),
-    );
-    let center: number;
-    let thickness: number;
-    let t0 = f.t0;
-    let t1 = f.t1;
-    let foundation = false;
-    if (mate) {
-      used.add(mate);
-      center = (f.c + mate.c) / 2;
-      thickness = Math.round(Math.abs(f.c - mate.c) * 2) / 2;
-      t0 = Math.min(t0, mate.t0);
-      t1 = Math.max(t1, mate.t1);
-    } else {
-      // One-sided: foundation wall if nothing at all was seen behind it.
-      let behind = 0;
-      for (const p of band) {
-        const t = p.x * d.x + p.y * d.y;
-        if (t < t0 || t > t1) continue;
-        const off = (p.x * n.x + p.y * n.y - f.c) * f.roomSide;
-        if (off < -10) behind++;
-      }
-      foundation = behind < 15;
-      thickness = foundation ? opts.foundationThickness : opts.partitionThickness;
-      center = f.c - (f.roomSide * thickness) / 2;
-    }
-    const at = (c: number, t: number): Vec2 => add(scale(n, c), scale(d, t));
-    const a = at(center, t0);
-    const b = at(center, t1);
-    // Skip walls the plan already has (or that were just found).
-    const mid = scale(add(a, b), 0.5);
-    const dup = [...known, ...walls.map((w) => ({ a: w.a, b: w.b }))].some((s) => {
+  const found = findWalls(points, free, {
+    z0,
+    H,
+    axis,
+    partitionThickness: opts.partitionThickness,
+    foundationThickness: opts.foundationThickness,
+  });
+  // Skip walls the plan already has.
+  const fresh = found.filter((f) => {
+    const mid = scale(add(f.a, f.b), 0.5);
+    const fl = dist(f.a, f.b);
+    const fd = { x: (f.b.x - f.a.x) / fl, y: (f.b.y - f.a.y) / fl };
+    return !known.some((s) => {
       const len = dist(s.a, s.b);
       if (len < 1) return false;
       const sd = { x: (s.b.x - s.a.x) / len, y: (s.b.y - s.a.y) / len };
-      if (Math.abs(sd.x * d.y - sd.y * d.x) > 0.17) return false; // not parallel (>10 deg)
+      if (Math.abs(sd.x * fd.y - sd.y * fd.x) > 0.17) return false;
       const off = Math.abs(-(mid.x - s.a.x) * sd.y + (mid.y - s.a.y) * sd.x);
       const t = (mid.x - s.a.x) * sd.x + (mid.y - s.a.y) * sd.y;
       return off < 8 && t > -12 && t < len + 12;
     });
-    if (dup) continue;
-    const gaps = [...f.gaps, ...(mate?.gaps ?? [])].sort((p, q) => p.t0 - q.t0);
-    const openings: OpeningProposal[] = [];
-    for (const g of gaps) {
-      if (openings.some((o) => Math.abs((o.center.x - at(center, 0).x) * d.x + (o.center.y - at(center, 0).y) * d.y - (g.t0 + g.t1) / 2) < 12)) continue;
-      const raw = g.t1 - g.t0 - 2; // cells overshoot the jambs a little
-      const door = raw <= 40;
-      const width = door ? DOOR_WIDTHS.reduce((b, w) => (Math.abs(w - raw) < Math.abs(b - raw) ? w : b)) : Math.round(raw / 2) * 2;
-      const height = Number.isFinite(g.top) ? Math.max(78, Math.min(96, Math.round(g.top))) : 80;
-      openings.push({ center: at(center, (g.t0 + g.t1) / 2), width, height, type: door ? 'door' : 'opening' });
-    }
-    walls.push({
-      openings,
-      face: { a: at(f.c, t0), b: at(f.c, t1), n: scale(n, f.roomSide), rms: 0, support: Math.round(f.coverage * 100) },
-      a,
-      b,
-      thickness,
-      foundation,
-      confidence: f.coverage,
-    });
-  }
-  // Clean corners: extend or trim ends to meet perpendicular walls within 18".
-  for (const w of walls) {
-    for (const end of ['a', 'b'] as const) {
-      const p = w[end];
-      const other = end === 'a' ? w.b : w.a;
-      const L = dist(p, other);
-      const dir = { x: (p.x - other.x) / L, y: (p.y - other.y) / L };
-      let bestT = Infinity;
-      for (const v of walls) {
-        if (v === w) continue;
-        const vd = sub(v.b, v.a);
-        const vl = Math.hypot(vd.x, vd.y);
-        const vn = { x: vd.x / vl, y: vd.y / vl };
-        const den = dir.x * vn.y - dir.y * vn.x;
-        if (Math.abs(den) < 0.9) continue; // only near-perpendicular
-        const t = ((v.a.x - p.x) * vn.y - (v.a.y - p.y) * vn.x) / den;
-        const s = ((v.a.x - p.x) * dir.y - (v.a.y - p.y) * dir.x) / den;
-        if (Math.abs(t) <= 18 && s > -18 && s < vl + 18 && Math.abs(t) < Math.abs(bestT)) bestT = t;
-      }
-      if (bestT !== Infinity) w[end] = add(p, scale(dir, bestT));
-    }
-  }
+  });
+  connectWalls(fresh, known, plan.nodes.map((n) => ({ x: n.x, y: n.y })));
+  const walls: WallProposal[] = fresh.map((f) => ({
+    face: { a: f.faceA, b: f.faceB, n: f.n, rms: 0, support: Math.round(f.confidence * 100) },
+    a: f.a,
+    b: f.b,
+    thickness: f.thickness,
+    foundation: f.foundation,
+    confidence: f.confidence,
+    openings: f.openings,
+  }));
 
   // --- Low ceiling areas and posts (6" grid in the room's axis frame) ------------
   const cell = 6;
@@ -391,7 +191,8 @@ export function findStructure(points: PP[], plan: Plan, opts: StructureOptions):
     let g = grid.get(k);
     if (!g) grid.set(k, (g = { i, j, low: [], lv: new Set(), n: 0 }));
     g.n++;
-    g.lv.add(Math.floor((p.z - z0) / ZS));
+    // Height levels for post detection: below the ceiling only (ceiling points are everywhere).
+    if (p.z < H - 4) g.lv.add(Math.floor((p.z - z0) / ZS));
     if (p.z > H - 36 && p.z < H - 3) g.low.push(p.z);
   }
   const center = (g: { i: number; j: number }) => toPlan({ x: (g.i + 0.5) * cell, y: (g.j + 0.5) * cell });
@@ -443,11 +244,47 @@ export function findStructure(points: PP[], plan: Plan, opts: StructureOptions):
     });
   }
 
+  // Join pieces of one duct/beam split by an unseen stretch: same height, in line, close.
+  for (let i = 0; i < soffits.length; i++) {
+    for (let j = i + 1; j < soffits.length; j++) {
+      const A = soffits[i];
+      const B = soffits[j];
+      if (Math.abs(A.bottom - B.bottom) > 1) continue;
+      const box = (s2: SoffitProposal) => {
+        const ls = s2.poly.map(toLocal);
+        return { x0: Math.min(...ls.map((q) => q.x)), x1: Math.max(...ls.map((q) => q.x)), y0: Math.min(...ls.map((q) => q.y)), y1: Math.max(...ls.map((q) => q.y)) };
+      };
+      const a = box(A);
+      const b = box(B);
+      const sameY = Math.abs(a.y0 - b.y0) <= 6 && Math.abs(a.y1 - b.y1) <= 6;
+      const sameX = Math.abs(a.x0 - b.x0) <= 6 && Math.abs(a.x1 - b.x1) <= 6;
+      const gapX = Math.max(a.x0, b.x0) - Math.min(a.x1, b.x1);
+      const gapY = Math.max(a.y0, b.y0) - Math.min(a.y1, b.y1);
+      if (!((sameY && gapX <= 48) || (sameX && gapY <= 48))) continue;
+      const u = { x0: Math.min(a.x0, b.x0), x1: Math.max(a.x1, b.x1), y0: Math.min(a.y0, b.y0), y1: Math.max(a.y1, b.y1) };
+      A.poly = [
+        { x: u.x0, y: u.y0 },
+        { x: u.x1, y: u.y0 },
+        { x: u.x1, y: u.y1 },
+        { x: u.x0, y: u.y1 },
+      ].map(toPlan);
+      A.bottom = Math.min(A.bottom, B.bottom);
+      soffits.splice(j, 1);
+      j = i;
+    }
+  }
+
   // Posts: thin columns seen over nearly the whole floor-to-ceiling height.
-  const fullLevels = Math.floor((H - z0) / ZS);
+  const fullLevels = Math.floor((H - 4 - z0) / ZS);
+  const topLevel = Math.floor((H - 12 - z0) / ZS);
   const tall = new Set(
     [...grid.entries()]
-      .filter(([, g]) => g.n >= 30 && g.lv.size >= fullLevels * 0.8 && !nearWall(center(g), 18))
+      .filter(([, g]) => {
+        if (g.n < 30 || g.lv.size < fullLevels * 0.85 || nearWall(center(g), 20)) return false;
+        // must reach up to the ceiling: shelves and appliances stop short
+        for (let lv = topLevel; lv < fullLevels; lv++) if (!g.lv.has(lv)) return false;
+        return true;
+      })
       .map(([k]) => k),
   );
   const posts: PostProposal[] = [];
@@ -477,7 +314,9 @@ export function findStructure(points: PP[], plan: Plan, opts: StructureOptions):
     posts.push({ poly: convexHull(pts), height: Math.round(H - z0) });
   }
 
-  return { floorOffset: floor, ceiling, axis, walls, soffits, posts };
+  const floorPts = points.filter((p) => Math.abs(p.z - z0) < 3);
+  const footprint = footprintFromFloor(floorPts, axis);
+  return { floorOffset: floor, ceiling, axis, walls, soffits, posts, footprint };
 }
 
 /** Helper for tests and previews: a rectangle around a center, axis-aligned in plan space. */

@@ -8,7 +8,10 @@ import {
   moveNode,
   moveOpening,
   setWallHeight,
+  setWallKind,
   setWallLength,
+  splitWall,
+  wallEnds,
   setWallThickness,
   wallById,
   wallLength,
@@ -29,6 +32,9 @@ interface Drag {
   target: Target;
   start: Vec2;
   moved: boolean;
+  /** Wall drags: the wall's normal and the corners' starting positions. */
+  normal?: Vec2;
+  orig?: Array<{ id: string; x: number; y: number }>;
 }
 
 /**
@@ -62,7 +68,7 @@ export class EditTool implements Tool {
     if (h?.kind === 'node') return 'Pinch and drag to move this corner';
     if (h?.kind === 'opening') return 'Drag to slide, tap to select';
     if (h?.kind === 'marker') return 'Drag to move this pin';
-    if (h?.kind === 'wall') return 'Tap to select this wall';
+    if (h?.kind === 'wall') return 'Tap to select, drag to slide this wall';
     return this.selection ? 'Edit the selection in the menu' : 'Point at a corner, wall, door or pin';
   }
 
@@ -116,10 +122,26 @@ export class EditTool implements Tool {
   pressStart(aim: AimHit): void {
     const t = this.pick(aim);
     this.hovered = t;
-    if (!t || t.kind === 'wall') return;
+    if (!t) return;
     const start = aim.floor ?? aim.wall?.point ?? { x: 0, y: 0 };
     this.dragging = { target: t, start, moved: false };
-    this.ctx.store.begin(t.kind === 'node' ? 'Move corner' : t.kind === 'opening' ? 'Move door' : 'Move pin');
+    if (t.kind === 'wall') {
+      const plan = this.ctx.store.plan;
+      const w = wallById(plan, t.id);
+      if (!w || !aim.floor) {
+        this.dragging = null;
+        return;
+      }
+      const { a, b } = wallEnds(plan, w);
+      const L = dist(a, b) || 1;
+      this.dragging.normal = { x: -(b.y - a.y) / L, y: (b.x - a.x) / L };
+      this.dragging.orig = [w.a, w.b].map((id) => {
+        const n = plan.nodes.find((x) => x.id === id)!;
+        return { id, x: n.x, y: n.y };
+      });
+      this.dragging.start = aim.floor;
+    }
+    this.ctx.store.begin(t.kind === 'node' ? 'Move corner' : t.kind === 'opening' ? 'Move door' : t.kind === 'wall' ? 'Slide wall' : 'Move pin');
   }
 
   drag(aim: AimHit): void {
@@ -142,6 +164,40 @@ export class EditTool implements Tool {
         this.ctx.store.edit('Move corner', (dr) => moveNode(dr, id, s.point));
         pv.showCursor(s.point, s.kind, false);
         pv.showGuides(s.guides, s.point);
+      }
+    } else if (d.target.kind === 'wall' && d.normal && d.orig && aim.floor) {
+      // Slide along the wall's normal, in whole inches (fine mode: 1/4").
+      const raw = (aim.floor.x - d.start.x) * d.normal.x + (aim.floor.y - d.start.y) * d.normal.y;
+      if (d.moved || Math.abs(raw) > 1.5) {
+        d.moved = true;
+        let off = Math.round(raw);
+        // Snap: line up with other corners (so the wall lands square on another wall's end).
+        const wallId = d.target.id;
+        const others = plan.nodes.filter((n) => !d.orig!.some((o) => o.id === n.id));
+        const o0 = d.orig[0];
+        for (const n of others) {
+          const want = (n.x - o0.x) * d.normal.x + (n.y - o0.y) * d.normal.y;
+          if (Math.abs(want - raw) < 3) {
+            off = want;
+            break;
+          }
+        }
+        const orig = d.orig;
+        const nrm = d.normal;
+        this.ctx.store.edit('Slide wall', (dr) => {
+          for (const o of orig) {
+            const n = dr.nodes.find((x) => x.id === o.id);
+            if (n) {
+              n.x = o.x + nrm.x * off;
+              n.y = o.y + nrm.y * off;
+            }
+          }
+        });
+        const w = wallById(plan, wallId);
+        if (w) {
+          const { a, b } = wallEnds(this.ctx.store.plan, w);
+          pv.showHint(`${off >= 0 ? 'Moved' : 'Moved'} ${formatLength(Math.abs(off))}`, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, 60);
+        }
       }
     } else if (d.target.kind === 'opening') {
       const op = plan.openings.find((o) => o.id === (d.target as { id: string }).id);
@@ -232,11 +288,13 @@ export class EditTool implements Tool {
       const w = wallById(plan, s.id);
       if (!w) return '';
       const kind = w.kind === 'existing' ? (w.source === 'capture' ? 'Captured wall' : 'Scanned wall') : 'Wall';
-      return `${kind}: ${formatLength(wallLength(plan, w))} long, ${formatLength(w.height)} high, ${w.framing.studSize}`;
+      return `${kind}: ${formatLength(wallLength(plan, w))} long, ${formatLength(w.height)} high, ${w.thickness}" thick`;
     }
     if (s.kind === 'opening') {
       const o = plan.openings.find((x) => x.id === s.id);
-      return o ? `${o.type === 'door' ? 'Door' : 'Opening'}: ${widthText(o.width)} x ${formatLength(o.height)}` : '';
+      return o
+        ? `${o.type === 'door' ? 'Door' : o.type === 'window' ? 'Window' : 'Opening'}: ${widthText(o.width)} x ${formatLength(o.height)}${o.sill > 0 ? `, sill ${formatLength(o.sill)}` : ''}`
+        : '';
     }
     if (s.kind === 'marker') {
       const m = plan.markers.find((x) => x.id === s.id);
@@ -260,6 +318,79 @@ export class EditTool implements Tool {
     this.ctx.openKeypad('Wall height', w.height, (inches) => {
       this.ctx.store.edit('Set height', (d) => setWallHeight(d, w.id, inches));
       this.ctx.refreshUi();
+    });
+  }
+
+  typeThickness(): void {
+    const w = this.selectedWall();
+    if (!w) return;
+    this.ctx.openKeypad('Wall thickness', w.thickness, (inches) => {
+      this.ctx.store.edit('Set thickness', (d) => setWallThickness(d, w.id, inches));
+    });
+  }
+
+  /** Split the selected wall in the middle; drag the new corner where you need it. */
+  split(): void {
+    const w = this.selectedWall();
+    if (!w) return;
+    this.ctx.store.edit('Split wall', (d) => splitWall(d, w.id, 0.5));
+    this.select(null);
+    this.ctx.toast('Split. Drag the new corner to place it.');
+  }
+
+  toggleKind(): void {
+    const w = this.selectedWall();
+    if (!w) return;
+    const next = w.kind === 'existing' ? 'new' : 'existing';
+    this.ctx.store.edit(next === 'new' ? 'Make planned wall' : 'Make real wall', (d) => setWallKind(d, w.id, next));
+    this.ctx.toast(next === 'new' ? 'Now a planned (new) wall' : 'Now a real (existing) wall');
+  }
+
+  selectedOpening() {
+    const s = this.selection;
+    return s?.kind === 'opening' ? this.ctx.store.plan.openings.find((o) => o.id === s.id) : undefined;
+  }
+
+  typeOpeningHeight(): void {
+    const o = this.selectedOpening();
+    if (!o) return;
+    this.ctx.openKeypad('Opening height', o.height, (h) =>
+      this.ctx.store.edit('Set opening height', (d) => {
+        const op = d.openings.find((x) => x.id === o.id);
+        if (op) op.height = h;
+      }),
+    );
+  }
+
+  /** Door -> opening -> window. */
+  cycleOpeningType(): void {
+    const o = this.selectedOpening();
+    if (!o) return;
+    const next = o.type === 'door' ? 'opening' : o.type === 'opening' ? 'window' : 'door';
+    this.ctx.store.edit('Opening type', (d) => {
+      const op = d.openings.find((x) => x.id === o.id);
+      if (!op) return;
+      op.type = next;
+      if (next === 'window' && op.sill <= 0) {
+        op.sill = 48;
+        op.height = Math.min(op.height, 36);
+      }
+      if (next !== 'window') op.sill = 0;
+    });
+  }
+
+  /** Swap the door's hinge side, then its swing. */
+  flipDoor(): void {
+    const o = this.selectedOpening();
+    if (!o) return;
+    this.ctx.store.edit('Flip door', (d) => {
+      const op = d.openings.find((x) => x.id === o.id);
+      if (!op) return;
+      if (op.hinge === 'a') op.hinge = 'b';
+      else {
+        op.hinge = 'a';
+        op.swing = op.swing === 'left' ? 'right' : 'left';
+      }
     });
   }
 

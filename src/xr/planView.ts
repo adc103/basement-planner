@@ -1,5 +1,6 @@
 import {
   BoxGeometry,
+  BufferAttribute,
   BufferGeometry,
   CanvasTexture,
   RepeatWrapping,
@@ -39,8 +40,12 @@ const LUMBER_COLORS: Record<MemberKind, string> = {
   jack: '#b8874a',
   header: '#9a6a35',
   cripple: '#e3c48f',
+  block: '#c99d5e',
 };
-import { findRoomFaces, insetPolygon, openArea, resolveRooms } from '../core/rooms.js';
+import { findRoomFaces, insetPolygon, resolveRooms } from '../core/rooms.js';
+import { openFloorRects } from '../core/footprint.js';
+import { primaryAxis } from '../core/snapping.js';
+import { surfaceOccludable } from './surfaceOcclusion.js';
 import { formatLength, INCH_M } from '../core/units.js';
 import { computeFootprints, wallPrisms, type WallFootprint } from '../core/wallGeometry.js';
 import { TextLabel } from './labels.js';
@@ -90,6 +95,8 @@ export class PlanView {
     depthWrite: false,
     side: DoubleSide,
   });
+  /** Real walls in outline style: bright thin edges. */
+  private matOutline = new MeshBasicMaterial({ color: 0xcfe3ff, transparent: true, opacity: 0.9 });
   private matHighlight = new MeshStandardMaterial({
     color: 0xff6b5a,
     emissive: new Color(0x551a10),
@@ -133,6 +140,8 @@ export class PlanView {
   private extraLabels: TextLabel[] = [];
 
   constructor() {
+    surfaceOccludable(this.matExisting, 0.1);
+    surfaceOccludable(this.matOutline, 0.1);
     this.root.add(this.content);
     this.root.name = 'plan-root';
     this.applyMode();
@@ -159,7 +168,7 @@ export class PlanView {
     this.matNew.depthWrite = !ghost && !xray;
     this.matNew.needsUpdate = true;
     // Real walls follow the same modes, in their own grey-blue so they read apart.
-    this.matExisting.opacity = xray ? 0.08 : ghost ? 0.18 : 0.92;
+    this.matExisting.opacity = xray ? 0.08 : ghost ? 0.18 : 1;
     this.matExisting.depthWrite = !ghost && !xray;
     this.matExisting.needsUpdate = true;
   }
@@ -235,11 +244,44 @@ export class PlanView {
         depthWrite: false,
         side: DoubleSide,
       });
+      surfaceOccludable(m, 0.06);
       this.roomMats.set(finish, m);
     }
     return m;
   }
 
+
+  /** Floor/ceiling area outside rooms: scanned footprint plus the walls' extent. */
+  private openRects(plan: Plan, faces: ReturnType<typeof findRoomFaces>): Array<Array<{ x: number; y: number }>> {
+    return openFloorRects(
+      plan.footprint ?? null,
+      plan.nodes.map((n) => ({ x: n.x, y: n.y })),
+      faces.map((f) => f.outline),
+      primaryAxis(plan),
+    ).rects;
+  }
+
+  /** Many rectangles (plan inches) at one height, as one mesh with plan-space 4 ft UVs. */
+  private rectsGeometry(rects: Array<Array<{ x: number; y: number }>>, y: number): BufferGeometry {
+    const pos = new Float32Array(rects.length * 18);
+    const uv = new Float32Array(rects.length * 12);
+    let k = 0;
+    let u = 0;
+    for (const r of rects) {
+      for (const t of [0, 1, 2, 0, 2, 3]) {
+        const p = r[t];
+        pos[k++] = p.x * INCH_M;
+        pos[k++] = y;
+        pos[k++] = p.y * INCH_M;
+        uv[u++] = (p.x * INCH_M) / 1.2192;
+        uv[u++] = (p.y * INCH_M) / 1.2192;
+      }
+    }
+    const geo = new BufferGeometry();
+    geo.setAttribute('position', new BufferAttribute(pos, 3));
+    geo.setAttribute('uv', new BufferAttribute(uv, 2));
+    return geo;
+  }
 
   /** Flat polygon (plan inches) with holes at a height (m), with 4 ft texture UVs. */
   private flatArea(outline: Array<{ x: number; y: number }>, holes: Array<Array<{ x: number; y: number }>>, y: number): BufferGeometry {
@@ -263,9 +305,9 @@ export class PlanView {
   private buildRooms(plan: Plan): void {
     this.roomMeshes.clear();
     const faces = findRoomFaces(plan);
-    const open = openArea(plan, faces);
-    if (open) {
-      const mesh = new Mesh(this.flatArea(open.outline, open.holes, 0.003), this.roomMat(plan.settings.floorFinish));
+    const open = this.openRects(plan, faces);
+    if (open.length) {
+      const mesh = new Mesh(this.rectsGeometry(open, 0.003), this.roomMat(plan.settings.floorFinish));
       mesh.raycast = () => {};
       this.content.add(mesh);
     }
@@ -275,7 +317,9 @@ export class PlanView {
     for (const face of faces) {
       const r = byKey.get(face.key);
       const geo = this.flatArea(face.inner, face.holes, 0.004);
-      const mesh = new Mesh(geo, this.roomMat(r?.room.finish ?? 'none'));
+      // A room with no finish of its own (or a closed area that isn't a named room) uses the whole-floor finish.
+      const finish = r && r.room.finish !== 'none' ? r.room.finish : plan.settings.floorFinish;
+      const mesh = new Mesh(geo, this.roomMat(finish));
       mesh.userData.baseMat = mesh.material;
       {
         // A 2" ribbon just inside the room edge (lines are 1 px on the headset).
@@ -363,6 +407,7 @@ export class PlanView {
     let m = this.ceilingMats.get(type);
     if (!m) {
       m = new MeshBasicMaterial({ map: ceilingTexture(type), transparent: true, opacity: type === 'drywall' ? 0.7 : 0.85, depthWrite: false, side: DoubleSide });
+      surfaceOccludable(m, 0.1);
       this.ceilingMats.set(type, m);
     }
     return m;
@@ -396,10 +441,10 @@ export class PlanView {
   private buildCeilings(plan: Plan): void {
     const faces = findRoomFaces(plan);
     const rooms = resolveRooms(plan, faces);
-    const open = openArea(plan, faces);
-    if (open) {
+    const open = this.openRects(plan, faces);
+    if (open.length) {
       const c = roomCeiling(plan, null);
-      const mesh = new Mesh(this.flatArea(open.outline, open.holes, c.height * INCH_M - 0.003), this.ceilingMat(c.type));
+      const mesh = new Mesh(this.rectsGeometry(open, c.height * INCH_M - 0.003), this.ceilingMat(c.type));
       mesh.raycast = () => {};
       mesh.renderOrder = 1;
       this.content.add(mesh);
@@ -515,10 +560,26 @@ export class PlanView {
     mesh.renderOrder = existing ? 1 : 2;
     this.content.add(mesh);
     this.wallMeshes.push(mesh);
-    const edges = new LineSegments(new EdgesGeometry(geo, 25), existing ? this.edgeMatExisting : this.edgeMat);
-    edges.renderOrder = 3;
-    edges.raycast = () => {};
-    this.content.add(edges);
+    const style = existing ? plan.settings.realWalls : 'shown';
+    // Outline / hidden real walls stay pointable (for editing, doors, snapping) but aren't drawn.
+    mesh.userData.drawn = style === 'shown';
+    if (style !== 'shown') mesh.visible = false;
+    if (style === 'outline') {
+      const opos: number[] = [];
+      for (const p of prisms) appendPrismEdges(opos, p.poly, p.z0, p.z1, 0.6);
+      const og = new BufferGeometry();
+      og.setAttribute('position', new Float32BufferAttribute(opos, 3));
+      const outline = new Mesh(og, this.matOutline);
+      outline.raycast = () => {};
+      outline.renderOrder = 3;
+      this.content.add(outline);
+    }
+    if (style !== 'hidden' && !(existing && style === 'outline')) {
+      const edges = new LineSegments(new EdgesGeometry(geo, 25), existing ? this.edgeMatExisting : this.edgeMat);
+      edges.renderOrder = 3;
+      edges.raycast = () => {};
+      this.content.add(edges);
+    }
 
     {
       const { a, b } = wallEnds(plan, wall);
@@ -533,7 +594,7 @@ export class PlanView {
       });
       for (const o of plan.openings.filter((x) => x.wallId === wall.id)) {
         const center = add(a, scale(fp.dir, o.offset));
-        const ol = new TextLabel(`${o.type === 'door' ? 'Door' : 'Opening'} ${widthText(o.width)}`, {
+        const ol = new TextLabel(`${o.type === 'door' ? 'Door' : o.type === 'window' ? 'Window' : 'Opening'} ${widthText(o.width)}`, {
           height: 0.04,
           bg: 'rgba(30,70,120,0.85)',
         });
@@ -585,6 +646,8 @@ export class PlanView {
   private applyMaterials(): void {
     for (const m of this.wallMeshes) {
       const id = m.userData.wallId as string;
+      // Outline/hidden real walls still show while pointed at or selected.
+      m.visible = m.userData.drawn !== false || id === this.highlighted || id === this.selected;
       const base = m.userData.kind === 'existing' ? this.matExisting : this.matNew;
       m.material =
         id === this.highlighted
@@ -599,6 +662,50 @@ export class PlanView {
 }
 
 /** Append a vertical prism (polygon footprint extruded z0..z1, inches) as triangles in meters. */
+/** Thin bars along every edge of a prism (outline drawing that stays visible on the headset). */
+export function appendPrismEdges(out: number[], poly: Vec2[], z0: number, z1: number, w: number): void {
+  const n = poly.length;
+  const bar = (a: Vec2, b: Vec2, za: number, zb: number) => {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const L = Math.hypot(dx, dy);
+    if (L < 1e-6) return;
+    const nx = (-dy / L) * (w / 2);
+    const ny = (dx / L) * (w / 2);
+    const ex = (dx / L) * (w / 2);
+    const ey = (dy / L) * (w / 2);
+    appendPrism(
+      out,
+      [
+        { x: a.x - ex - nx, y: a.y - ey - ny },
+        { x: b.x + ex - nx, y: b.y + ey - ny },
+        { x: b.x + ex + nx, y: b.y + ey + ny },
+        { x: a.x - ex + nx, y: a.y - ey + ny },
+      ],
+      za,
+      zb,
+    );
+  };
+  for (let i = 0; i < n; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % n];
+    bar(a, b, z0, z0 + w);
+    bar(a, b, z1 - w, z1);
+    // vertical edge at each corner
+    appendPrism(
+      out,
+      [
+        { x: a.x - w / 2, y: a.y - w / 2 },
+        { x: a.x + w / 2, y: a.y - w / 2 },
+        { x: a.x + w / 2, y: a.y + w / 2 },
+        { x: a.x - w / 2, y: a.y + w / 2 },
+      ],
+      z0,
+      z1,
+    );
+  }
+}
+
 export function appendPrism(out: number[], poly: Vec2[], z0: number, z1: number): void {
   const n = poly.length;
   if (n < 3) return;

@@ -23,9 +23,12 @@ import { findStructure, type StructureResult } from '../core/structure.js';
 import { INCH_M } from '../core/units.js';
 import type { PP } from '../core/wallDetect.js';
 import { DepthSampler } from './depthSampler.js';
+import { FreeGrid } from '../core/freeSpace.js';
 import { idbGet, idbSet } from './idb.js';
 
 const STORE_KEY = 'scan-map:v1';
+const FREE_KEY = 'scan-free:v1';
+const LIVE_EVERY = 3; // s between live wall previews while scanning
 const SAMPLE_EVERY = 0.25; // s
 const MAX_SHOWN = 60_000;
 
@@ -37,6 +40,15 @@ const MAX_SHOWN = 60_000;
  */
 export class ScanSession {
   readonly map = new ScanMap(3, 1_200_000);
+  /** Where depth rays passed: tells doorways (seen through) from hidden wall. */
+  readonly free = new FreeGrid(4);
+  private worker: Worker | null = null;
+  private jobId = 0;
+  private pending = new Map<number, (r: StructureResult | null) => void>();
+  private liveBusy = false;
+  private lastLive = 0;
+  private liveVersion = -1;
+  private eyeP = new Vector3();
   readonly group = new Group();
   scanning = false;
   proposals: StructureResult | null = null;
@@ -75,9 +87,25 @@ export class ScanSession {
     this.group.add(this.dots, this.ghosts, this.doorGhosts);
     this.group.visible = false;
     root.add(this.group);
-    this.loaded = idbGet<Float32Array>(STORE_KEY).then((a) => {
-      if (a && a.length) this.map.load(a);
-    });
+    this.loaded = Promise.all([
+      idbGet<Float32Array>(STORE_KEY).then((a) => {
+        if (a && a.length) this.map.load(a);
+      }),
+      idbGet<{ keys: Float64Array; counts: Uint8Array }>(FREE_KEY).then((f) => {
+        if (f && f.keys?.length) this.free.load(f);
+      }),
+    ]).then(() => {});
+    try {
+      this.worker = new Worker(new URL('./scanWorker.ts', import.meta.url), { type: 'module' });
+      this.worker.onmessage = (e: MessageEvent<{ id: number; res?: StructureResult; error?: string }>) => {
+        const done = this.pending.get(e.data.id);
+        this.pending.delete(e.data.id);
+        if (e.data.error) console.warn('[scan] detection failed', e.data.error);
+        done?.(e.data.res ?? null);
+      };
+    } catch {
+      this.worker = null; // fall back to the main thread
+    }
   }
 
   get hasMap(): boolean {
@@ -101,10 +129,13 @@ export class ScanSession {
   stop(): void {
     this.scanning = false;
     void idbSet(STORE_KEY, this.map.serialize());
+    void idbSet(FREE_KEY, this.free.serialize());
   }
 
   clear(): void {
     this.map.clear();
+    this.free.clear();
+    void idbSet(FREE_KEY, this.free.serialize());
     this.proposals = null;
     this.clearGhosts();
     this.refreshDots(true);
@@ -140,6 +171,13 @@ export class ScanSession {
         const ez = z - (sz + dz * t);
         return ex * ex + ey * ey + ez * ez < 0.22 * 0.22;
       };
+      // The eye in plan inches, for carving free space along each ray.
+      const eye = root.worldToLocal(this.eyeP.copy(hd));
+      const ex = eye.x / INCH_M;
+      const ey = eye.z / INCH_M;
+      const ez = eye.y / INCH_M;
+      const free = this.free;
+      let k = 0;
       const n = this.sampler.sample((x, y, z) => {
         const bx = x - hd.x;
         const bz = z - hd.z;
@@ -147,7 +185,11 @@ export class ScanSession {
         if (nearArm(x, y, z, hl) || nearArm(x, y, z, hr)) return;
         tmp.set(x, y, z);
         root.worldToLocal(tmp);
-        map.add(tmp.x / INCH_M, tmp.z / INCH_M, tmp.y / INCH_M);
+        const px = tmp.x / INCH_M;
+        const py = tmp.z / INCH_M;
+        const pz = tmp.y / INCH_M;
+        map.add(px, py, pz);
+        if ((k++ & 1) === 0) free.carve(ex, ey, ez, px, py, pz);
       });
       this.depthOk = n >= 0;
     }
@@ -155,6 +197,54 @@ export class ScanSession {
       this.lastShowT = time;
       this.refreshDots(false);
     }
+    // Live preview: walls appear while you walk.
+    if (this.liveBusy || !this.livePlan || time - this.lastLive < LIVE_EVERY || this.map.version === this.liveVersion) return;
+    if (this.map.size < 2000) return;
+    this.lastLive = time;
+    this.liveVersion = this.map.version;
+    this.liveBusy = true;
+    const plan = this.livePlan;
+    void this.detect(plan, this.liveEye).then((res) => {
+      this.liveBusy = false;
+      if (!res || !this.scanning) return;
+      this.live = res;
+      this.showGhosts(res, plan, true);
+    });
+  }
+
+  /** Plan and eye for live previews (set by the app while scanning). */
+  livePlan: Plan | null = null;
+  liveEye: Vec2 = { x: 0, y: 0 };
+  live: StructureResult | null = null;
+
+  private opts(plan: Plan, eye: Vec2) {
+    return {
+      eye,
+      axisAngle: plan.walls.length ? primaryAxis(plan) : null,
+      partitionThickness: plan.settings.wallThickness,
+      foundationThickness: plan.settings.foundationThickness,
+    };
+  }
+
+  /** Run detection, in the worker when available. */
+  detect(plan: Plan, eye: Vec2): Promise<StructureResult | null> {
+    const pts = this.points();
+    if (!this.worker) return Promise.resolve(findStructure(pts, plan, this.opts(plan, eye), this.free));
+    const flat = new Float32Array(pts.length * 3);
+    pts.forEach((p, i) => {
+      flat[i * 3] = p.x;
+      flat[i * 3 + 1] = p.y;
+      flat[i * 3 + 2] = p.z;
+    });
+    const fr = this.free.serialize();
+    const id = ++this.jobId;
+    return new Promise((resolve) => {
+      this.pending.set(id, resolve);
+      this.worker!.postMessage(
+        { id, pts: flat, freeKeys: fr.keys, freeCounts: fr.counts, freeVoxel: this.free.voxel, plan: JSON.parse(JSON.stringify(plan)), opts: this.opts(plan, eye) },
+        [flat.buffer, fr.keys.buffer, fr.counts.buffer],
+      );
+    });
   }
 
   /** Coverage: recolor by height so walls (warm) and floor/ceiling (cool) read apart. */
@@ -180,15 +270,10 @@ export class ScanSession {
     (g.attributes.color as BufferAttribute).needsUpdate = true;
   }
 
-  /** Find structure in the map and show it as ghosts. */
-  analyze(plan: Plan, eye: Vec2): StructureResult {
-    const pts = this.points();
-    const res = findStructure(pts, plan, {
-      eye,
-      axisAngle: plan.walls.length ? primaryAxis(plan) : null,
-      partitionThickness: plan.settings.wallThickness,
-      foundationThickness: plan.settings.foundationThickness,
-    });
+  /** Find structure in the map and show it as ghosts to review. */
+  async analyze(plan: Plan, eye: Vec2): Promise<StructureResult> {
+    const res = (await this.detect(plan, eye)) ?? findStructure(this.points(), plan, this.opts(plan, eye), this.free);
+    this.live = null;
     this.proposals = res;
     this.excluded.clear();
     this.lastPlan = plan;
@@ -279,7 +364,19 @@ export class ScanSession {
 
   private hovered: string | null = null;
 
+  private liveMode = false;
+
   private restyle(): void {
+    if (this.liveMode) {
+      // While scanning: everything found so far, faint, posts left out.
+      for (const c of this.ghosts.children) {
+        const kind = (c.userData.id as string).split(':')[0];
+        c.visible = kind !== 'posts';
+        (c as Mesh).material = kind === 'walls' ? this.liveMat : (c.userData.mat as MeshBasicMaterial);
+      }
+      for (const c of this.doorGhosts.children) c.visible = true;
+      return;
+    }
     for (const c of this.doorGhosts.children) c.visible = this.kinds.walls && !this.excluded.has(c.userData.door as string);
     for (const c of this.ghosts.children) {
       const id = c.userData.id as string;
@@ -320,11 +417,13 @@ export class ScanSession {
   private postMat = new MeshBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.5, depthWrite: false });
   private doorMat = new MeshBasicMaterial({ color: 0x60a5fa, transparent: true, opacity: 0.55, depthWrite: false });
   private doorGhosts = new Group();
+  private liveMat = new MeshBasicMaterial({ color: 0x4ade80, transparent: true, opacity: 0.18, depthWrite: false, side: DoubleSide });
   private offMat = new MeshBasicMaterial({ color: 0x94a3b8, transparent: true, opacity: 0.12, depthWrite: false, side: DoubleSide });
   private hoverMat = new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, depthWrite: false, side: DoubleSide });
 
-  private showGhosts(res: StructureResult, plan: Plan): void {
+  private showGhosts(res: StructureResult, plan: Plan, live = false): void {
     this.clearGhosts();
+    this.liveMode = live;
     const H = res.ceiling ?? plan.settings.wallHeight;
     const tag = (m: Mesh, id: string, mat: MeshBasicMaterial) => {
       m.userData.id = id;

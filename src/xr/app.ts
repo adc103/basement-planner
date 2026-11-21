@@ -59,13 +59,14 @@ import type { Finish } from '../core/plan.js';
 import { MainMenu, MENU_H, type MenuApi, type ToolName } from './ui/mainMenu.js';
 import { Sfx } from './ui/sfx.js';
 import { ScanSession } from './scanSession.js';
+import type { StructureResult } from '../core/structure.js';
 import { ScanReviewTool } from './tools/scanReviewTool.js';
-import { findRoomFaces, openArea } from '../core/rooms.js';
+import { findRoomFaces } from '../core/rooms.js';
 import { Acquired } from './acquired.js';
 import { FloorFinder } from './floorFinder.js';
 import { setPokeEnabled } from './ui/poke.js';
-import { addOpening, addSoffit, addWallBetween } from '../core/ops.js';
-import { newId } from '../core/plan.js';
+import { setSurfaceOcclusion, updateSurfaceOcclusion } from './surfaceOcclusion.js';
+import { applyScan } from '../core/scanApply.js';
 
 const TRANSFORM_KEY = 'basement-planner:transform:v1';
 const IWSDK_ANCHOR_KEY = 'iwsdk_scene_anchor_uuid';
@@ -329,6 +330,20 @@ export class PlannerApp {
       editStud: (s) => this.editTool.setStud(s),
       editWidth: () => this.editTool.typeWidth(),
       deleteSelection: () => this.editTool.deleteSelection(),
+      edit: (action) => {
+        const t = this.editTool;
+        if (action === 'thickness') t.typeThickness();
+        else if (action === 'split') t.split();
+        else if (action === 'kind') t.toggleKind();
+        else if (action === 'openingHeight') t.typeOpeningHeight();
+        else if (action === 'openingType') t.cycleOpeningType();
+        else if (action === 'flip') t.flipDoor();
+      },
+      openingType: () => {
+        const o = this.editTool.selectedOpening();
+        return o?.type === 'door' ? 'Door' : o?.type === 'window' ? 'Window' : 'Opening';
+      },
+      selectedIsReal: () => this.editTool.selectedWall()?.kind === 'existing',
       deselect: () => this.editTool.select(null),
       lastMeasure: () => (this.measureTool.last ? `Last: ${this.measureTool.last}` : ''),
       measureCount: () => this.store.plan.measures.length,
@@ -377,6 +392,15 @@ export class PlannerApp {
         const f = summarizeFraming(generateFraming(this.store.plan));
         return `Framing: ${f.studs} studs, ${f.plateFeet.toFixed(0)} ft of plate, ${f.headers} headers`;
       },
+      realWalls: () => this.store.plan.settings.realWalls,
+      cycleRealWalls: () => {
+        const order = ['shown', 'outline', 'hidden'] as const;
+        const next = order[(order.indexOf(this.store.plan.settings.realWalls) + 1) % 3];
+        this.store.edit('Real walls display', (d) => {
+          d.settings.realWalls = next;
+        });
+        this.toast(next === 'shown' ? 'Real walls shown' : next === 'outline' ? 'Real walls as outlines' : 'Real walls hidden (still used for snapping and rooms)', 3);
+      },
       occlusion: () => this.occlusionOn,
       toggleOcclusion: () => this.toggleOcclusion(),
       labels: () => this.view.showLabels,
@@ -399,7 +423,7 @@ export class PlannerApp {
       label: () => label,
       onClick: () => {
         this.setCeiling({ type: t }, true);
-        if (!openArea(this.store.plan) && !findRoomFaces(this.store.plan).length) this.toast('Draw or scan a few walls first so the ceiling knows where the basement is', 5);
+        if (!this.hasFloorArea()) this.toast('Scan the basement (Room tab) or draw a few walls so the ceiling knows where it goes', 5);
       },
       active: () => roomCeiling(this.store.plan, room()).type === t,
     });
@@ -521,7 +545,7 @@ export class PlannerApp {
     });
     const finish = (f: Finish, label: string) => ({
       id: `finish-${f}`,
-      label: () => label,
+      label: () => (f === 'none' && has() ? 'Same' : label),
       onClick: () => {
         if (has()) {
           rt().setFinish(f);
@@ -531,7 +555,7 @@ export class PlannerApp {
           this.store.edit('Floor finish', (d) => {
             d.settings.floorFinish = f;
           });
-          if (!openArea(this.store.plan) && !findRoomFaces(this.store.plan).length) this.toast('Draw or scan a few walls first so the floor knows where the basement is', 5);
+          if (!this.hasFloorArea()) this.toast('Scan the basement (Room tab) or draw a few walls so the floor knows where it goes', 5);
         }
       },
       active: () => (has() ? rt().selectedRoom()?.finish === f : this.store.plan.settings.floorFinish === f),
@@ -629,6 +653,7 @@ export class PlannerApp {
     this.occlusionOn = !this.occlusionOn;
     if (this.occlusionOn) this.occluder.addComponent(DepthOccludable, { mode: OcclusionShadersMode.MinMaxSoftOcclusion });
     else this.occluder.removeComponent(DepthOccludable);
+    setSurfaceOcclusion(this.occlusionOn);
     this.toast(this.occlusionOn ? 'Real objects hide planned walls' : 'Planned walls always on top');
   }
 
@@ -802,6 +827,7 @@ export class PlannerApp {
     }
 
     if (!inXR) this.sessionT0 = -1;
+    updateSurfaceOcclusion(world);
     this.view.updateLabels(world.camera);
     this.updateToast();
   }
@@ -1194,6 +1220,7 @@ export class PlannerApp {
     const s = this.scan;
     if (!s.scanning) {
       this.depthWarned = false;
+      s.livePlan = this.store.plan;
       void s.start();
       this.toast('Scanning: walk slowly and look at every wall, the ceiling and the floor', 6);
       return;
@@ -1202,8 +1229,21 @@ export class PlannerApp {
     const root = this.view.root;
     root.updateWorldMatrix(true, false);
     const e = root.worldToLocal(this.world.camera.getWorldPosition(this.eyeV));
-    const res = s.analyze(this.store.plan, { x: e.x / INCH_M, y: e.z / INCH_M });
+    this.toast('Finding walls...', 2);
+    void s.analyze(this.store.plan, { x: e.x / INCH_M, y: e.z / INCH_M }).then((res) => this.showScanResult(res));
+  }
+
+  private showScanResult(res: StructureResult): void {
+    const s = this.scan;
     const n = s.count();
+    if (!s.reviewing && res.footprint) {
+      // Nothing new to review, but the floor area is still worth keeping.
+      this.store.edit('Scanned floor area', (d) => applyScan(d, { ...res, walls: [], soffits: [], posts: [] }));
+      s.discard();
+      s.hide();
+      this.toast('No new walls found. Saved the scanned floor area for the floor and ceiling.', 5);
+      return;
+    }
     if (!s.reviewing) {
       this.toast(s.map.size < 500 ? 'Not enough was seen yet. Scan again and look around more.' : 'No new walls or ceiling features found', 5);
       return;
@@ -1215,6 +1255,11 @@ export class PlannerApp {
     this.toast(`Found ${parts.join(', ')}. Click items to skip them, then Add.`, 7);
     this.reviewReturn = this.toolName === 'review' ? 'walls' : this.toolName;
     this.setTool('review');
+  }
+
+  private hasFloorArea(): boolean {
+    const p = this.store.plan;
+    return !!p.footprint?.rows.length || p.nodes.length >= 3 || findRoomFaces(p).length > 0;
   }
 
   private reviewReturn: ToolName = 'walls';
@@ -1232,28 +1277,7 @@ export class PlannerApp {
       this.applyTransform();
       this.storeTransform();
     }
-    const off = res.floorOffset ?? 0;
-    const ceiling = res.ceiling !== null ? res.ceiling - off : null;
-    const goodCeiling = ceiling !== null && ceiling > 60 && ceiling < 180;
-    this.store.edit('Add scanned structure', (d) => {
-      const H = goodCeiling ? ceiling! : d.settings.wallHeight;
-      if (goodCeiling) {
-        const old = d.settings.wallHeight;
-        d.settings.wallHeight = H;
-        for (const w of d.walls) if (w.kind === 'new' && w.height === old) setWallHeight(d, w.id, H);
-      }
-      for (const w of res.walls) {
-        const id = addWallBetween(d, w.a, w.b, { height: H, thickness: w.thickness, kind: 'existing', source: 'capture', againstFoundation: false });
-        if (!id) continue;
-        const len = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
-        for (const o of w.openings) {
-          const offset = ((o.center.x - w.a.x) * (w.b.x - w.a.x) + (o.center.y - w.a.y) * (w.b.y - w.a.y)) / len;
-          addOpening(d, { wallId: id, type: o.type, offset, width: o.width, height: Math.min(o.height, H - 2), sill: 0, hinge: 'a', swing: 'left' });
-        }
-      }
-      for (const s of res.soffits) addSoffit(d, s.poly, Math.min(H - 1, s.bottom));
-      for (const p of res.posts) d.obstacles.push({ id: newId('ob'), label: 'Post', poly: p.poly.map((q) => ({ ...q })), height: H, source: 'manual' });
-    });
+    this.store.edit('Add scanned structure', (d) => applyScan(d, res));
     const n = this.scan.count();
     this.scan.discard();
     this.scan.hide();
