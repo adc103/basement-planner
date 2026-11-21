@@ -336,6 +336,30 @@ try {
     await clickButton(menu, 'btn:tab-build');
   }
 
+  // Rooms: draw a closed 2 m square, name it and give it a floor.
+  {
+    await clickButton(menu, 'btn:tab-build');
+    await clickButton(menu, 'btn:tool-walls');
+    for (const [x, z] of [[-3, 1], [-1, 1], [-1, 3], [-3, 3], [-3, 1]]) {
+      await aimDown('right', x, z);
+      await frames(5);
+      await press('right');
+    }
+    check(await clickButton(menu, 'btn:tab-rooms'), 'Rooms tab opens');
+    await aimDown('right', -2, 2);
+    await frames(5);
+    await press('right');
+    const sel = await page.evaluate(() => window.basementPlanner.roomsTool.selectedId);
+    check(!!sel, 'tapping inside the square selects a room');
+    await clickButton(menu, 'btn:room-office');
+    await clickButton(menu, 'btn:finish-lvp');
+    const r = (await plan()).rooms.find((x) => x.id === sel);
+    check(r && r.name === 'Office' && r.finish === 'lvp', `room named Office with LVP (${r?.name}, ${r?.finish})`);
+    const desc = await page.evaluate(() => window.basementPlanner.roomsTool.describe());
+    check(/Office: 3[6-9] sq ft/.test(desc), `room area shown (${desc})`);
+    await clickButton(menu, 'btn:tab-build');
+  }
+
   // Fine mode: hold the trigger, then move; the point moves at 1/4 speed.
   {
     await clickButton(menu, 'btn:tool-walls');

@@ -236,13 +236,15 @@ export class MainMenu {
     this.tab = name;
     const t = this.tabs().find((x) => x.name === name);
     const toolTabs = t?.tiles.map((x) => x.tool).filter(Boolean) ?? [];
-    if (t?.defaultTool && !toolTabs.includes(this.api.tool())) this.api.setTool(t.defaultTool);
+    if (t?.defaultTool && !toolTabs.includes(this.api.tool()) && this.api.tool() !== t.defaultTool) this.api.setTool(t.defaultTool);
     this.panel.refresh();
   }
 
   /** Keep the open tab in sync when the tool changes from elsewhere (thumbstick). */
   syncTab(tool: ToolName): void {
-    const t = this.tabs().find((x) => x.tiles.some((tile) => tile.tool === tool));
+    const t =
+      this.tabs().find((x) => x.tiles.some((tile) => tile.tool === tool)) ??
+      this.tabs().find((x) => !x.tiles.length && x.defaultTool === tool);
     if (t && t.name !== this.tab) {
       this.tab = t.name;
       this.panel.refresh();

@@ -12,6 +12,8 @@ import {
   MeshBasicMaterial,
   Quaternion,
   RingGeometry,
+  ShapeUtils,
+  Vector2,
   Vector3,
 } from '@iwsdk/core';
 import { dist, norm, perp, sub, type Vec2 } from '../core/geom2d.js';
@@ -72,6 +74,7 @@ export class Preview {
   private tapeMat = new MeshBasicMaterial({ color: 0xffd60a, depthTest: false, transparent: true });
   private tape: Mesh;
   private surfaceDisc: Mesh;
+  private floorFill: Mesh;
   private tmpA = new Vector3();
   private tmpB = new Vector3();
   private q = new Quaternion();
@@ -105,7 +108,12 @@ export class Preview {
       new MeshBasicMaterial({ color: 0x31d158, depthTest: false, transparent: true, side: DoubleSide }),
     );
     this.surfaceDisc.renderOrder = 31;
-    for (const o of [this.cursor, this.dot, this.dashes, this.rubber, this.openingBox, this.tape, this.surfaceDisc]) {
+    this.floorFill = new Mesh(
+      new BufferGeometry(),
+      new MeshBasicMaterial({ color: 0x3d8bff, transparent: true, opacity: 0.22, depthWrite: false, side: DoubleSide }),
+    );
+    this.floorFill.renderOrder = 3;
+    for (const o of [this.cursor, this.dot, this.dashes, this.rubber, this.openingBox, this.tape, this.surfaceDisc, this.floorFill]) {
       o.raycast = () => {};
       this.root.add(o);
     }
@@ -124,7 +132,33 @@ export class Preview {
     this.hintLabel.sprite.visible = false;
     this.tape.visible = false;
     this.surfaceDisc.visible = false;
+    this.floorFill.visible = false;
     this.dashCount = 0;
+  }
+
+  /**
+   * Highlight a floor polygon. Pass `keep` to re-show the last polygon without
+   * rebuilding it (the caller tracks whether it changed).
+   */
+  showFloorPoly(poly: Vec2[] | null, keep = false): void {
+    if (keep) {
+      this.floorFill.visible = true;
+      return;
+    }
+    if (!poly || poly.length < 3) {
+      this.floorFill.visible = false;
+      return;
+    }
+    const pos: number[] = [];
+    const contour = poly.map((p) => new Vector2(p.x * INCH_M, p.y * INCH_M));
+    for (const [i, j, k] of ShapeUtils.triangulateShape(contour, [])) {
+      for (const t of [i, j, k]) pos.push(contour[t].x, 0.006, contour[t].y);
+    }
+    this.floorFill.geometry.dispose();
+    const g = new BufferGeometry();
+    g.setAttribute('position', new Float32BufferAttribute(pos, 3));
+    this.floorFill.geometry = g;
+    this.floorFill.visible = true;
   }
 
   /** Cursor at a 3D plan point (z = height in inches). */

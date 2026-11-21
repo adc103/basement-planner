@@ -1,4 +1,4 @@
-import { add, angleOf, intersectLines, norm, perp, scale, sub, polygonArea, type Vec2 } from './geom2d.js';
+import { add, angleOf, distToSegment, intersectLines, norm, perp, scale, sub, polygonArea, type Vec2 } from './geom2d.js';
 import { centroid, pointInPolygon } from './poly.js';
 import type { Plan, Room } from './plan.js';
 
@@ -84,7 +84,48 @@ export function findRoomFaces(plan: Plan): RoomFace[] {
       });
     }
   }
+  // Areas that surround other rooms (e.g. the open basement around a bedroom):
+  // subtract the rooms inside and move the label into open floor.
+  for (const f of faces) {
+    const inside = faces.filter((g) => g !== f && g.outline.every((p) => pointInPolygon(p, f.outline)));
+    if (!inside.length) continue;
+    const top = inside.filter((g) => !inside.some((h) => h !== g && g.outline.every((p) => pointInPolygon(p, h.outline))));
+    let area = Math.abs(polygonArea(f.inner));
+    for (const g of top) {
+      const grown = insetPolygon(g.outline, g.nodeIds.map((id, i) => -(half.get(`${id}|${g.nodeIds[(i + 1) % g.nodeIds.length]}`) ?? 0)));
+      area -= Math.abs(polygonArea(grown));
+    }
+    f.areaSqFt = Math.max(0, area) / 144;
+    f.center = openSpot(f.inner, top.map((g) => g.outline));
+  }
   return faces;
+}
+
+/** A point inside `poly`, outside every hole, as far as possible from all edges (grid search). */
+export function openSpot(poly: Vec2[], holes: Vec2[][]): Vec2 {
+  const xs = poly.map((p) => p.x);
+  const ys = poly.map((p) => p.y);
+  const x0 = Math.min(...xs);
+  const y0 = Math.min(...ys);
+  const w = Math.max(...xs) - x0;
+  const h = Math.max(...ys) - y0;
+  const edges: Array<[Vec2, Vec2]> = [];
+  for (const ring of [poly, ...holes]) for (let i = 0; i < ring.length; i++) edges.push([ring[i], ring[(i + 1) % ring.length]]);
+  let best = centroid(poly);
+  let bestD = -1;
+  const N = 24;
+  for (let i = 1; i < N; i++)
+    for (let j = 1; j < N; j++) {
+      const p = { x: x0 + (w * i) / N, y: y0 + (h * j) / N };
+      if (!pointInPolygon(p, poly) || holes.some((hole) => pointInPolygon(p, hole))) continue;
+      let d = Infinity;
+      for (const [a, b] of edges) d = Math.min(d, distToSegment(p, a, b));
+      if (d > bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+  return best;
 }
 
 /** Offset each edge of a CCW polygon inward by its own distance. */

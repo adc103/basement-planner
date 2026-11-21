@@ -104,6 +104,20 @@ describe('rooms', () => {
     expect(right.areaSqFt).toBeCloseTo((76 * 96) / 144, 6);
   });
 
+  it('subtracts rooms inside a bigger area and labels the open floor', () => {
+    const s = mk((s) => {
+      box(s, 0, 0, 400, 300);
+      box(s, 50, 50, 100, 100);
+    });
+    const faces = findRoomFaces(s.plan);
+    expect(faces).toHaveLength(2);
+    const outer = faces.find((f) => f.areaSqFt > 100)!;
+    // (396 x 296) minus the inner box grown to its outside faces (104 x 104).
+    expect(outer.areaSqFt).toBeCloseTo((396 * 296 - 104 * 104) / 144, 6);
+    // Label is not inside the inner room.
+    expect(outer.center.x < 48 || outer.center.x > 152 || outer.center.y < 48 || outer.center.y > 152).toBe(true);
+  });
+
   it('keeps a named room attached to its walls after edits', () => {
     const s = mk((s) => box(s, 0, 0, 144, 120));
     s.edit('name', (d) => upsertRoom(d, { x: 50, y: 50 }, { name: 'Bedroom', finish: 'carpet' }));

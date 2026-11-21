@@ -18,7 +18,9 @@ import {
 } from '@iwsdk/core';
 import { add, scale, type Vec2 } from '../core/geom2d.js';
 import { wallEnds } from '../core/ops.js';
-import type { Plan, Wall } from '../core/plan.js';
+import type { Finish, Plan, Wall } from '../core/plan.js';
+import { FINISH_COLORS, FINISH_NAMES } from '../core/plan2d.js';
+import { findRoomFaces, resolveRooms } from '../core/rooms.js';
 import { formatLength, INCH_M } from '../core/units.js';
 import { computeFootprints, footprintPoly, wallPrisms, type WallFootprint } from '../core/wallGeometry.js';
 import { TextLabel } from './labels.js';
@@ -152,6 +154,7 @@ export class PlanView {
       this.buildWall(plan, wall, fp);
     }
 
+    this.buildRooms(plan);
     this.buildObstacles(plan);
     this.buildMeasures(plan);
 
@@ -166,6 +169,67 @@ export class PlanView {
     }
     this.highlighted = null;
     this.applyMaterials();
+  }
+
+  private roomMeshes = new Map<string, Mesh>();
+  private selectedRoom: string | null = null;
+  private roomMats = new Map<string, MeshBasicMaterial>();
+  private matRoomSelected = new MeshBasicMaterial({ color: 0x3d8bff, transparent: true, opacity: 0.3, depthWrite: false, side: DoubleSide });
+
+  private roomMat(finish: Finish): MeshBasicMaterial {
+    let m = this.roomMats.get(finish);
+    if (!m) {
+      m = new MeshBasicMaterial({
+        color: new Color(FINISH_COLORS[finish]),
+        transparent: true,
+        opacity: finish === 'none' ? 0.1 : 0.32,
+        depthWrite: false,
+        side: DoubleSide,
+      });
+      this.roomMats.set(finish, m);
+    }
+    return m;
+  }
+
+  private buildRooms(plan: Plan): void {
+    this.roomMeshes.clear();
+    const faces = findRoomFaces(plan);
+    const rooms = resolveRooms(plan, faces);
+    const byKey = new Map<string, (typeof rooms)[number]>();
+    for (const r of rooms) if (r.face) byKey.set(r.face.key, r);
+    for (const face of faces) {
+      const r = byKey.get(face.key);
+      const pos: number[] = [];
+      const contour = face.inner.map((p) => new Vector2(p.x * INCH_M, p.y * INCH_M));
+      for (const [i, j, k] of ShapeUtils.triangulateShape(contour, [])) {
+        for (const t of [i, j, k]) pos.push(contour[t].x, 0.004, contour[t].y);
+      }
+      const geo = new BufferGeometry();
+      geo.setAttribute('position', new Float32BufferAttribute(pos, 3));
+      const mesh = new Mesh(geo, this.roomMat(r?.room.finish ?? 'none'));
+      mesh.userData.baseMat = mesh.material;
+      mesh.renderOrder = 0;
+      mesh.raycast = () => {};
+      this.content.add(mesh);
+      this.roomMeshes.set(face.key, mesh);
+      const text = r
+        ? `${r.room.name}  ${face.areaSqFt.toFixed(0)} sq ft${r.room.finish !== 'none' ? `  ${FINISH_NAMES[r.room.finish]}` : ''}`
+        : `${face.areaSqFt.toFixed(0)} sq ft`;
+      const l = new TextLabel(text, r ? { height: 0.06, bg: 'rgba(20,40,70,0.88)' } : { height: 0.04, bg: 'rgba(0,0,0,0.55)' });
+      planToLocal(face.center, r ? 40 : 30, l.sprite.position);
+      this.content.add(l.sprite);
+      this.extraLabels.push(l);
+    }
+    this.applyRoomSelection();
+  }
+
+  setSelectedRoom(key: string | null): void {
+    this.selectedRoom = key;
+    this.applyRoomSelection();
+  }
+
+  private applyRoomSelection(): void {
+    for (const [key, m] of this.roomMeshes) m.material = key === this.selectedRoom ? this.matRoomSelected : (m.userData.baseMat as MeshBasicMaterial);
   }
 
   private buildObstacles(plan: Plan): void {

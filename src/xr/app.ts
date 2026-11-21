@@ -34,6 +34,8 @@ import { MeasureTool } from './tools/measureTool.js';
 import { OpeningTool } from './tools/openingTool.js';
 import type { AimHit, Tool, ToolContext } from './tools/tool.js';
 import { WallTool } from './tools/wallTool.js';
+import { RoomsTool } from './tools/roomsTool.js';
+import type { Finish } from '../core/plan.js';
 import { MainMenu, MENU_H, type MenuApi, type ToolName } from './ui/mainMenu.js';
 import { Sfx } from './ui/sfx.js';
 
@@ -46,7 +48,7 @@ interface SavedTransform extends PlanTransform {
 }
 
 /** Thumbstick-flick order for controllers. */
-const TOOL_CYCLE: ToolName[] = ['walls', 'doors', 'edit', 'measure', 'capture', 'delete'];
+const TOOL_CYCLE: ToolName[] = ['walls', 'doors', 'edit', 'measure', 'rooms', 'capture', 'delete'];
 const TOOL_LABEL: Record<ToolName, string> = {
   walls: 'Walls',
   doors: 'Doors',
@@ -84,6 +86,7 @@ export class PlannerApp {
   wallTool!: WallTool;
   editTool!: EditTool;
   measureTool!: MeasureTool;
+  roomsTool!: RoomsTool;
   menu!: MainMenu;
   keypad!: Keypad;
   private wrist!: WristMenu;
@@ -158,7 +161,9 @@ export class PlannerApp {
     this.wallTool = new WallTool(ctx);
     this.editTool = new EditTool(ctx);
     this.measureTool = new MeasureTool(ctx);
+    this.roomsTool = new RoomsTool(ctx);
     this.tools = {
+      rooms: this.roomsTool,
       walls: this.wallTool,
       doors: new OpeningTool(ctx),
       capture: new CaptureTool(ctx),
@@ -258,6 +263,44 @@ export class PlannerApp {
       pinned: () => !!this.wrist?.pinned,
       togglePin: () => this.wrist.togglePin(),
       exit: () => this.world.exitXR(),
+      extraTabs: [this.roomsTab()],
+    };
+  }
+
+  private roomsTab(): NonNullable<MenuApi['extraTabs']>[number] {
+    const rt = () => this.roomsTool;
+    const has = () => !!rt().selectedRoom();
+    const name = (n: string) => ({
+      id: `room-${n.toLowerCase()}`,
+      label: () => n,
+      onClick: () => rt().setName(n),
+      active: () => rt().selectedRoom()?.name === n,
+      visible: has,
+    });
+    const finish = (f: Finish, label: string) => ({
+      id: `finish-${f}`,
+      label: () => label,
+      onClick: () => rt().setFinish(f),
+      active: () => rt().selectedRoom()?.finish === f,
+      visible: has,
+    });
+    return {
+      name: 'rooms',
+      label: 'Rooms',
+      icon: 'rooms',
+      defaultTool: 'rooms',
+      tiles: [],
+      text: () => rt().describe(),
+      rows: [
+        [name('Bedroom'), name('Office'), name('Family'), name('Bath')],
+        [name('Gym'), name('Storage'), name('Utility'), name('Laundry')],
+        [finish('carpet', 'Carpet'), finish('lvp', 'LVP'), finish('tile', 'Tile'), finish('concrete', 'Concrete')],
+        [
+          finish('epoxy', 'Epoxy'),
+          finish('none', 'No finish'),
+          { id: 'room-remove', label: () => 'Remove room', icon: 'trash', tone: 'danger', span: 2, onClick: () => rt().remove(), visible: has },
+        ],
+      ],
     };
   }
 
@@ -355,6 +398,7 @@ export class PlannerApp {
     this.view.rebuild(plan);
     this.axisAngle = primaryAxis(plan);
     this.editTool?.validate();
+    this.roomsTool?.validate();
     this.scheduleSave();
     this.refreshUi();
   }
