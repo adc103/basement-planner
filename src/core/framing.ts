@@ -39,12 +39,20 @@ function span(fp: WallFootprint): [number, number] {
   return [Math.min(...ss), Math.max(...ss)];
 }
 
-/** Generate stud-wall framing for every new wall. */
-export function generateFraming(plan: Plan): Member[] {
+/** Concrete/block foundation walls aren't framed. */
+export function isConcreteWall(w: { kind: string; thickness: number }): boolean {
+  return w.kind === 'existing' && w.thickness >= 7;
+}
+
+/**
+ * Stud framing for every new wall; with `includeExisting`, also for existing
+ * framed partitions (for the x-ray view; they aren't part of the materials list).
+ */
+export function generateFraming(plan: Plan, includeExisting = false): Member[] {
   const fps = computeFootprints(plan);
   const out: Member[] = [];
   for (const w of plan.walls) {
-    if (w.kind !== 'new') continue;
+    if (w.kind !== 'new' && !(includeExisting && !isConcreteWall(w))) continue;
     const fp = fps.get(w.id);
     if (fp) out.push(...frameWall(w, fp, plan.openings.filter((o) => o.wallId === w.id)));
   }

@@ -54,7 +54,7 @@ import { CEILING_NAMES } from '../core/plan2d.js';
 import type { CeilingType } from '../core/plan.js';
 import { FINISH_NAMES, MARKER_INFO } from '../core/plan2d.js';
 import { MARKER_TYPES } from '../core/plan.js';
-import { summarizeFraming } from '../core/framing.js';
+import { generateFraming, summarizeFraming } from '../core/framing.js';
 import type { Finish } from '../core/plan.js';
 import { MainMenu, MENU_H, type MenuApi, type ToolName } from './ui/mainMenu.js';
 import { Sfx } from './ui/sfx.js';
@@ -64,7 +64,7 @@ import { findRoomFaces, openArea } from '../core/rooms.js';
 import { Acquired } from './acquired.js';
 import { FloorFinder } from './floorFinder.js';
 import { setPokeEnabled } from './ui/poke.js';
-import { addSoffit, addWallBetween } from '../core/ops.js';
+import { addOpening, addSoffit, addWallBetween } from '../core/ops.js';
 import { newId } from '../core/plan.js';
 
 const TRANSFORM_KEY = 'basement-planner:transform:v1';
@@ -374,7 +374,7 @@ export class PlannerApp {
       ],
       viewText: () => {
         if (this.view.mode !== 'xray') return 'Display';
-        const f = summarizeFraming(this.view.framing);
+        const f = summarizeFraming(generateFraming(this.store.plan));
         return `Framing: ${f.studs} studs, ${f.plateFeet.toFixed(0)} ft of plate, ${f.headers} headers`;
       },
       occlusion: () => this.occlusionOn,
@@ -433,6 +433,7 @@ export class PlannerApp {
             onClick: () => this.setCeiling({ type: null, height: null }),
             visible: () => !!room() && (room()!.ceilingType !== null || room()!.ceilingHeight !== null),
           },
+          { id: 'ceil-whole', col: 3, label: () => 'Whole', onClick: () => this.roomsTool.select(null), active: () => !room() },
         ],
         [
           {
@@ -522,8 +523,11 @@ export class PlannerApp {
       id: `finish-${f}`,
       label: () => label,
       onClick: () => {
-        if (has()) rt().setFinish(f);
-        else {
+        if (has()) {
+          rt().setFinish(f);
+          this.toast(`${rt().selectedRoom()?.name ?? 'Room'}: ${FINISH_NAMES[f]}`, 2);
+        } else {
+          this.toast(`Whole floor: ${FINISH_NAMES[f]}`, 2);
           this.store.edit('Floor finish', (d) => {
             d.settings.floorFinish = f;
           });
@@ -545,8 +549,9 @@ export class PlannerApp {
         [finish('carpet', 'Carpet'), finish('lvp', 'LVP'), finish('tile', 'Tile'), finish('concrete', 'Concrete')],
         [
           finish('epoxy', 'Epoxy'),
-          finish('none', 'No finish'),
-          { id: 'room-remove', label: () => 'Remove room', icon: 'trash', tone: 'danger', span: 2, onClick: () => rt().remove(), visible: has },
+          finish('none', 'None'),
+          { id: 'room-whole', label: () => 'Whole floor', onClick: () => rt().select(null), active: () => !has() },
+          { id: 'room-remove', label: () => 'Remove', icon: 'trash', tone: 'danger', onClick: () => rt().remove(), visible: has },
         ],
       ],
     };
@@ -1238,7 +1243,13 @@ export class PlannerApp {
         for (const w of d.walls) if (w.kind === 'new' && w.height === old) setWallHeight(d, w.id, H);
       }
       for (const w of res.walls) {
-        addWallBetween(d, w.a, w.b, { height: H, thickness: w.thickness, kind: 'existing', source: 'capture', againstFoundation: w.foundation });
+        const id = addWallBetween(d, w.a, w.b, { height: H, thickness: w.thickness, kind: 'existing', source: 'capture', againstFoundation: false });
+        if (!id) continue;
+        const len = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+        for (const o of w.openings) {
+          const offset = ((o.center.x - w.a.x) * (w.b.x - w.a.x) + (o.center.y - w.a.y) * (w.b.y - w.a.y)) / len;
+          addOpening(d, { wallId: id, type: o.type, offset, width: o.width, height: Math.min(o.height, H - 2), sill: 0, hinge: 'a', swing: 'left' });
+        }
       }
       for (const s of res.soffits) addSoffit(d, s.poly, Math.min(H - 1, s.bottom));
       for (const p of res.posts) d.obstacles.push({ id: newId('ob'), label: 'Post', poly: p.poly.map((q) => ({ ...q })), height: H, source: 'manual' });

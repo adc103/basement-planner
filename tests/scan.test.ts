@@ -25,7 +25,11 @@ function basement(): PP[] {
   for (let y = 0; y <= D; y += 3) for (let z = 0; z <= H; z += 4) pts.push({ x: n(), y, z }, { x: W + n(), y, z });
   for (let x = 0; x <= W; x += 6) for (let y = 0; y <= D; y += 6) pts.push({ x, y, z: n() }, { x, y, z: H + n() });
   // Partition: both faces visible.
-  for (let y = 0; y <= 120; y += 3) for (let z = 0; z <= H; z += 4) pts.push({ x: 200 + n(), y, z }, { x: 204.5 + n(), y, z });
+  // with a 32" doorway (y 40..72) under an 80" header.
+  for (let y = 0; y <= 120; y += 3) for (let z = 0; z <= H; z += 4) {
+    if (y > 40 && y < 72 && z < 80) continue;
+    pts.push({ x: 200 + n(), y, z }, { x: 204.5 + n(), y, z });
+  }
   // Duct underside at 88" plus its sides.
   for (let x = 40; x <= 280; x += 3) for (let y = 174; y <= 186; y += 3) pts.push({ x, y, z: 88 + n() });
   // A jacket hanging on the south wall, and an armful of clutter in the middle of the room.
@@ -94,6 +98,17 @@ describe('structure detection', () => {
     const xs = s.poly.map((p) => p.x);
     expect(Math.min(...xs)).toBeLessThan(48);
     expect(Math.max(...xs)).toBeGreaterThan(272);
+  });
+
+  it('finds the doorway in the partition', () => {
+    const partition = res.walls.find((w) => !w.foundation)!;
+    expect(partition.openings).toHaveLength(1);
+    const o = partition.openings[0];
+    expect(o.type).toBe('door');
+    expect(Math.abs(o.width - 32)).toBeLessThanOrEqual(4);
+    expect(Math.abs(o.center.y - 56)).toBeLessThan(5);
+    expect(o.height).toBeGreaterThanOrEqual(78);
+    expect(res.walls.filter((w) => w.foundation).every((w) => w.openings.length === 0)).toBe(true);
   });
 
   it('keeps one wall behind clutter, and no posts from clutter', () => {

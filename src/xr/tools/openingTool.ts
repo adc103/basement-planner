@@ -39,12 +39,11 @@ export class OpeningTool implements Tool {
       wall = wallById(plan, aim.wall.wallId);
       point = aim.wall.point;
     }
-    if ((!wall || wall.kind === 'existing') && aim.floor) {
-      // Fall back to the nearest new wall within 18" of the floor point.
+    if (!wall && aim.floor) {
+      // Fall back to the nearest wall within 18" of the floor point.
       let best = 18;
       wall = undefined;
       for (const w of plan.walls) {
-        if (w.kind === 'existing') continue;
         const loc = locateOnWall(plan, w, aim.floor);
         if (loc.along < 0 || loc.along > loc.length) continue;
         if (Math.abs(loc.across) < best) {
@@ -54,7 +53,7 @@ export class OpeningTool implements Tool {
         }
       }
     }
-    if (!wall || !point || wall.kind === 'existing') return null;
+    if (!wall || !point) return null;
     const loc = locateOnWall(plan, wall, point);
     let offset = Math.round(loc.along);
     if (Math.abs(offset - loc.length / 2) < 2) offset = loc.length / 2; // snap to center

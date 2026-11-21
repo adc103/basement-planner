@@ -24,7 +24,18 @@ export interface WallProposal {
   foundation: boolean;
   /** 0..1: how much of the wall's height and length was seen. */
   confidence: number;
+  /** Doorways found in it: center point (plan), width and height, inches. */
+  openings: OpeningProposal[];
 }
+
+export interface OpeningProposal {
+  center: Vec2;
+  width: number;
+  height: number;
+  type: 'door' | 'opening';
+}
+
+const DOOR_WIDTHS = [24, 28, 30, 32, 36];
 
 export interface SoffitProposal {
   poly: Vec2[];
@@ -122,6 +133,8 @@ interface Face {
   /** Which way the room is: +1 / -1 along the normal. */
   roomSide: number;
   dirIdx: 0 | 1;
+  /** Along-wall spans (t0, t1) with a header but nothing below: doorways. */
+  gaps: Array<{ t0: number; t1: number; top: number }>;
 }
 
 export function findStructure(points: PP[], plan: Plan, opts: StructureOptions): StructureResult {
@@ -164,13 +177,28 @@ export function findStructure(points: PP[], plan: Plan, opts: StructureOptions):
       const cMean = near.reduce((s, p) => s + p.x * n.x + p.y * n.y, 0) / near.length;
       // Along-wall cells: which height levels were seen.
       const cells = new Map<number, Set<number>>();
+      const cellTop = new Map<number, number>(); // lowest point above door height
       for (const p of near) {
         const t = Math.floor((p.x * d.x + p.y * d.y) / TS);
         const lv = Math.floor((p.z - z0 - 10) / ZS);
         let set = cells.get(t);
         if (!set) cells.set(t, (set = new Set()));
         set.add(lv);
+        if (p.z - z0 > 70) cellTop.set(t, Math.min(cellTop.get(t) ?? Infinity, p.z - z0));
       }
+      // Doorway cell: header seen above ~80", (almost) nothing below it.
+      const lowTop = Math.floor((76 - 10) / ZS);
+      const isDoorCell = (t: number) => {
+        const set = cells.get(t);
+        if (!set) return false;
+        let low = 0;
+        let high = 0;
+        for (const lv of set) {
+          if (lv <= lowTop) low++;
+          else high++;
+        }
+        return low <= 1 && high >= 1;
+      };
       // A cell is wall when it spans much of the height; clutter doesn't.
       const solid = [...cells.entries()].filter(([, s]) => s.size >= levels * 0.6).map(([t]) => t).sort((a, b) => a - b);
       if (solid.length < 4) continue;
@@ -179,7 +207,10 @@ export function findStructure(points: PP[], plan: Plan, opts: StructureOptions):
       let prev = solid[0];
       const runs: Array<[number, number]> = [];
       for (const t of solid.slice(1)) {
-        if ((t - prev - 1) * TS > 48) {
+        const gap = (t - prev - 1) * TS;
+        let header = gap > 0;
+        for (let k = prev + 1; k < t && header; k++) header = isDoorCell(k);
+        if (gap > (header ? 96 : 48)) {
           runs.push([runStart, prev]);
           runStart = t;
         }
@@ -203,7 +234,17 @@ export function findStructure(points: PP[], plan: Plan, opts: StructureOptions):
           if (off > 6 && off < 60) plus++;
           else if (off < -6 && off > -60) minus++;
         }
-        faces.push({ c: cMean, t0: r0 * TS, t1: (r1 + 1) * TS, coverage, roomSide: plus >= minus ? 1 : -1, dirIdx });
+        const gaps: Face['gaps'] = [];
+        for (let t = r0; t <= r1; t++) {
+          if (!isDoorCell(t)) continue;
+          let e = t;
+          let top = Infinity;
+          while (e <= r1 && isDoorCell(e)) top = Math.min(top, cellTop.get(e++) ?? Infinity);
+          const w = (e - t) * TS;
+          if (w >= 24 && w <= 96) gaps.push({ t0: t * TS, t1: e * TS, top });
+          t = e;
+        }
+        faces.push({ c: cMean, t0: r0 * TS, t1: (r1 + 1) * TS, coverage, roomSide: plus >= minus ? 1 : -1, dirIdx, gaps });
       }
     }
   }
@@ -284,7 +325,18 @@ export function findStructure(points: PP[], plan: Plan, opts: StructureOptions):
       return off < 8 && t > -12 && t < len + 12;
     });
     if (dup) continue;
+    const gaps = [...f.gaps, ...(mate?.gaps ?? [])].sort((p, q) => p.t0 - q.t0);
+    const openings: OpeningProposal[] = [];
+    for (const g of gaps) {
+      if (openings.some((o) => Math.abs((o.center.x - at(center, 0).x) * d.x + (o.center.y - at(center, 0).y) * d.y - (g.t0 + g.t1) / 2) < 12)) continue;
+      const raw = g.t1 - g.t0 - 2; // cells overshoot the jambs a little
+      const door = raw <= 40;
+      const width = door ? DOOR_WIDTHS.reduce((b, w) => (Math.abs(w - raw) < Math.abs(b - raw) ? w : b)) : Math.round(raw / 2) * 2;
+      const height = Number.isFinite(g.top) ? Math.max(78, Math.min(96, Math.round(g.top))) : 80;
+      openings.push({ center: at(center, (g.t0 + g.t1) / 2), width, height, type: door ? 'door' : 'opening' });
+    }
     walls.push({
+      openings,
       face: { a: at(f.c, t0), b: at(f.c, t1), n: scale(n, f.roomSide), rms: 0, support: Math.round(f.coverage * 100) },
       a,
       b,

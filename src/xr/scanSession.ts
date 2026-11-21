@@ -72,7 +72,7 @@ export class ScanSession {
     this.dots = new Points(g, new PointsMaterial({ size: 0.012, vertexColors: true, transparent: true, opacity: 0.75, depthWrite: false }));
     this.dots.frustumCulled = false;
     this.dots.raycast = () => {};
-    this.group.add(this.dots, this.ghosts);
+    this.group.add(this.dots, this.ghosts, this.doorGhosts);
     this.group.visible = false;
     root.add(this.group);
     this.loaded = idbGet<Float32Array>(STORE_KEY).then((a) => {
@@ -280,6 +280,7 @@ export class ScanSession {
   private hovered: string | null = null;
 
   private restyle(): void {
+    for (const c of this.doorGhosts.children) c.visible = this.kinds.walls && !this.excluded.has(c.userData.door as string);
     for (const c of this.ghosts.children) {
       const id = c.userData.id as string;
       const kind = id.split(':')[0] as 'walls' | 'soffits' | 'posts';
@@ -303,6 +304,10 @@ export class ScanSession {
   }
 
   private clearGhosts(): void {
+    for (const c of [...this.doorGhosts.children]) {
+      this.doorGhosts.remove(c);
+      (c as Mesh).geometry.dispose();
+    }
     for (const c of [...this.ghosts.children]) {
       this.ghosts.remove(c);
       const m = c as Mesh;
@@ -313,6 +318,8 @@ export class ScanSession {
   private wallMat = new MeshBasicMaterial({ color: 0x4ade80, transparent: true, opacity: 0.35, depthWrite: false, side: DoubleSide });
   private soffitMat = new MeshBasicMaterial({ color: 0xfb923c, transparent: true, opacity: 0.4, depthWrite: false, side: DoubleSide });
   private postMat = new MeshBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.5, depthWrite: false });
+  private doorMat = new MeshBasicMaterial({ color: 0x60a5fa, transparent: true, opacity: 0.55, depthWrite: false });
+  private doorGhosts = new Group();
   private offMat = new MeshBasicMaterial({ color: 0x94a3b8, transparent: true, opacity: 0.12, depthWrite: false, side: DoubleSide });
   private hoverMat = new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, depthWrite: false, side: DoubleSide });
 
@@ -330,6 +337,15 @@ export class ScanSession {
       m.rotation.y = -Math.atan2(w.b.y - w.a.y, w.b.x - w.a.x);
       tag(m, `walls:${i}`, this.wallMat);
       this.ghosts.add(m);
+      // Doorways: a blue box in the opening, part of the wall's ghost.
+      for (const o of w.openings) {
+        const dm = new Mesh(new BoxGeometry(o.width * INCH_M, o.height * INCH_M, (w.thickness + 1) * INCH_M), this.doorMat);
+        dm.position.set(o.center.x * INCH_M, (o.height / 2) * INCH_M, o.center.y * INCH_M);
+        dm.rotation.y = m.rotation.y;
+        dm.raycast = () => {};
+        dm.userData.door = `walls:${i}`;
+        this.doorGhosts.add(dm);
+      }
     });
     const flat = (poly: Vec2[], z: number, mat: MeshBasicMaterial, id: string) => {
       const s = new Shape(poly.map((p) => ({ x: p.x * INCH_M, y: p.y * INCH_M }) as never));

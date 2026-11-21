@@ -40,9 +40,9 @@ const LUMBER_COLORS: Record<MemberKind, string> = {
   header: '#9a6a35',
   cripple: '#e3c48f',
 };
-import { findRoomFaces, openArea, resolveRooms } from '../core/rooms.js';
+import { findRoomFaces, insetPolygon, openArea, resolveRooms } from '../core/rooms.js';
 import { formatLength, INCH_M } from '../core/units.js';
-import { computeFootprints, footprintPoly, wallPrisms, type WallFootprint } from '../core/wallGeometry.js';
+import { computeFootprints, wallPrisms, type WallFootprint } from '../core/wallGeometry.js';
 import { TextLabel } from './labels.js';
 
 export type WallViewMode = 'solid' | 'ghost' | 'xray';
@@ -158,6 +158,10 @@ export class PlanView {
     this.matNew.opacity = xray ? 0.1 : ghost ? 0.38 : 1;
     this.matNew.depthWrite = !ghost && !xray;
     this.matNew.needsUpdate = true;
+    // Real walls follow the same modes, in their own grey-blue so they read apart.
+    this.matExisting.opacity = xray ? 0.08 : ghost ? 0.18 : 0.92;
+    this.matExisting.depthWrite = !ghost && !xray;
+    this.matExisting.needsUpdate = true;
   }
 
   private lastPlan: Plan | null = null;
@@ -217,7 +221,7 @@ export class PlanView {
   private roomMeshes = new Map<string, Mesh>();
   private selectedRoom: string | null = null;
   private roomMats = new Map<string, MeshBasicMaterial>();
-  private matRoomSelected = new MeshBasicMaterial({ color: 0x3d8bff, transparent: true, opacity: 0.3, depthWrite: false, side: DoubleSide });
+  private selOutlineMat = new MeshBasicMaterial({ color: 0x3d8bff, side: DoubleSide, transparent: true, opacity: 0.95, depthWrite: false });
 
   private roomMat(finish: Finish): MeshBasicMaterial {
     let m = this.roomMats.get(finish);
@@ -273,6 +277,25 @@ export class PlanView {
       const geo = this.flatArea(face.inner, face.holes, 0.004);
       const mesh = new Mesh(geo, this.roomMat(r?.room.finish ?? 'none'));
       mesh.userData.baseMat = mesh.material;
+      {
+        // A 2" ribbon just inside the room edge (lines are 1 px on the headset).
+        const ring: number[] = [];
+        const poly = face.inner;
+        const inner = insetPolygon(poly, poly.map(() => 2));
+        const y = 0.012;
+        for (let i = 0; i < poly.length; i++) {
+          const j = (i + 1) % poly.length;
+          const [p, q, pi, qi] = [poly[i], poly[j], inner[i], inner[j]].map((v) => [v.x * INCH_M, y, v.y * INCH_M]);
+          ring.push(...p, ...q, ...qi, ...p, ...qi, ...pi);
+        }
+        const g = new BufferGeometry();
+        g.setAttribute('position', new Float32BufferAttribute(ring, 3));
+        const outline = new Mesh(g, this.selOutlineMat);
+        outline.visible = false;
+        outline.raycast = () => {};
+        mesh.add(outline);
+        mesh.userData.outline = outline;
+      }
       mesh.renderOrder = 0;
       mesh.raycast = () => {};
       this.content.add(mesh);
@@ -294,11 +317,16 @@ export class PlanView {
   }
 
   private applyRoomSelection(): void {
-    for (const [key, m] of this.roomMeshes) m.material = key === this.selectedRoom ? this.matRoomSelected : (m.userData.baseMat as MeshBasicMaterial);
+    // Keep the room's finish visible; mark the selection with a bright outline.
+    for (const [key, m] of this.roomMeshes) {
+      m.material = m.userData.baseMat as MeshBasicMaterial;
+      const outline = m.userData.outline as Mesh | undefined;
+      if (outline) outline.visible = key === this.selectedRoom;
+    }
   }
 
   private buildFraming(plan: Plan): void {
-    const members = generateFraming(plan);
+    const members = generateFraming(plan, true);
     this.framing = members;
     if (!members.length) return;
     const mesh = new InstancedMesh(this.lumberGeo, this.matLumber, members.length);
@@ -475,9 +503,7 @@ export class PlanView {
 
   private buildWall(plan: Plan, wall: Wall, fp: WallFootprint): void {
     const existing = wall.kind === 'existing';
-    const prisms = existing
-      ? [{ wallId: wall.id, poly: footprintPoly(fp), z0: 0, z1: wall.height }]
-      : wallPrisms(fp, wall, plan.openings);
+    const prisms = wallPrisms(fp, wall, plan.openings);
     const pos: number[] = [];
     for (const p of prisms) appendPrism(pos, p.poly, p.z0, p.z1);
     const geo = new BufferGeometry();
@@ -494,9 +520,9 @@ export class PlanView {
     edges.raycast = () => {};
     this.content.add(edges);
 
-    if (!existing) {
+    {
       const { a, b } = wallEnds(plan, wall);
-      const label = new TextLabel(formatLength(fp.length), { height: 0.055 });
+      const label = new TextLabel(formatLength(fp.length), existing ? { height: 0.045, bg: 'rgba(60,72,88,0.85)' } : { height: 0.055 });
       this.content.add(label.sprite);
       this.labels.push({
         label,

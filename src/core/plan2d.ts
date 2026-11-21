@@ -124,7 +124,10 @@ export function renderPlanSvg(plan: Plan, opts: PlanSvgOptions = {}): string {
     const fp = fps.get(w.id);
     if (!fp) continue;
     if (w.kind === 'existing') {
-      out.push(`<polygon points="${pts(footprintPoly(fp))}" fill="url(#hatch)" stroke="#6b7480" stroke-width="0.6"/>`);
+      for (const p of wallPrisms(fp, w, plan.openings)) {
+        if (p.z0 > 0.01) continue;
+        out.push(`<polygon points="${pts(p.poly)}" fill="url(#hatch)" stroke="#6b7480" stroke-width="0.6"/>`);
+      }
       continue;
     }
     for (const p of wallPrisms(fp, w, plan.openings)) {
