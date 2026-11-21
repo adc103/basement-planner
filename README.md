@@ -14,7 +14,7 @@ controller). Tabs down the left side:
 
 | Tab | What it does |
 | --- | --- |
-| **Build** | **Walls** (pinch corners; same spot twice, close the loop or **Finish** to end), **Doors** (30/32/36", 36" opening, custom), **Capture** (point at a real wall the scan missed, near each end) |
+| **Build** | **Walls** (pinch corners; same spot twice, close the loop or **Finish** to end), **Doors** (30/32/36", 36" opening, custom), **Capture** (tap a real wall the scan missed to find its full length, tap again to add; or hold and sweep along it) |
 | **Edit** | **Select**: drag corners, slide doors, move pins; tap a wall for length, height, 2x4/2x6, delete. **Delete** tool |
 | **Measure** | Tape measure between any two spots on the floor or walls; saved lines appear in the plan |
 | **Rooms** | Tap inside a closed area, pick a name and floor finish; area in sq ft |

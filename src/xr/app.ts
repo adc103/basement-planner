@@ -31,7 +31,8 @@ import { WristMenu } from './menu.js';
 import { PlanView, type WallViewMode } from './planView.js';
 import { Preview } from './preview.js';
 import { AlignTool } from './tools/alignTool.js';
-import { CaptureTool } from './tools/captureTool.js';
+import { CaptureTool, type CaptureContext } from './tools/captureTool.js';
+import type { PP } from '../core/wallDetect.js';
 import { DeleteTool } from './tools/deleteTool.js';
 import { EditTool } from './tools/editTool.js';
 import { MeasureTool } from './tools/measureTool.js';
@@ -96,6 +97,7 @@ export class PlannerApp {
   measureTool!: MeasureTool;
   roomsTool!: RoomsTool;
   pinsTool!: PinsTool;
+  captureTool!: CaptureTool;
   menu!: MainMenu;
   keypad!: Keypad;
   private wrist!: WristMenu;
@@ -119,6 +121,12 @@ export class PlannerApp {
   private listeners = new Set<() => void>();
   private surfaceTargets: Record<Side, Object3D> = { left: new Object3D(), right: new Object3D() };
   private uiHover: Record<Side, boolean> = { left: false, right: false };
+  /** Smoothed real-surface hit per hand; holds briefly through dropped frames. */
+  private surf: Record<Side, { ok: boolean; t: number; p: Vector3; n: Vector3 }> = {
+    left: { ok: false, t: -1, p: new Vector3(), n: new Vector3() },
+    right: { ok: false, t: -1, p: new Vector3(), n: new Vector3() },
+  };
+  private meshCache: { key: unknown; pts: PP[] } | null = null;
   // Scratch objects (no per-frame allocation).
   private tmpV = new Vector3();
   private tmpV2 = new Vector3();
@@ -172,7 +180,8 @@ export class PlannerApp {
     this.occluder = world.createTransformEntity(carrier, { parent: world.sceneEntity, persistent: true });
     this.occluder.addComponent(DepthOccludable);
 
-    const ctx: ToolContext = {
+    const ctx: CaptureContext = {
+      roomMeshPoints: (c, r) => this.roomMeshPoints(c, r),
       store: this.store,
       view: this.view,
       preview: this.preview,
@@ -192,7 +201,7 @@ export class PlannerApp {
       rooms: this.roomsTool,
       walls: this.wallTool,
       doors: new OpeningTool(ctx),
-      capture: new CaptureTool(ctx),
+      capture: (this.captureTool = new CaptureTool(ctx)),
       edit: this.editTool,
       delete: new DeleteTool(ctx),
       measure: this.measureTool,
@@ -244,6 +253,9 @@ export class PlannerApp {
         this.setTool('doors');
       },
       customWidth: () => this.customWidth(),
+      captureProposal: () => !!this.captureTool.proposal,
+      acceptCapture: () => this.captureTool.acceptProposal(),
+      cancelCapture: () => this.captureTool.cancelProposal(),
       captureThickness: () => this.store.plan.settings.captureThickness,
       setCaptureThickness: (t) =>
         this.store.edit('Capture thickness', (d) => {
@@ -542,6 +554,7 @@ export class PlannerApp {
       this.hands.right.dragMode = dragMode;
       this.hands.left.update(world, time);
       this.hands.right.update(world, time);
+      this.updateSurfaces(time);
       this.handleButtons(time);
       this.wrist.update();
       this.menu.panel.tick(delta);
@@ -664,6 +677,68 @@ export class PlannerApp {
     }
   }
 
+  /**
+   * Hit-test results flicker: some frames have no hit, and the normal is noisy.
+   * Keep the last hit for a moment and low-pass the point and normal.
+   */
+  private updateSurfaces(time: number): void {
+    for (const side of ['left', 'right'] as Side[]) {
+      const t = this.surfaceTargets[side];
+      const sf = this.surf[side];
+      if (t.visible) {
+        const p = t.getWorldPosition(this.tmpV);
+        const n = this.tmpV2.set(0, 1, 0).applyQuaternion(t.getWorldQuaternion(this.tmpQ));
+        if (!sf.ok || sf.p.distanceTo(p) > 0.15) {
+          sf.p.copy(p);
+          sf.n.copy(n);
+        } else {
+          sf.p.lerp(p, 0.45);
+          sf.n.lerp(n, 0.25).normalize();
+        }
+        sf.ok = true;
+        sf.t = time;
+      } else if (sf.ok && time - sf.t > 0.35) {
+        sf.ok = false;
+      }
+    }
+  }
+
+  /** Room-mesh vertices (plan inches) within `radius` of a point, or null when there's no room mesh. */
+  private roomMeshPoints(center: Vec2, radius: number): PP[] | null {
+    let mesh: Entity | null = null;
+    let best = 0;
+    for (const e of this.meshQuery?.() ?? []) {
+      if (e.getValue(XRMesh, 'isBounded3D')) continue;
+      const raw = e.getValue(XRMesh, '_mesh') as unknown as { vertices?: Float32Array } | undefined;
+      const n = raw?.vertices?.length ?? 0;
+      if (n > best) {
+        best = n;
+        mesh = e;
+      }
+    }
+    if (!mesh || best < 30) return null;
+    const raw = mesh.getValue(XRMesh, '_mesh') as unknown as { vertices: Float32Array };
+    const root = this.view.root;
+    const key = `${best}|${this.transform.theta}|${this.transform.tx}|${this.transform.tz}|${this.transform.floorY}`;
+    if (!this.meshCache || this.meshCache.key !== raw.vertices || (this.meshCache as { k2?: string }).k2 !== key) {
+      const obj = mesh.object3D!;
+      obj.updateWorldMatrix(true, false);
+      root.updateWorldMatrix(true, false);
+      const v = raw.vertices;
+      const pts: PP[] = [];
+      const w = new Vector3();
+      for (let i = 0; i < v.length; i += 3) {
+        w.set(v[i], v[i + 1], v[i + 2]);
+        obj.localToWorld(w);
+        root.worldToLocal(w);
+        pts.push({ x: w.x / INCH_M, y: w.z / INCH_M, z: w.y / INCH_M });
+      }
+      this.meshCache = { key: raw.vertices, pts };
+      (this.meshCache as { k2?: string }).k2 = key;
+    }
+    return this.meshCache.pts.filter((p) => Math.hypot(p.x - center.x, p.y - center.y) <= radius);
+  }
+
   private aimHit: AimHit = {
     floor: null,
     floorDistM: 0,
@@ -718,18 +793,17 @@ export class PlannerApp {
       const mh = this.raycaster.intersectObjects(this.view.markerMeshes, false)[0];
       if (mh) a.marker = { id: mh.object.userData.markerId as string, distM: mh.distance };
     }
-    // Real-world surface from the headset hit test.
+    // Real-world surface from the headset hit test (smoothed, see updateSurfaces).
     a.surface = null;
-    const st = this.surfaceTargets[h.side];
-    if (st.visible) {
-      const dist = st.getWorldPosition(this.eyeV).distanceTo(h.aimOrigin);
-      const p = root.worldToLocal(this.eyeV);
+    const sf = this.surf[h.side];
+    if (sf.ok) {
+      const dist = sf.p.distanceTo(h.aimOrigin);
+      const p = root.worldToLocal(this.tmpV3.copy(sf.p));
       const px = p.x;
       const py = p.y;
       const pz = p.z;
-      const n = this.tmpV3.set(0, 1, 0).applyQuaternion(st.getWorldQuaternion(this.tmpQ));
       root.getWorldQuaternion(this.tmpQ).invert();
-      n.applyQuaternion(this.tmpQ);
+      const n = this.tmpV3.copy(sf.n).applyQuaternion(this.tmpQ);
       a.surface = { p: { x: px / INCH_M, y: pz / INCH_M }, z: py / INCH_M, n: { x: n.x, y: n.z }, ny: n.y, distM: dist };
     }
     const eye = root.worldToLocal(this.world.camera.getWorldPosition(this.eyeV));

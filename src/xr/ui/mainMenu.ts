@@ -26,6 +26,9 @@ export interface MenuApi {
   setPreset(type: 'door' | 'opening', width: number): void;
   customWidth(): void;
   captureThickness(): number;
+  captureProposal(): boolean;
+  acceptCapture(): void;
+  cancelCapture(): void;
   setCaptureThickness(t: number): void;
   // edit
   selectionText(): string;
@@ -319,6 +322,10 @@ export class MainMenu {
               active: () => ![30, 32, 36].includes(a.preset().width),
               visible: doorsOnly,
             },
+          ],
+          [
+            { id: 'cap-add', label: () => 'Add found wall', icon: 'capture', tone: 'primary', span: 2, onClick: () => a.acceptCapture(), visible: () => captureOnly() && a.captureProposal() },
+            { id: 'cap-cancel', label: () => 'Cancel', span: 2, onClick: () => a.cancelCapture(), visible: () => captureOnly() && a.captureProposal() },
           ],
         ],
       },

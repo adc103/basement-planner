@@ -86,7 +86,7 @@ export function mountDom(app: PlannerApp): void {
         <tr><td>Move things</td><td>Edit &gt; Select: pinch a corner and drag. Drag a door along its wall. Tap a wall to change its length, height or 2x4/2x6.</td></tr>
         <tr><td>Measure</td><td>Measure &gt; Tape: pinch two spots on the floor or on walls.</td></tr>
         <tr><td>Rooms</td><td>Rooms tab: tap inside a closed area, then pick a name and floor finish.</td></tr>
-        <tr><td>Walls the scan missed</td><td>Build &gt; Capture: point at the real wall near one end and pinch, then near the other end.</td></tr>
+        <tr><td>Walls the scan missed</td><td>Build &gt; Capture: tap a real wall and the app finds its full length from the room mesh (tap again to add). Or hold the pinch and sweep along the wall, then let go.</td></tr>
         <tr><td>Undo</td><td>Menu Undo, or B / Y on controllers.</td></tr>
         <tr><td>Exact length</td><td>Menu Length... then type, e.g. <code>10'4 1/2</code>. A bare number is inches.</td></tr>
         <tr><td>Wall height</td><td>Menu H..., or the right thumbstick up/down (1" steps).</td></tr>
