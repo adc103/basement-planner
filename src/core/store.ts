@@ -58,7 +58,8 @@ export class PlanStore {
       out = recipe(d);
       d.updatedAt = new Date().toISOString();
     });
-    if (patches.length <= 1) return out; // only the timestamp changed
+    // Ignore edits whose only change is the timestamp.
+    if (!patches.some((p) => !(p.path.length === 1 && p.path[0] === 'updatedAt'))) return out;
     this._plan = next;
     if (this.group) {
       this.group.patches.push(...patches);

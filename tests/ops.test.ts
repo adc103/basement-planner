@@ -159,6 +159,19 @@ describe('store', () => {
     expect(s.canRedo).toBe(false);
   });
 
+  it('records an edit that changes exactly one value', () => {
+    const s = store();
+    s.edit('h', (d) => {
+      d.settings.wallHeight = 90;
+    });
+    s.edit('h2', (d) => {
+      d.settings.wallHeight = 91;
+    });
+    expect(s.plan.settings.wallHeight).toBe(91);
+    expect(s.undo()).toBe('h2');
+    expect(s.plan.settings.wallHeight).toBe(90);
+  });
+
   it('ignores no-op edits', () => {
     const s = store();
     s.edit('noop', () => {});

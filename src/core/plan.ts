@@ -38,6 +38,8 @@ export const WallSchema = z.object({
   thickness: z.number().positive(),
   /** 'existing' = real foundation / pre-existing wall (from the room scan). Locked. */
   kind: z.enum(['new', 'existing']).default('new'),
+  /** Where an existing wall came from: the Quest room scan or point-and-capture. */
+  source: z.enum(['draw', 'scan', 'capture']).optional(),
   /** True when this new wall is framed against a foundation wall. */
   againstFoundation: z.boolean().default(false),
   framing: FramingSchema.default(FramingSchema.parse({})),
@@ -61,6 +63,59 @@ export const OpeningSchema = z.object({
 export type Opening = z.infer<typeof OpeningSchema>;
 
 const PointSchema = z.object({ x: z.number(), y: z.number() });
+const Point3Schema = z.object({ x: z.number(), y: z.number(), z: z.number() });
+
+/** A real-world object from the room scan (furnace, storage, stairs...). Footprint in plan inches. */
+export const ObstacleSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  poly: z.array(PointSchema),
+  height: z.number().positive(),
+  source: z.enum(['scan', 'manual']).default('scan'),
+});
+export type Obstacle = z.infer<typeof ObstacleSchema>;
+
+export const MARKER_TYPES = [
+  'outlet',
+  'switch',
+  'light',
+  'panel',
+  'water-heater',
+  'furnace',
+  'drain',
+  'pipe',
+  'post',
+] as const;
+export type MarkerType = (typeof MARKER_TYPES)[number];
+
+/** A utility pin. (x, y) in plan inches, z = height above the floor. */
+export const MarkerSchema = z.object({
+  id: z.string(),
+  type: z.enum(MARKER_TYPES),
+  x: z.number(),
+  y: z.number(),
+  z: z.number(),
+  /** Wall it is mounted on, if any. */
+  wallId: z.string().nullable().default(null),
+  note: z.string().default(''),
+});
+export type Marker = z.infer<typeof MarkerSchema>;
+
+export const FINISHES = ['none', 'carpet', 'lvp', 'tile', 'concrete', 'epoxy'] as const;
+export type Finish = (typeof FINISHES)[number];
+
+/** A named room. Its outline is the closed wall loop containing `seed`. */
+export const RoomSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  seed: PointSchema,
+  finish: z.enum(FINISHES).default('none'),
+});
+export type Room = z.infer<typeof RoomSchema>;
+
+/** A saved tape-measure line, plan inches (z = height). */
+export const MeasureSchema = z.object({ id: z.string(), a: Point3Schema, b: Point3Schema });
+export type Measure = z.infer<typeof MeasureSchema>;
 
 export const PlanSchema = z.object({
   format: z.literal('basement-planner'),
@@ -77,10 +132,19 @@ export const PlanSchema = z.object({
     foundationThickness: z.number().positive().default(8),
     /** Default framing for new walls. */
     framing: FramingSchema.default(FramingSchema.parse({})),
+    /** Thickness given to walls captured by pointing at them (existing partitions). */
+    captureThickness: z.number().positive().default(4.5),
+    /** Fingerprint of the last room scan imported, so unchanged scans aren't re-imported. */
+    scanSignature: z.string().nullable().default(null),
+    autoImportScan: z.boolean().default(true),
   }),
   nodes: z.array(NodeSchema).default([]),
   walls: z.array(WallSchema).default([]),
   openings: z.array(OpeningSchema).default([]),
+  obstacles: z.array(ObstacleSchema).default([]),
+  markers: z.array(MarkerSchema).default([]),
+  rooms: z.array(RoomSchema).default([]),
+  measures: z.array(MeasureSchema).default([]),
   /**
    * Two reference points (plan space) recorded on real-world corners.
    * Re-clicking the same two physical corners realigns the plan.
@@ -118,6 +182,7 @@ export function parsePlan(json: unknown): Plan {
   plan.walls = plan.walls.filter((w) => nodeIds.has(w.a) && nodeIds.has(w.b) && w.a !== w.b);
   const wallIds = new Set(plan.walls.map((w) => w.id));
   plan.openings = plan.openings.filter((o) => wallIds.has(o.wallId));
+  for (const m of plan.markers) if (m.wallId && !wallIds.has(m.wallId)) m.wallId = null;
   return plan;
 }
 

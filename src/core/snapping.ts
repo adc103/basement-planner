@@ -68,6 +68,8 @@ export interface SnapOptions {
   disabled?: boolean;
   /** Max number of nearby nodes to build extension guides from. */
   maxGuideNodes?: number;
+  /** Ignore this node and its walls (the corner being dragged). */
+  excludeNodeId?: string;
 }
 
 export const defaultSnapOptions: SnapOptions = {
@@ -180,7 +182,11 @@ function dedupeAngles(angles: number[]): number[] {
   return out;
 }
 
-export function snap(plan: Plan, raw: Vec2, opts: SnapOptions): SnapResult {
+export function snap(fullPlan: Plan, raw: Vec2, opts: SnapOptions): SnapResult {
+  const ex = opts.excludeNodeId;
+  const plan: Plan = ex
+    ? { ...fullPlan, nodes: fullPlan.nodes.filter((n) => n.id !== ex), walls: fullPlan.walls.filter((w) => w.a !== ex && w.b !== ex) }
+    : fullPlan;
   if (opts.disabled) {
     return { point: gridRound(raw, opts.axisAngle, 0.25), kind: 'free', guides: [] };
   }
@@ -194,6 +200,16 @@ export function snap(plan: Plan, raw: Vec2, opts: SnapOptions): SnapResult {
     if (d <= bestD) {
       bestD = d;
       best = { point: { x: n.x, y: n.y }, kind: 'endpoint', guides: [], targetId: n.id };
+    }
+  }
+  // Corners of scanned objects (furnace, storage...).
+  for (const o of plan.obstacles) {
+    for (const c of o.poly) {
+      const d = dist(c, raw);
+      if (d <= bestD) {
+        bestD = d;
+        best = { point: { ...c }, kind: 'endpoint', guides: [], targetId: o.id };
+      }
     }
   }
   if (best) return best;
@@ -261,6 +277,18 @@ export function snap(plan: Plan, raw: Vec2, opts: SnapOptions): SnapResult {
       }
     }
     bestE = { point, kind: 'edge', guides: used, targetId: w.id };
+  }
+
+  // Edges of scanned objects.
+  for (const o of plan.obstacles) {
+    for (let i = 0; i < o.poly.length; i++) {
+      const pr = projectOnSegment(raw, o.poly[i], o.poly[(i + 1) % o.poly.length]);
+      const d = dist(pr.point, raw);
+      if (d < bestED) {
+        bestED = d;
+        bestE = { point: pr.point, kind: 'edge', guides: [], targetId: o.id };
+      }
+    }
   }
 
   if (bestX && (!bestE || bestXD <= bestED + 0.5)) return bestX;

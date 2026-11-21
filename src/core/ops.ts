@@ -1,6 +1,6 @@
 import type { Draft } from 'immer';
 import { add, dist, dot, norm, projectOnSegment, scale, sub, type Vec2 } from './geom2d.js';
-import { FramingSchema, newId, type Opening, type Plan, type PlanNode, type Wall } from './plan.js';
+import { FramingSchema, newId, type Marker, type Measure, type Obstacle, type Opening, type Plan, type PlanNode, type Room, type Wall } from './plan.js';
 
 /** Things that read a plan work on both frozen plans and drafts. */
 type AnyPlan = Plan | Draft<Plan>;
@@ -112,6 +112,7 @@ export interface NewWallProps {
   thickness: number;
   kind?: 'new' | 'existing';
   againstFoundation?: boolean;
+  source?: 'draw' | 'scan' | 'capture';
 }
 
 /** Add a wall between two points. Returns the wall id, or null if degenerate/duplicate. */
@@ -129,6 +130,7 @@ export function addWallBetween(d: Draft<Plan>, p1: Vec2, p2: Vec2, props: NewWal
     height: props.height,
     thickness: props.thickness,
     kind: props.kind ?? 'new',
+    source: props.source ?? (props.kind === 'existing' ? 'scan' : 'draw'),
     againstFoundation: props.againstFoundation ?? false,
     framing: JSON.parse(JSON.stringify(d.settings.framing ?? FramingSchema.parse({}))),
   };
@@ -166,6 +168,7 @@ export function deleteWall(d: Draft<Plan>, wallId: string): void {
   if (idx < 0) return;
   d.walls.splice(idx, 1);
   d.openings = d.openings.filter((o) => o.wallId !== wallId);
+  for (const m of d.markers) if (m.wallId === wallId) m.wallId = null;
   pruneNodes(d);
 }
 
@@ -239,13 +242,15 @@ export function replaceExistingWalls(
   segments: Array<{ a: Vec2; b: Vec2 }>,
   height: number,
 ): number {
-  for (const w of [...d.walls]) if (w.kind === 'existing') deleteWall(d, w.id);
+  // Only scanned walls are replaced; captured walls and everything you drew stay.
+  for (const w of [...d.walls]) if (w.kind === 'existing' && w.source !== 'capture') deleteWall(d, w.id);
   let count = 0;
   for (const s of segments) {
     const id = addWallBetween(d, s.a, s.b, {
       height,
       thickness: d.settings.foundationThickness,
       kind: 'existing',
+      source: 'scan',
     });
     if (id) count++;
   }
@@ -259,4 +264,85 @@ export function locateOnWall(plan: AnyPlan, wall: Wall, p: Vec2): { along: numbe
   const dir = norm(sub(b, a));
   const rel = sub(p, a);
   return { along: dot(rel, dir), across: dir.x * rel.y - dir.y * rel.x, length: l };
+}
+
+// --- Editing -----------------------------------------------------------------
+
+/** Move a corner. Openings on the attached walls are re-clamped. */
+export function moveNode(d: Draft<Plan>, nodeId: string, p: Vec2): void {
+  const n = d.nodes.find((x) => x.id === nodeId);
+  if (!n) return;
+  n.x = p.x;
+  n.y = p.y;
+  for (const w of d.walls) if (w.a === nodeId || w.b === nodeId) clampOpenings(d, w.id);
+}
+
+/** Slide an opening along its wall. Returns false if it doesn't fit there. */
+export function moveOpening(d: Draft<Plan>, openingId: string, offset: number): boolean {
+  const o = d.openings.find((x) => x.id === openingId);
+  if (!o) return false;
+  const w = d.walls.find((x) => x.id === o.wallId);
+  if (!w) return false;
+  const c = clampOpeningOffset(wallLength(d, w as Wall), o.width, offset);
+  if (c === null || openingOverlaps(d, o.wallId, c, o.width, o.id)) return false;
+  o.offset = c;
+  return true;
+}
+
+export function setWallThickness(d: Draft<Plan>, wallId: string, thickness: number): void {
+  const w = d.walls.find((x) => x.id === wallId);
+  if (!w || thickness <= 0) return;
+  w.thickness = thickness;
+  w.framing.studSize = thickness >= 6 ? '2x6' : '2x4';
+}
+
+// --- Markers, rooms, measures ---------------------------------------------------
+
+export function addMarker(d: Draft<Plan>, m: Omit<Marker, 'id'>): string {
+  const id = newId('m');
+  d.markers.push({ ...m, id });
+  return id;
+}
+
+export function deleteMarker(d: Draft<Plan>, id: string): void {
+  d.markers = d.markers.filter((m) => m.id !== id);
+}
+
+export function moveMarker(d: Draft<Plan>, id: string, p: { x: number; y: number; z: number }, wallId: string | null): void {
+  const m = d.markers.find((x) => x.id === id);
+  if (!m) return;
+  m.x = p.x;
+  m.y = p.y;
+  m.z = p.z;
+  m.wallId = wallId;
+}
+
+export function upsertRoom(d: Draft<Plan>, seed: Vec2, patch: Partial<Omit<Room, 'id' | 'seed'>>, existingId?: string): string {
+  const r = existingId ? d.rooms.find((x) => x.id === existingId) : undefined;
+  if (r) {
+    Object.assign(r, patch);
+    return r.id;
+  }
+  const id = newId('r');
+  d.rooms.push({ id, seed: { ...seed }, name: patch.name ?? 'Room', finish: patch.finish ?? 'none' });
+  return id;
+}
+
+export function deleteRoom(d: Draft<Plan>, id: string): void {
+  d.rooms = d.rooms.filter((r) => r.id !== id);
+}
+
+export function addMeasure(d: Draft<Plan>, a: Measure['a'], b: Measure['b']): string {
+  const id = newId('ms');
+  d.measures.push({ id, a: { ...a }, b: { ...b } });
+  return id;
+}
+
+export function deleteMeasure(d: Draft<Plan>, id: string): void {
+  d.measures = d.measures.filter((m) => m.id !== id);
+}
+
+export function setObstacles(d: Draft<Plan>, obstacles: Array<Omit<Obstacle, 'id'>>): void {
+  d.obstacles = d.obstacles.filter((o) => o.source === 'manual');
+  for (const o of obstacles) d.obstacles.push({ ...o, id: newId('ob'), poly: o.poly.map((p) => ({ ...p })) });
 }

@@ -1,4 +1,5 @@
 import { add, dist, intersectLines, norm, scale, sub, type Vec2 } from './geom2d.js';
+import { convexHull } from './poly.js';
 
 export interface P3 {
   x: number;
@@ -100,4 +101,49 @@ export function wallsFromScan(
     }
   }
   return { walls: lines.map((l) => ({ a: l.a, b: l.b })), floorY, ceilingY };
+}
+
+export interface ScanBox {
+  label: string;
+  /** The 8 corners of the object's bounding box. */
+  corners: P3[];
+}
+
+const NOT_OBSTACLES = new Set(['', 'global mesh', 'wall', 'floor', 'ceiling', 'door frame', 'window frame', 'wall art', 'invisible wall face']);
+
+/** Space Setup objects (storage, tables, "other"...) -> obstacle footprints in plan inches. */
+export function obstaclesFromScan(
+  boxes: ScanBox[],
+  toPlan: (w: P3) => { p: Vec2; y: number },
+  floorY: number,
+): Array<{ label: string; poly: Vec2[]; height: number; source: 'scan' }> {
+  const out: Array<{ label: string; poly: Vec2[]; height: number; source: 'scan' }> = [];
+  for (const b of boxes) {
+    const label = b.label.toLowerCase();
+    if (NOT_OBSTACLES.has(label)) continue;
+    const pts = b.corners.map(toPlan);
+    const poly = convexHull(pts.map((q) => q.p));
+    if (poly.length < 3) continue;
+    const top = Math.max(...pts.map((q) => q.y));
+    const height = (top - floorY) / 0.0254;
+    if (height < 1) continue;
+    const xs = poly.map((p) => p.x);
+    const ys = poly.map((p) => p.y);
+    if (Math.max(...xs) - Math.min(...xs) > 240 || Math.max(...ys) - Math.min(...ys) > 240) continue; // >20 ft: not an object
+    out.push({ label: b.label || 'object', poly, height, source: 'scan' });
+  }
+  return out;
+}
+
+/** Short fingerprint of a scan so an unchanged room isn't re-imported. */
+export function scanSignature(walls: Array<{ a: Vec2; b: Vec2 }>, obstacles: Array<{ poly: Vec2[] }>): string {
+  const r = (v: number) => Math.round(v / 3);
+  const parts = [
+    ...walls.map((w) => [r(w.a.x), r(w.a.y), r(w.b.x), r(w.b.y)].join(',')),
+    ...obstacles.map((o) => o.poly.map((p) => `${r(p.x)},${r(p.y)}`).join(';')),
+  ].sort();
+  let h = 5381;
+  const str = parts.join('|');
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  return `${walls.length}w${obstacles.length}o:${(h >>> 0).toString(36)}`;
 }
