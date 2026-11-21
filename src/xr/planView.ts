@@ -15,6 +15,7 @@ import {
   Vector2,
   Vector3,
   type Camera,
+  type Material,
 } from '@iwsdk/core';
 import { add, scale, type Vec2 } from '../core/geom2d.js';
 import { wallEnds } from '../core/ops.js';
@@ -123,9 +124,15 @@ export class PlanView {
     this.applyMode();
   }
 
+  /** Materials that real-world depth should be able to hide (planned content only). */
+  occludableMaterials(): Material[] {
+    return [this.matNew, this.matHover, this.matSelected, this.matHighlight];
+  }
+
   private applyMode(): void {
     const ghost = this.mode === 'ghost';
-    this.matNew.transparent = ghost;
+    // Stays transparent in solid mode too: depth occlusion fades pixels via alpha.
+    this.matNew.transparent = true;
     this.matNew.opacity = ghost ? 0.38 : 1;
     this.matNew.depthWrite = !ghost;
     this.matNew.needsUpdate = true;

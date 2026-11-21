@@ -336,6 +336,19 @@ try {
     await clickButton(menu, 'btn:tab-build');
   }
 
+  // Depth occlusion is wired to the planned-wall materials and can be toggled.
+  {
+    const patched = await page.evaluate(() =>
+      window.basementPlanner.view.occludableMaterials().every((m) => typeof m.onBeforeCompile === 'function' && m.transparent),
+    );
+    check(patched, 'planned-wall materials are registered for depth occlusion');
+    check(await clickButton(menu, 'btn:tab-view'), 'View tab opens');
+    check(await clickButton(menu, 'btn:occlusion'), 'occlusion toggle reachable');
+    check(!(await page.evaluate(() => window.basementPlanner.occlusionOn)), 'occlusion can be turned off');
+    await clickButton(menu, 'btn:occlusion');
+    check(await page.evaluate(() => window.basementPlanner.occlusionOn), 'and back on');
+  }
+
   // Rooms: draw a closed 2 m square, name it and give it a floor.
   {
     await clickButton(menu, 'btn:tab-build');

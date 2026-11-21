@@ -54,6 +54,8 @@ export interface MenuApi {
   viewModes(): Array<{ id: string; label: string }>;
   labels(): boolean;
   toggleLabels(): void;
+  occlusion(): boolean;
+  toggleOcclusion(): void;
   snap(): boolean;
   toggleSnap(): void;
   pinned(): boolean;
@@ -400,6 +402,9 @@ export class MainMenu {
           [
             { id: 'labels', label: () => 'Labels', span: 2, onClick: () => a.toggleLabels(), active: () => a.labels() },
             { id: 'snap', label: () => 'Snapping', icon: 'magnet', span: 2, onClick: () => a.toggleSnap(), active: () => a.snap() },
+          ],
+          [
+            { id: 'occlusion', label: () => 'Real objects hide walls', icon: 'eye', span: 4, onClick: () => a.toggleOcclusion(), active: () => a.occlusion() },
           ],
           [
             { id: 'pin', label: () => (a.pinned() ? 'Unpin menu' : 'Pin menu here'), icon: 'thumbtack', span: 2, onClick: () => a.togglePin(), active: () => a.pinned() },

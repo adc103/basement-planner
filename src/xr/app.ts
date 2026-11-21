@@ -1,5 +1,9 @@
 import {
+  DepthOccludable,
   EnvironmentRaycastTarget,
+  Group,
+  Mesh,
+  PlaneGeometry,
   InputComponent,
   Object3D,
   Quaternion,
@@ -117,6 +121,8 @@ export class PlannerApp {
   private tmpQ = new Quaternion();
   private eyeV = new Vector3();
   private uiObjs: Object3D[] = [];
+  private occluder!: Entity;
+  occlusionOn = true;
 
   /** Filled by PlannerSystem: detected room planes / meshes. */
   planeQuery: (() => Iterable<Entity>) | null = null;
@@ -147,6 +153,19 @@ export class PlannerApp {
       const e = world.createTransformEntity(obj, { parent: world.sceneEntity, persistent: true });
       e.addComponent(EnvironmentRaycastTarget, { space: side, maxDistance: 8 });
     }
+
+    // Depth occlusion works per material: register every planned-content material
+    // through one carrier entity, so walls rebuilt later stay occludable.
+    const carrier = new Group();
+    const quad = new PlaneGeometry(0.001, 0.001);
+    for (const m of [...this.view.occludableMaterials(), ...this.preview.occludableMaterials()]) {
+      const mesh = new Mesh(quad, m);
+      mesh.visible = false;
+      mesh.raycast = () => {};
+      carrier.add(mesh);
+    }
+    this.occluder = world.createTransformEntity(carrier, { parent: world.sceneEntity, persistent: true });
+    this.occluder.addComponent(DepthOccludable);
 
     const ctx: ToolContext = {
       store: this.store,
@@ -256,6 +275,8 @@ export class PlannerApp {
         { id: 'ghost', label: 'Ghost' },
         { id: 'solid', label: 'Solid' },
       ],
+      occlusion: () => this.occlusionOn,
+      toggleOcclusion: () => this.toggleOcclusion(),
       labels: () => this.view.showLabels,
       toggleLabels: () => (this.view.showLabels = !this.view.showLabels),
       snap: () => this.snapEnabled,
@@ -332,6 +353,13 @@ export class PlannerApp {
     this.menu?.syncTab(name);
     this.showToolChip();
     this.refreshUi();
+  }
+
+  private toggleOcclusion(): void {
+    this.occlusionOn = !this.occlusionOn;
+    if (this.occlusionOn) this.occluder.addComponent(DepthOccludable);
+    else this.occluder.removeComponent(DepthOccludable);
+    this.toast(this.occlusionOn ? 'Real objects hide planned walls' : 'Planned walls always on top');
   }
 
   private toggleSnap(): void {

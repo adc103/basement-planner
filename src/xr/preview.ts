@@ -302,6 +302,10 @@ export class Preview {
     this.hintLabel.sprite.visible = true;
   }
 
+  occludableMaterials() {
+    return [this.rubberMat, this.openingMat];
+  }
+
   /** Persistent little markers (alignment clicks). */
   setMarkers(points: Vec2[]): void {
     while (this.markers.length < points.length) {
