@@ -1,0 +1,334 @@
+// End-to-end smoke test: production build + IWER (Meta's WebXR emulator) in headless Chrome.
+// Drives a virtual Quest 3 controller to draw walls, press menu buttons and undo,
+// then checks the saved plan. Usage: npm run build && node scripts/e2e.mjs
+import { chromium } from 'playwright-core';
+import { preview } from 'vite';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const iwerSrc = readFileSync(require.resolve('iwer/build/iwer.min.js'), 'utf8');
+const chromePath = process.env.CHROME_PATH || '/usr/bin/google-chrome';
+
+const server = await preview({ preview: { port: 4179, host: '127.0.0.1' }, logLevel: 'error' });
+const url = 'https://127.0.0.1:4179/';
+const browser = await chromium.launch({
+  executablePath: chromePath,
+  headless: true,
+  args: ['--no-proxy-server', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
+});
+const page = await browser.newPage({ viewport: { width: 1000, height: 800 }, ignoreHTTPSErrors: true });
+const errors = [];
+page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+// Remote assets (controller/hand models, fonts) can't load in an offline sandbox; they do on the headset.
+const offlineHosts = [];
+page.on('requestfailed', (r) => offlineHosts.push(new URL(r.url()).host));
+page.on('console', (m) => {
+  if (m.type() === 'error') errors.push(`console: ${m.text()}`);
+});
+await page.addInitScript(iwerSrc);
+await page.addInitScript(() => {
+  const d = new IWER.XRDevice(IWER.metaQuest3);
+  d.installRuntime({ forceInstall: true });
+  d.primaryInputMode = 'controller';
+  window.__dev = d;
+});
+
+let failures = 0;
+const check = (cond, msg) => {
+  console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`);
+  if (!cond) failures++;
+};
+
+const frames = (n = 6) => page.evaluate((n) => new Promise((r) => {
+  let i = 0;
+  const s = window.__dev.activeSession;
+  const tick = () => (++i >= n ? r() : s ? s.requestAnimationFrame(tick) : setTimeout(tick, 16));
+  s ? s.requestAnimationFrame(tick) : setTimeout(tick, 16);
+}), n);
+
+// Point the right controller straight down from 1.2 m above floor point (x, z).
+const aimDown = (side, x, z) =>
+  page.evaluate(({ side, x, z }) => {
+    const c = window.__dev.controllers[side];
+    c.position.set(x, 1.2, z);
+    // -90° about X: the controller's -Z (ray) points at the floor.
+    const s = Math.SQRT1_2;
+    c.quaternion.set(-s, 0, 0, s);
+  }, { side, x, z });
+
+const press = async (side, button = 'trigger') => {
+  await page.evaluate(({ side, button }) => window.__dev.controllers[side].updateButtonValue(button, 1), { side, button });
+  await frames(3);
+  await page.evaluate(({ side, button }) => window.__dev.controllers[side].updateButtonValue(button, 0), { side, button });
+  await frames(3);
+};
+
+const plan = () => page.evaluate(() => JSON.parse(JSON.stringify(window.basementPlanner.store.plan)));
+const wallLens = (p) =>
+  p.walls.map((w) => {
+    const a = p.nodes.find((n) => n.id === w.a);
+    const b = p.nodes.find((n) => n.id === w.b);
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  });
+
+try {
+  await page.goto(url);
+  await page.waitForSelector('#planner-dom', { timeout: 30000 });
+  check(true, 'page loads and the planner mounts');
+  check(await page.locator('#bp-enter').isEnabled(), 'Enter AR is available with the emulator');
+
+  await page.click('#bp-enter');
+  await page.waitForFunction(() => !!window.__dev.activeSession, null, { timeout: 15000 });
+  const mode = await page.evaluate(() => window.__dev.activeSession?.mode ?? window.__dev.activeSession?.[Object.getOwnPropertySymbols(window.__dev.activeSession)[0]]?.mode);
+  check(true, `XR session started (${mode ?? 'immersive'})`);
+  await frames(20);
+
+  // Keep the left controller out of the way, pointing up.
+  await page.evaluate(() => {
+    const c = window.__dev.controllers.left;
+    c.position.set(-0.4, 1.0, 0.2);
+    c.quaternion.set(0, 0, 0, 1);
+  });
+
+  // Draw an L: (0,-1) -> (2.0,-1) -> (2.0,-2.5). Lengths ~78.74" and ~59.06".
+  await aimDown('right', 0, -1);
+  await frames(4);
+  await press('right');
+  await aimDown('right', 2.0, -1.005); // slightly off axis: the 0° guide should catch it
+  await frames(4);
+  await press('right');
+  await aimDown('right', 2.004, -2.5);
+  await frames(4);
+  await press('right');
+  // Same spot again ends the chain.
+  await press('right');
+  await frames(6);
+
+  let p = await plan();
+  const lens = wallLens(p);
+  check(p.walls.length === 2, `two walls drawn (got ${p.walls.length})`);
+  check(lens.every((l) => Math.abs(l - Math.round(l)) < 1e-6), `lengths snap to whole inches (${lens.map((l) => l.toFixed(3)).join(', ')})`);
+  check(Math.abs(lens[0] - 79) <= 1 && Math.abs(lens[1] - 59) <= 1, 'lengths match the aimed points within 1"');
+  const n = p.nodes;
+  const ang = (a, b) => (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+  const [w1, w2] = p.walls.map((w) => [n.find((x) => x.id === w.a), n.find((x) => x.id === w.b)]);
+  const turn = Math.abs(((ang(...w2) - ang(...w1) + 540) % 360) - 180);
+  check(Math.abs(turn - 90) < 1e-6, `corner is exactly 90° (got ${turn.toFixed(4)}°)`);
+
+  // Undo with B removes the second wall.
+  await press('right', 'b-button');
+  p = await plan();
+  check(p.walls.length === 1, `B undoes the last wall (now ${p.walls.length})`);
+
+  // Press the Doors button on the menu with the controller ray, then place a door.
+  const btn = await page.evaluate(() => {
+    const app = window.basementPlanner;
+    const panel = app.menuPanel;
+    const mesh = panel.root.children.find((c) => c.name === 'btn:tool-doors');
+    if (!panel.visible || !mesh) return null;
+    mesh.updateWorldMatrix(true, false);
+    const v = mesh.getWorldPosition(mesh.position.clone());
+    const q = mesh.getWorldQuaternion(mesh.quaternion.clone());
+    const n = mesh.up.clone().set(0, 0, 1).applyQuaternion(q); // panel front normal
+    return { x: v.x, y: v.y, z: v.z, nx: n.x, ny: n.y, nz: n.z };
+  });
+  check(!!btn, 'wrist menu is shown above the left controller');
+  if (btn) {
+    await page.evaluate((b) => {
+      const c = window.__dev.controllers.right;
+      // Stand 40 cm in front of the button and point straight at it.
+      c.position.set(b.x + b.nx * 0.4, b.y + b.ny * 0.4, b.z + b.nz * 0.4);
+      // Rotate the controller's -Z onto -normal.
+      const fx = 0, fy = 0, fz = -1;
+      const tx = -b.nx, ty = -b.ny, tz = -b.nz;
+      const cx = fy * tz - fz * ty, cy = fz * tx - fx * tz, cz = fx * ty - fy * tx;
+      const w = 1 + fx * tx + fy * ty + fz * tz;
+      const l = Math.hypot(cx, cy, cz, w);
+      c.quaternion.set(cx / l, cy / l, cz / l, w / l);
+    }, btn);
+    await frames(6);
+    await press('right');
+    await frames(4);
+    if (process.env.E2E_DEBUG) console.log('debug', await page.evaluate(() => {
+      const app = window.basementPlanner;
+      const mesh = app.menuPanel.root.children.find((c) => c.name === 'btn:tool-doors');
+      const scene = app.world.scene;
+      return {
+        rayDesc: (scene.rayDescendants || []).length,
+        hasMesh: (scene.rayDescendants || []).includes(mesh),
+        pe: mesh.pointerEvents,
+        panelQuat: app.menuPanel.root.quaternion.toArray(),
+        panelPos: app.menuPanel.root.position.toArray(),
+        rightSrc: !!app.world.input.xr.getPrimaryInputSource('right'),
+        log: window.__clicks || [],
+      };
+    }));
+    const tool = await page.evaluate(() => window.basementPlanner.toolName);
+    check(tool === 'doors', `menu click switches to the door tool (tool=${tool})`);
+    p = await plan();
+    check(p.walls.length === 1, 'clicking the menu did not draw anything');
+  }
+
+  // Aim at the middle of the remaining wall (z = -1) from in front of it.
+  await page.evaluate(() => {
+    const c = window.__dev.controllers.right;
+    c.position.set(1.0, 1.2, 0.2);
+    // Point forward and a bit down at the wall face.
+    const pitch = -Math.atan2(1.2 - 1.0, 1.2) / 2;
+    c.quaternion.set(Math.sin(pitch), 0, 0, Math.cos(pitch));
+  });
+  await frames(6);
+  await press('right');
+  await frames(4);
+  p = await plan();
+  check(p.openings.length === 1, `door placed on the wall (openings=${p.openings.length})`);
+  if (p.openings[0]) check(p.openings[0].width === 32 && p.openings[0].height === 80, 'door is the 32" x 80" default');
+
+  // Typed length through the menu + keypad (controller ray clicks).
+  const clickButton = async (panelExpr, name) => {
+    const b = await page.evaluate(({ panelExpr, name }) => {
+      const panel = eval(panelExpr);
+      const mesh = panel.root.children.find((c) => c.name === name);
+      if (!panel.visible || !mesh) return null;
+      mesh.updateWorldMatrix(true, false);
+      const v = mesh.getWorldPosition(mesh.position.clone());
+      const n = mesh.up.clone().set(0, 0, 1).applyQuaternion(mesh.getWorldQuaternion(mesh.quaternion.clone()));
+      return { x: v.x, y: v.y, z: v.z, nx: n.x, ny: n.y, nz: n.z };
+    }, { panelExpr, name });
+    if (!b) return false;
+    await page.evaluate((b) => {
+      const c = window.__dev.controllers.right;
+      c.position.set(b.x + b.nx * 0.3, b.y + b.ny * 0.3, b.z + b.nz * 0.3);
+      const tx = -b.nx, ty = -b.ny, tz = -b.nz;
+      const cx = -tz * 0 + ty, cy = -tx, cz = 0; // (0,0,-1) x t
+      const w = 1 - tz;
+      const l = Math.hypot(cx, cy, cz, w) || 1;
+      c.quaternion.set(cx / l, cy / l, cz / l, w / l);
+    }, b);
+    await frames(5);
+    await press('right');
+    await frames(3);
+    await page.waitForTimeout(200); // human-speed taps
+    return true;
+  };
+  const menu = 'window.basementPlanner.menuPanel';
+  const keypad = 'window.basementPlanner.keypad.panel';
+  check(await clickButton(menu, 'btn:len'), 'Length... button reachable');
+  check(await page.evaluate(() => window.basementPlanner.keypad.open), 'keypad opens');
+  check(await clickButton(keypad, 'btn:kclr'), 'keypad Clear');
+  for (const k of ['1', '2', '0']) await clickButton(keypad, `btn:k${k}`);
+  await clickButton(keypad, 'btn:kok');
+  p = await plan();
+  check(Math.abs(wallLens(p)[0] - 120) < 1e-9, `typed 120 sets the wall to 10' 0" (got ${wallLens(p)[0]})`);
+  check(!(await page.evaluate(() => window.basementPlanner.keypad.open)), 'keypad closes after OK');
+
+  // Hand tracking: switch the emulator to hands and draw with pinches.
+  await clickButton(menu, 'btn:tool-walls');
+  await page.evaluate(() => (window.__dev.primaryInputMode = 'hand'));
+  await frames(10);
+  const handAim = (x, z) => page.evaluate(({ x, z }) => {
+    const h = window.__dev.hands.right;
+    h.position.set(x, 1.2, z);
+    const s = Math.SQRT1_2;
+    h.quaternion.set(-s, 0, 0, s);
+  }, { x, z });
+  const pinch = async () => {
+    await page.evaluate(() => window.__dev.hands.right.updatePinchValue(1));
+    await frames(4);
+    await page.evaluate(() => window.__dev.hands.right.updatePinchValue(0));
+    await frames(4);
+  };
+  const before = (await plan()).walls.length;
+  await handAim(-1, 0.5);
+  await frames(12);
+  const isHand = await page.evaluate(() => window.basementPlanner.hands.right.isHand);
+  check(isHand, 'right input is a tracked hand');
+  await pinch();
+  await handAim(-1, -1);
+  await frames(20);
+  await pinch();
+  await pinch();
+  p = await plan();
+  check(p.walls.length === before + 1, `pinch draws a wall with hands (walls ${before} -> ${p.walls.length})`);
+  await page.evaluate(() => (window.__dev.primaryInputMode = 'controller'));
+  await frames(6);
+
+  // Fine mode: hold the trigger, then move; the point moves at 1/4 speed.
+  {
+    await clickButton(menu, 'btn:tool-walls');
+    await aimDown('right', 0.5, 1.0);
+    await frames(5);
+    await page.evaluate(() => window.__dev.controllers.right.updateButtonValue('trigger', 1));
+    await page.waitForTimeout(700);
+    await frames(5);
+    // Tilt the ray ~5.7 degrees: at 1.2 m that is ~12 cm normally, ~3 cm in fine mode.
+    await page.evaluate(() => {
+      const c = window.__dev.controllers.right;
+      const a = -Math.PI / 2 + 0.1;
+      c.quaternion.set(Math.sin(a / 2), 0, 0, Math.cos(a / 2));
+    });
+    await frames(6);
+    const phase = await page.evaluate(() => window.basementPlanner.hands.right.phase);
+    check(phase === 'fine', `holding the trigger enters fine mode (phase=${phase})`);
+    await page.evaluate(() => window.__dev.controllers.right.updateButtonValue('trigger', 0));
+    await frames(4);
+    const chainStart = await page.evaluate(() => window.basementPlanner.wallTool.chain[0]);
+    const dz = chainStart ? chainStart.y - 1.0 / 0.0254 : NaN;
+    check(Math.abs(dz) > 0.3 && Math.abs(dz) < 2.5, `fine mode moved the point ${dz.toFixed(2)}" instead of ~4.7"`);
+    await page.evaluate(() => window.basementPlanner.wallTool.endChain());
+  }
+
+  // Two-point alignment: save references, knock the plan out of place, re-align.
+  {
+    check(await clickButton(menu, 'btn:tool-align'), 'Align tool selected');
+    const corner = async (x, z) => {
+      await aimDown('right', x, z);
+      await frames(5);
+      await press('right');
+    };
+    await corner(-1.5, 1.5);
+    await corner(2.5, 1.5);
+    let p2 = await plan();
+    check(!!p2.reference, 'two clicks save the reference corners');
+    const good = await page.evaluate(() => ({ ...window.basementPlanner.transform }));
+    // Simulate a new session where the room anchor moved: shift + rotate the plan.
+    await page.evaluate(() => window.basementPlanner.setTransform({ theta: 0.2, tx: 0.3, tz: -0.25 }));
+    await frames(3);
+    check(await clickButton(menu, 'btn:tool-align'), 'Align again');
+    await corner(-1.5, 1.5);
+    await corner(2.5, 1.5);
+    const t = await page.evaluate(() => ({ ...window.basementPlanner.transform }));
+    const errIn = Math.hypot(t.tx - good.tx, t.tz - good.tz) / 0.0254;
+    check(Math.abs(t.theta - good.theta) < 0.002 && errIn < 0.5, `re-align restores the plan (offset ${errIn.toFixed(3)}", angle ${(t.theta - good.theta).toFixed(5)} rad)`);
+    await clickButton(menu, 'btn:tool-walls');
+  }
+
+  // Autosave reaches localStorage.
+  await page.waitForTimeout(700);
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('basement-planner:plan:v1') || 'null'));
+  check(saved && saved.walls.length >= 1 && saved.openings.length === 1, 'plan is autosaved to localStorage');
+
+  await page.screenshot({ path: 'artifacts/e2e-xr.png' });
+
+  // Reload: the plan comes back.
+  await page.evaluate(() => window.__dev.activeSession?.end());
+  await page.reload();
+  await page.waitForSelector('#planner-dom');
+  const after = await plan();
+  check(after.walls.length === saved.walls.length && after.openings.length === 1, 'plan restores after a reload');
+  const stats = await page.locator('#bp-stats').innerText();
+  check(new RegExp(`${after.walls.length}\\s*new walls`, 'i').test(stats.replace(/\n/g, ' ')), 'flat page shows plan stats');
+  await page.screenshot({ path: 'artifacts/e2e-page.png' });
+} catch (e) {
+  console.error(e);
+  failures++;
+} finally {
+  if (offlineHosts.length) console.log(`note: could not reach ${[...new Set(offlineHosts)].join(', ')} (offline sandbox)`);
+  const relevant = errors.filter((e) => !/favicon|DevTools|WebGL|GPU stall|gl_/i.test(e) && !(offlineHosts.length && /ERR_NAME_NOT_RESOLVED|ERR_TUNNEL|ERR_PROXY/.test(e)));
+  check(relevant.length === 0, `no page errors${relevant.length ? ':\n  ' + relevant.join('\n  ') : ''}`);
+  await browser.close();
+  server.httpServer.close();
+  console.log(failures ? `\n${failures} check(s) failed` : '\nAll e2e checks passed');
+  process.exit(failures ? 1 : 0);
+}

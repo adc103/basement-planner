@@ -11,6 +11,8 @@
     "reference:status": "iwsdk reference status",
     "reference:warmup": "iwsdk reference warmup",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "e2e": "vite build && node scripts/e2e.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },
