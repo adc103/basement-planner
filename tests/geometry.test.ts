@@ -14,13 +14,26 @@ function build(fn: (s: PlanStore) => void): PlanStore {
 }
 
 describe('footprints', () => {
-  it('squares off a lone wall', () => {
+  it('extends free ends by half the thickness', () => {
     const s = build((s) => s.edit('w', (d) => addWallBetween(d, { x: 0, y: 0 }, { x: 100, y: 0 }, props)));
     const fp = [...computeFootprints(s.plan).values()][0];
-    expect(fp.leftA).toEqual({ x: 0, y: 2 });
-    expect(fp.rightA).toEqual({ x: 0, y: -2 });
-    expect(fp.leftB).toEqual({ x: 100, y: 2 });
-    expect(fp.rightB).toEqual({ x: 100, y: -2 });
+    expect(fp.leftA).toEqual({ x: -2, y: 2 });
+    expect(fp.rightA).toEqual({ x: -2, y: -2 });
+    expect(fp.leftB).toEqual({ x: 102, y: 2 });
+    expect(fp.rightB).toEqual({ x: 102, y: -2 });
+  });
+
+  it("doesn't move the outside corner when a perpendicular wall joins", () => {
+    const one = build((s) => s.edit('w', (d) => addWallBetween(d, { x: 0, y: 0 }, { x: 100, y: 0 }, props)));
+    const before = [...computeFootprints(one.plan).values()][0];
+    const two = build((s) =>
+      s.edit('w', (d) => {
+        addWallBetween(d, { x: 0, y: 0 }, { x: 100, y: 0 }, props);
+        addWallBetween(d, { x: 100, y: 0 }, { x: 100, y: 80 }, props);
+      }),
+    );
+    const after = computeFootprints(two.plan).get(two.plan.walls[0].id)!;
+    expect(dist(after.rightB, before.rightB)).toBeLessThan(1e-9);
   });
 
   it('miters an L corner with no gap or overlap', () => {
@@ -61,10 +74,10 @@ describe('footprints', () => {
     // The stem's base corners sit on the through-wall's top face (y = 2).
     expect(f.leftA.y).toBeCloseTo(2);
     expect(f.rightA.y).toBeCloseTo(2);
-    // Footprint areas sum to the expected total: through wall 200x4 + stem 4x78.
+    // Footprint areas sum to: through wall 204x4 (both ends extended) + stem 4x80 (top extended).
     let area = 0;
     for (const fp of fps.values()) area += Math.abs(polygonArea(footprintPoly(fp)));
-    expect(area).toBeCloseTo(200 * 4 + 4 * 78, 6);
+    expect(area).toBeCloseTo(204 * 4 + 4 * 80, 6);
   });
 
   it('handles different thicknesses at a corner', () => {
@@ -111,7 +124,7 @@ describe('prisms around openings', () => {
     expect(prisms).toHaveLength(6);
     // Volume check: wall minus the two holes.
     const vol = prisms.reduce((acc, p) => acc + Math.abs(polygonArea(p.poly)) * (p.z1 - p.z0), 0);
-    expect(vol).toBeCloseTo(200 * 4 * 96 - 32 * 4 * 80 - 30 * 4 * 20, 6);
+    expect(vol).toBeCloseTo(204 * 4 * 96 - 32 * 4 * 80 - 30 * 4 * 20, 6);
   });
 
   it('gives a plain wall a single prism', () => {

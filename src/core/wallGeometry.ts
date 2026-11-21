@@ -91,7 +91,22 @@ export function computeFootprints(plan: Plan): Map<string, WallFootprint> {
   }
 
   for (const [nodeId, list] of byNode) {
-    if (list.length < 2) continue;
+    if (list.length < 2) {
+      // Free end: extend by half the thickness so the end looks exactly like it
+      // will once another wall joins here (the outside corner doesn't move).
+      const inc = list[0];
+      const fp = fps.get(inc.wall.id);
+      if (!fp) continue;
+      const out = scale(inc.u, -inc.half); // away from the wall body
+      if (inc.atA) {
+        fp.leftA = add(fp.leftA, out);
+        fp.rightA = add(fp.rightA, out);
+      } else {
+        fp.leftB = add(fp.leftB, out);
+        fp.rightB = add(fp.rightB, out);
+      }
+      continue;
+    }
     const node = plan.nodes.find((n) => n.id === nodeId)!;
     const N = { x: node.x, y: node.y };
     list.sort((p, q) => p.angle - q.angle);
@@ -132,7 +147,10 @@ function miter(l1: Line, l2: Line, node: Vec2, limit: number): Vec2 | null {
   return p;
 }
 
-/** Point on the left/right face at distance s along the wall (s in [0, length]). */
+/**
+ * Point on the left/right face at distance s along the wall (s in [0, length]).
+ * s = 0 / length return the end-cap corners, which may sit past the node.
+ */
 function faceAt(fp: WallFootprint, side: 'left' | 'right', s: number): Vec2 {
   if (s <= 1e-6) return side === 'left' ? fp.leftA : fp.rightA;
   if (s >= fp.length - 1e-6) return side === 'left' ? fp.leftB : fp.rightB;

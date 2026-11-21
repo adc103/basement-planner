@@ -174,13 +174,17 @@ export class Preview {
       this.lengthLabel.sprite.visible = false;
       return;
     }
-    const n = perp(norm(sub(b, a)));
+    const d = norm(sub(b, a));
+    const n = perp(d);
     const h = thickness / 2;
+    // Ends extend half a thickness past the points, matching placed walls.
+    const a2 = { x: a.x - d.x * h, y: a.y - d.y * h };
+    const b2 = { x: b.x + d.x * h, y: b.y + d.y * h };
     const poly = [
-      { x: a.x - n.x * h, y: a.y - n.y * h },
-      { x: b.x - n.x * h, y: b.y - n.y * h },
-      { x: b.x + n.x * h, y: b.y + n.y * h },
-      { x: a.x + n.x * h, y: a.y + n.y * h },
+      { x: a2.x - n.x * h, y: a2.y - n.y * h },
+      { x: b2.x - n.x * h, y: b2.y - n.y * h },
+      { x: b2.x + n.x * h, y: b2.y + n.y * h },
+      { x: a2.x + n.x * h, y: a2.y + n.y * h },
     ];
     const pos: number[] = [];
     appendPrism(pos, poly, 0, height);
