@@ -1,5 +1,5 @@
 import { type Vec2 } from '../../core/geom2d.js';
-import { addMeasure } from '../../core/ops.js';
+import { addMeasure, wallNormalToward } from '../../core/ops.js';
 import { snap } from '../../core/snapping.js';
 import { formatLength } from '../../core/units.js';
 import type { AimHit, Tool, ToolContext } from './tool.js';
@@ -34,12 +34,17 @@ export class MeasureTool implements Tool {
     return this.a ? 'Point at the second spot' : 'Tape measure: pick the first spot';
   }
 
-  private point(aim: AimHit): { p: P3; kind: Parameters<ToolContext['preview']['showCursor']>[1] } | null {
+  private point(aim: AimHit): { p: P3; kind: Parameters<ToolContext['preview']['showCursor']>[1]; facing?: Vec2 | 'down' } | null {
     if (aim.wall && (!aim.floor || aim.wall.distM < aim.floorDistM - 0.02)) {
-      return { p: { x: aim.wall.point.x, y: aim.wall.point.y, z: Math.round(aim.wall.z * 4) / 4 }, kind: 'edge' };
+      return {
+        p: { x: aim.wall.point.x, y: aim.wall.point.y, z: Math.round(aim.wall.z * 4) / 4 },
+        kind: 'edge',
+        facing: wallNormalToward(this.ctx.store.plan, aim.wall.wallId, aim.eye),
+      };
     }
     if (aim.surface && (!aim.floor || aim.surface.distM < aim.floorDistM - 0.05)) {
-      return { p: { x: aim.surface.p.x, y: aim.surface.p.y, z: aim.surface.z }, kind: 'free' };
+      const s = aim.surface;
+      return { p: { x: s.p.x, y: s.p.y, z: s.z }, kind: 'free', facing: s.ny < -0.7 ? 'down' : s.n };
     }
     if (!aim.floor) return null;
     const from: Vec2 | undefined = this.a ? { x: this.a.x, y: this.a.y } : undefined;
@@ -53,7 +58,7 @@ export class MeasureTool implements Tool {
     if (!aim) return;
     const pt = this.point(aim);
     if (!pt) return;
-    pv.showCursorAt(pt.p, pt.kind, aim.fine);
+    pv.showCursorAt(pt.p, pt.kind, aim.fine, pt.facing);
     if (this.a) pv.showMeasureLine(this.a, pt.p, measureText(this.a, pt.p));
   }
 

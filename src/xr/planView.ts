@@ -40,7 +40,7 @@ const LUMBER_COLORS: Record<MemberKind, string> = {
   header: '#9a6a35',
   cripple: '#e3c48f',
 };
-import { findRoomFaces, resolveRooms } from '../core/rooms.js';
+import { findRoomFaces, openArea, resolveRooms } from '../core/rooms.js';
 import { formatLength, INCH_M } from '../core/units.js';
 import { computeFootprints, footprintPoly, wallPrisms, type WallFootprint } from '../core/wallGeometry.js';
 import { TextLabel } from './labels.js';
@@ -234,9 +234,34 @@ export class PlanView {
     return m;
   }
 
+  /** Flat polygon (plan inches) with holes at a height (m), with 4 ft texture UVs. */
+  private flatArea(outline: Array<{ x: number; y: number }>, holes: Array<Array<{ x: number; y: number }>>, y: number): BufferGeometry {
+    const contour = outline.map((p) => new Vector2(p.x * INCH_M, p.y * INCH_M));
+    const hs = holes.map((h) => h.map((p) => new Vector2(p.x * INCH_M, p.y * INCH_M)));
+    const all = [...contour, ...hs.flat()];
+    const pos: number[] = [];
+    const uv: number[] = [];
+    for (const tri of ShapeUtils.triangulateShape(contour, hs)) {
+      for (const t of tri) {
+        pos.push(all[t].x, y, all[t].y);
+        uv.push(all[t].x / 1.2192, all[t].y / 1.2192);
+      }
+    }
+    const geo = new BufferGeometry();
+    geo.setAttribute('position', new Float32BufferAttribute(pos, 3));
+    geo.setAttribute('uv', new Float32BufferAttribute(uv, 2));
+    return geo;
+  }
+
   private buildRooms(plan: Plan): void {
     this.roomMeshes.clear();
     const faces = findRoomFaces(plan);
+    const open = openArea(plan, faces);
+    if (open) {
+      const mesh = new Mesh(this.flatArea(open.outline, open.holes, 0.003), this.roomMat(plan.settings.floorFinish));
+      mesh.raycast = () => {};
+      this.content.add(mesh);
+    }
     const rooms = resolveRooms(plan, faces);
     const byKey = new Map<string, (typeof rooms)[number]>();
     for (const r of rooms) if (r.face) byKey.set(r.face.key, r);
@@ -346,6 +371,14 @@ export class PlanView {
   private buildCeilings(plan: Plan): void {
     const faces = findRoomFaces(plan);
     const rooms = resolveRooms(plan, faces);
+    const open = openArea(plan, faces);
+    if (open) {
+      const c = roomCeiling(plan, null);
+      const mesh = new Mesh(this.flatArea(open.outline, open.holes, c.height * INCH_M - 0.003), this.ceilingMat(c.type));
+      mesh.raycast = () => {};
+      mesh.renderOrder = 1;
+      this.content.add(mesh);
+    }
     for (const face of faces) {
       const room = rooms.find((r) => r.face?.key === face.key)?.room ?? null;
       const c = roomCeiling(plan, room);

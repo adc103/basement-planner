@@ -1,5 +1,6 @@
 import {
   DepthOccludable,
+  OcclusionShadersMode,
   FollowBehavior,
   Follower,
   EnvironmentRaycastTarget,
@@ -51,7 +52,7 @@ import { solveTwoPoint } from '../core/alignment.js';
 import { roomCeiling } from '../core/ops.js';
 import { CEILING_NAMES } from '../core/plan2d.js';
 import type { CeilingType } from '../core/plan.js';
-import { MARKER_INFO } from '../core/plan2d.js';
+import { FINISH_NAMES, MARKER_INFO } from '../core/plan2d.js';
 import { MARKER_TYPES } from '../core/plan.js';
 import { summarizeFraming } from '../core/framing.js';
 import type { Finish } from '../core/plan.js';
@@ -200,7 +201,7 @@ export class PlannerApp {
       carrier.add(mesh);
     }
     this.occluder = world.createTransformEntity(carrier, { parent: world.sceneEntity, persistent: true });
-    this.occluder.addComponent(DepthOccludable);
+    this.occluder.addComponent(DepthOccludable, { mode: OcclusionShadersMode.MinMaxSoftOcclusion });
 
     const ctx: CaptureContext = {
       roomMeshPoints: (c, r) => this.roomMeshPoints(c, r),
@@ -370,7 +371,7 @@ export class PlannerApp {
     const type = (t: CeilingType, label: string) => ({
       id: `ceil-${t}`,
       label: () => label,
-      onClick: () => this.setCeiling({ type: t }),
+      onClick: () => this.setCeiling({ type: t }, true),
       active: () => roomCeiling(this.store.plan, room()).type === t,
     });
     return {
@@ -381,7 +382,7 @@ export class PlannerApp {
       text: () => {
         const r = room();
         const c = roomCeiling(this.store.plan, r);
-        return `${r ? r.name : 'All rooms'}: ${CEILING_NAMES[c.type]}, ${formatLength(c.height)}`;
+        return `${r ? r.name : 'Whole basement'}: ${CEILING_NAMES[c.type]}, ${formatLength(c.height)}`;
       },
       rows: [
         [type('drywall', 'Drywall'), type('drop', 'Drop'), type('open', 'Open joists'), {
@@ -423,9 +424,10 @@ export class PlannerApp {
   }
 
   /** Change the ceiling of the selected room, or the plan default when no room is selected. */
-  private setCeiling(patch: { type?: CeilingType | null; height?: number | null }): void {
+  private setCeiling(patch: { type?: CeilingType | null; height?: number | null }, show = false): void {
     const r = this.roomsTool.selectedRoom();
     this.store.edit('Ceiling', (d) => {
+      if (show || patch.height) d.settings.showCeiling = true;
       if (r) {
         const room = d.rooms.find((x) => x.id === r.id);
         if (!room) return;
@@ -490,9 +492,14 @@ export class PlannerApp {
     const finish = (f: Finish, label: string) => ({
       id: `finish-${f}`,
       label: () => label,
-      onClick: () => rt().setFinish(f),
-      active: () => rt().selectedRoom()?.finish === f,
-      visible: has,
+      onClick: () => {
+        if (has()) rt().setFinish(f);
+        else
+          this.store.edit('Floor finish', (d) => {
+            d.settings.floorFinish = f;
+          });
+      },
+      active: () => (has() ? rt().selectedRoom()?.finish === f : this.store.plan.settings.floorFinish === f),
     });
     return {
       name: 'rooms',
@@ -500,7 +507,7 @@ export class PlannerApp {
       icon: 'rooms',
       defaultTool: 'rooms',
       tiles: [],
-      text: () => rt().describe(),
+      text: () => (has() ? rt().describe() : `Whole floor: ${FINISH_NAMES[this.store.plan.settings.floorFinish]} (tap a room to set just it)`),
       rows: [
         [name('Bedroom'), name('Office'), name('Family'), name('Bath')],
         [name('Gym'), name('Storage'), name('Utility'), name('Laundry')],
@@ -584,7 +591,7 @@ export class PlannerApp {
 
   private toggleOcclusion(): void {
     this.occlusionOn = !this.occlusionOn;
-    if (this.occlusionOn) this.occluder.addComponent(DepthOccludable);
+    if (this.occlusionOn) this.occluder.addComponent(DepthOccludable, { mode: OcclusionShadersMode.MinMaxSoftOcclusion });
     else this.occluder.removeComponent(DepthOccludable);
     this.toast(this.occlusionOn ? 'Real objects hide planned walls' : 'Planned walls always on top');
   }

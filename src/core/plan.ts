@@ -154,6 +154,8 @@ export const PlanSchema = z.object({
     autoImportScan: z.boolean().default(true),
     ceilingType: z.enum(CEILING_TYPES).default('drywall'),
     showCeiling: z.boolean().default(false),
+    /** Floor finish for the area outside named rooms. */
+    floorFinish: z.enum(FINISHES).default('none'),
     /** Default underside height for new soffits, inches. */
     soffitBottom: z.number().positive().default(84),
   }),

@@ -162,13 +162,23 @@ export class Preview {
   }
 
   /** Cursor at a 3D plan point (z = height in inches). */
-  showCursorAt(p: { x: number; y: number; z: number }, kind: SnapKind, fine: boolean): void {
+  showCursorAt(p: { x: number; y: number; z: number }, kind: SnapKind, fine: boolean, facing?: Vec2 | 'down'): void {
     this.showCursor(p, kind, fine);
     if (p.z > 0.5) {
       planToLocal(p, p.z, this.cursor.position);
-      this.dot.position.copy(this.cursor.position);
       planToLocal(p, p.z + 4, this.snapLabel.sprite.position);
     }
+    if (facing === 'down') {
+      this.cursor.quaternion.setFromAxisAngle(this.tmpA.set(1, 0, 0), Math.PI);
+      this.cursor.position.y -= 0.004;
+    } else if (facing && Math.hypot(facing.x, facing.y) > 0.1) {
+      // Stand the ring up on the wall, facing out, just proud of the surface.
+      this.tmpA.set(facing.x, 0, facing.y).normalize();
+      this.cursor.quaternion.setFromUnitVectors(this.tmpB.set(0, 1, 0), this.tmpA);
+      this.cursor.position.addScaledVector(this.tmpA, 0.006);
+    }
+    this.dot.position.copy(this.cursor.position);
+    this.dot.quaternion.copy(this.cursor.quaternion);
   }
 
   /** Yellow tape line between two 3D plan points with a length label. */
@@ -199,6 +209,8 @@ export class Preview {
 
   showCursor(p: Vec2, kind: SnapKind, fine: boolean): void {
     planToLocal(p, 0.15, this.cursor.position);
+    this.cursor.quaternion.identity();
+    this.dot.quaternion.identity();
     this.dot.position.copy(this.cursor.position);
     this.cursorMat.color.set(SNAP_COLORS[kind]);
     this.cursor.scale.setScalar(fine ? 0.5 : 1);

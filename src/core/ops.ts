@@ -379,3 +379,15 @@ export function roomCeiling(plan: AnyPlan, room?: Room | null): { height: number
     type: room?.ceilingType ?? plan.settings.ceilingType,
   };
 }
+
+/** Unit normal of a wall (plan space) on the side facing `toward`. */
+export function wallNormalToward(plan: AnyPlan, wallId: string, toward: Vec2): Vec2 | undefined {
+  const w = wallById(plan, wallId);
+  if (!w) return undefined;
+  const { a, b } = wallEnds(plan, w);
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  if (len < 1e-6) return undefined;
+  const n = { x: -(b.y - a.y) / len, y: (b.x - a.x) / len };
+  const side = (toward.x - a.x) * n.x + (toward.y - a.y) * n.y;
+  return side >= 0 ? n : { x: -n.x, y: -n.y };
+}

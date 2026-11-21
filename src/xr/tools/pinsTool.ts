@@ -1,4 +1,4 @@
-import { addMarker } from '../../core/ops.js';
+import { addMarker, wallNormalToward } from '../../core/ops.js';
 import type { MarkerType } from '../../core/plan.js';
 import { MARKER_INFO } from '../../core/plan2d.js';
 import { formatLength } from '../../core/units.js';
@@ -71,7 +71,10 @@ export class PinsTool implements Tool {
       if (aim.floor) pv.showHint(this.hint(), aim.floor, 20);
       return;
     }
-    pv.showCursorAt(p, 'free', aim.fine);
+    const where = PIN_PLACE[this.type];
+    const facing =
+      where === 'ceiling' ? 'down' : where !== 'wall' ? undefined : p.wallId ? wallNormalToward(this.ctx.store.plan, p.wallId, aim.eye) : aim.surface?.n;
+    pv.showCursorAt(p, 'free', aim.fine, facing);
     pv.showHint(`${MARKER_INFO[this.type].name}${p.z > 0 && PIN_PLACE[this.type] === 'wall' ? ` at ${formatLength(p.z)}` : ''}`, p, p.z + 8);
   }
 

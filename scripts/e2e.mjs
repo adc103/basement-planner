@@ -533,6 +533,21 @@ try {
     await clickButton(menu, 'btn:tab-build');
   }
 
+  // Whole-floor finish and ceiling, without walling in a room.
+  {
+    await page.evaluate(() => window.basementPlanner.roomsTool.select(null));
+    check(await clickButton(menu, 'btn:tab-rooms'), 'Rooms tab opens');
+    await page.evaluate(() => window.basementPlanner.roomsTool.select(null));
+    check(await clickButton(menu, 'btn:finish-lvp'), 'whole-floor finish button');
+    const ff = await page.evaluate(() => ({ f: window.basementPlanner.store.plan.settings.floorFinish, sel: window.basementPlanner.roomsTool.selectedRoom()?.finish ?? null, tool: window.basementPlanner.toolName }));
+    check(ff.f === 'lvp', `whole floor set to LVP (${JSON.stringify(ff)})`);
+    await page.evaluate(() => window.basementPlanner.store.edit('hide', (d) => { d.settings.showCeiling = false; }));
+    check(await clickButton(menu, 'btn:tab-ceiling'), 'Ceiling tab opens again');
+    check(await clickButton(menu, 'btn:ceil-open'), 'ceiling type button');
+    check(await page.evaluate(() => window.basementPlanner.store.plan.settings.showCeiling), 'picking a ceiling type shows the ceiling');
+    await clickButton(menu, 'btn:tab-build');
+  }
+
   const anchorsSaved = await page.evaluate(() => !!localStorage.getItem('basement-planner:ref-anchors:v1'));
   check(anchorsSaved, 'reference corners are saved as persistent anchors');
   const goodT = await page.evaluate(() => ({ ...window.basementPlanner.transform }));

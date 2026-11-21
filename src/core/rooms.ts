@@ -1,5 +1,5 @@
 import { add, angleOf, distToSegment, intersectLines, norm, perp, scale, sub, polygonArea, type Vec2 } from './geom2d.js';
-import { centroid, pointInPolygon } from './poly.js';
+import { centroid, convexHull, pointInPolygon } from './poly.js';
 import type { Plan, Room } from './plan.js';
 
 export interface RoomFace {
@@ -159,4 +159,23 @@ export function faceAt(faces: RoomFace[], p: Vec2): RoomFace | undefined {
 /** Pair each named room with its current face (null if its walls no longer close). */
 export function resolveRooms(plan: Plan, faces = findRoomFaces(plan)): Array<{ room: Room; face: RoomFace | null }> {
   return plan.rooms.map((room) => ({ room, face: faceAt(faces, room.seed) ?? null }));
+}
+
+/**
+ * The rest of the basement outside any closed room: the outline around every
+ * wall, with the closed rooms cut out. Lets the floor and ceiling show (and get
+ * a finish or ceiling type) before, or without, rooms being walled in.
+ */
+export function openArea(plan: Plan, faces = findRoomFaces(plan)): { outline: Vec2[]; holes: Vec2[][]; areaSqFt: number } | null {
+  if (plan.nodes.length < 3) return null;
+  const outline = convexHull(plan.nodes.map((n) => ({ x: n.x, y: n.y })));
+  const area = Math.abs(polygonArea(outline)) / 144;
+  if (outline.length < 3 || area < 20) return null;
+  const top = faces.filter((f) => !faces.some((g) => g !== f && g.areaSqFt > f.areaSqFt && pointInPolygon(f.center, g.inner)));
+  const holes = top.map((f) => f.inner);
+  const holeArea = holes.reduce((s, h) => s + Math.abs(polygonArea(h)) / 144, 0);
+  const rest = area - holeArea;
+  // Rooms cover essentially everything: nothing left to show.
+  if (rest < 10) return null;
+  return { outline, holes, areaSqFt: rest };
 }
