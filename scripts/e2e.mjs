@@ -15,7 +15,7 @@ const url = 'https://127.0.0.1:4179/';
 const browser = await chromium.launch({
   executablePath: chromePath,
   headless: true,
-  args: ['--no-proxy-server', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
+  args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--no-proxy-server', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
 });
 const page = await browser.newPage({ viewport: { width: 1000, height: 800 }, ignoreHTTPSErrors: true });
 const errors = [];
@@ -487,6 +487,21 @@ try {
     const sel = await page.evaluate(() => window.basementPlanner.roomsTool.selectedId);
     const target = sel ? pc.rooms.find((r) => r.id === sel)?.ceilingType : pc.settings.ceilingType;
     check(target === 'drop' && pc.settings.showCeiling, `ceiling set to drop and shown (${sel ? 'selected room' : 'all rooms'})`);
+    await clickButton(menu, 'btn:tab-build');
+  }
+
+  // Camera test (Chrome's fake camera stands in for the passthrough camera).
+  {
+    check(await clickButton(menu, 'btn:tab-scan'), 'Room tab opens');
+    check(await clickButton(menu, 'btn:camtest'), 'Camera test button');
+    const r = await page
+      .waitForFunction(() => JSON.parse(localStorage.getItem('basement-planner:camera-probe:v1') || 'null'), null, { timeout: 25000 })
+      .then((h) => h.jsonValue())
+      .catch(() => null);
+    const row = (n) => r?.rows.find((x) => x.name === n);
+    check(!!row('Camera stream during AR')?.ok, `camera stream opens during the AR session (${row('Camera stream during AR')?.detail})`);
+    check(!!row('Frame capture')?.ok && !!r?.thumb, `a frame is captured (${row('Frame capture')?.detail})`);
+    check(!!row('Frame rate')?.ok, `frame rate measured (${row('Frame rate')?.detail})`);
     await clickButton(menu, 'btn:tab-build');
   }
 

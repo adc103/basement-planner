@@ -1,6 +1,7 @@
 import { planFromJson, planToJson } from './core/persistence.js';
 import { createEmptyPlan } from './core/plan.js';
 import { FINISH_NAMES, renderPlanSvg, roomSummaries } from './core/plan2d.js';
+import { PROBE_KEY, type ProbeResult } from './xr/cameraProbe.js';
 import type { PlannerApp } from './xr/app.js';
 
 /**
@@ -75,6 +76,11 @@ export function mountDom(app: PlannerApp): void {
       <button class="danger" id="bp-new">Start over</button>
       <input type="file" id="bp-file" accept="application/json,.json" hidden />
     </div>
+    <div class="card" id="bp-probe-card" style="display:none">
+      <div class="head"><h2>Camera test results</h2><div class="row"><button class="small" id="bp-probe-copy">Copy results</button></div></div>
+      <table id="bp-probe"></table>
+      <img id="bp-probe-img" style="max-width:100%;border-radius:8px;margin-top:10px;display:none" alt="Captured camera frame"/>
+    </div>
     <div class="card">
       <h2>Controls</h2>
       <table>
@@ -135,6 +141,35 @@ export function mountDom(app: PlannerApp): void {
   });
   render();
   renderPlan();
+
+  const renderProbe = () => {
+    let r: ProbeResult | null = null;
+    try {
+      r = JSON.parse(localStorage.getItem(PROBE_KEY) || 'null');
+    } catch {
+      r = null;
+    }
+    $('bp-probe-card').style.display = r ? '' : 'none';
+    if (!r) return;
+    const mark = (ok: boolean | null) => (ok === true ? '✅' : ok === false ? '❌' : '➖');
+    $('bp-probe').innerHTML =
+      `<tr><td>Run at</td><td>${esc(new Date(r.at).toLocaleString())}</td></tr>` +
+      r.rows.map((x) => `<tr><td>${mark(x.ok)} ${esc(x.name)}</td><td>${esc(x.detail)}</td></tr>`).join('');
+    const img = $<HTMLImageElement>('bp-probe-img');
+    img.style.display = r.thumb ? '' : 'none';
+    if (r.thumb) img.src = r.thumb;
+    $('bp-probe-copy').onclick = () => {
+      const text = [`Camera test ${r!.at}`, r!.userAgent, ...r!.rows.map((x) => `${mark(x.ok)} ${x.name}: ${x.detail}`)].join('\n');
+      navigator.clipboard?.writeText(text).then(
+        () => msg('Results copied'),
+        () => msg('Copy failed: select the table text instead'),
+      );
+    };
+  };
+  renderProbe();
+  app.onSession((active) => {
+    if (!active) renderProbe();
+  });
 
   $('bp-print').onclick = () => window.print();
   $('bp-svg').onclick = () => {

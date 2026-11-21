@@ -45,6 +45,7 @@ import { RoomsTool } from './tools/roomsTool.js';
 import { PinsTool } from './tools/pinsTool.js';
 import { SoffitTool } from './tools/soffitTool.js';
 import { RefAnchors } from './refAnchors.js';
+import { CameraProbe } from './cameraProbe.js';
 import { planToLocal } from './planView.js';
 import { solveTwoPoint } from '../core/alignment.js';
 import { roomCeiling } from '../core/ops.js';
@@ -138,6 +139,7 @@ export class PlannerApp {
   };
   private meshCache: { key: unknown; pts: PP[] } | null = null;
   private refAnchors!: RefAnchors;
+  private probe!: CameraProbe;
   private anchorLockToasted = false;
   // Scratch objects (no per-frame allocation).
   private tmpV = new Vector3();
@@ -171,6 +173,7 @@ export class PlannerApp {
     // room across sessions when the headset can restore the anchor.
     this.planEntity.addComponent(XRAnchor);
     this.refAnchors = new RefAnchors(world);
+    this.probe = new CameraProbe(world, () => this.meshQuery?.() ?? [], () => this.planeQuery?.() ?? []);
 
     // Real-world hit testing for point-and-capture, one target per hand.
     for (const side of ['left', 'right'] as Side[]) {
@@ -311,6 +314,8 @@ export class PlannerApp {
         this.store.edit('Auto-import', (d) => {
           d.settings.autoImportScan = !d.settings.autoImportScan;
         }),
+      cameraTest: () => this.runCameraTest(),
+      cameraTestRunning: () => this.probe.running,
       hasRefs: () => !!this.store.plan.reference,
       resetRefs: () => this.resetReference(),
       viewMode: () => this.view.mode,
@@ -537,6 +542,24 @@ export class PlannerApp {
     }
     this.wrist.mode = next;
     this.toast(next === 'wrist' ? 'Menu on your left wrist' : next === 'float' ? 'Menu floats in front of you' : 'Menu pinned here');
+  }
+
+  private runCameraTest(): void {
+    if (this.probe.running) return;
+    this.toast('Camera test: allow the camera if asked', 4);
+    this.probe
+      .run((m) => this.toast(m, 4))
+      .then((r) => {
+        const fails = r.rows.filter((x) => x.ok === false).length;
+        const cam = r.rows.find((x) => x.name === 'Camera stream during AR');
+        this.toast(
+          cam?.ok
+            ? `Camera works in AR (${r.rows.find((x) => x.name === 'Frame rate')?.detail ?? ''}). Full results on the flat page.`
+            : `Camera test: ${fails} checks failed. Exit AR to see the results.`,
+          8,
+        );
+        this.refreshUi();
+      });
   }
 
   private toggleOcclusion(): void {

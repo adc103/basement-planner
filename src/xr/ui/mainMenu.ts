@@ -50,6 +50,8 @@ export interface MenuApi {
   autoImport(): boolean;
   toggleAutoImport(): void;
   hasRefs(): boolean;
+  cameraTest(): void;
+  cameraTestRunning(): boolean;
   resetRefs(): void;
   // view
   viewMode(): string;
@@ -398,6 +400,16 @@ export class MainMenu {
           [
             { id: 'auto', label: () => (a.autoImport() ? 'Auto-import on' : 'Auto-import off'), span: 2, onClick: () => a.toggleAutoImport(), active: () => a.autoImport() },
             { id: 'refreset', label: () => 'Reset refs', span: 2, onClick: () => a.resetRefs(), enabled: () => a.hasRefs() },
+          ],
+          [
+            {
+              id: 'camtest',
+              label: () => (a.cameraTestRunning() ? 'Testing camera...' : 'Camera test'),
+              icon: 'eye',
+              span: 2,
+              onClick: () => a.cameraTest(),
+              enabled: () => !a.cameraTestRunning(),
+            },
           ],
         ],
       },

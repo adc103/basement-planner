@@ -54,7 +54,8 @@
       "spatialUI": {
         "kit": "horizon",
         "preferredColorScheme": "dark"
-      }
+      },
+      "camera": true
     }
   },
   "dev": {
