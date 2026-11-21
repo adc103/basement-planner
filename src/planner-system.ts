@@ -1,4 +1,4 @@
-import { createSystem, XRPlane } from '@iwsdk/core';
+import { createSystem, XRMesh, XRPlane } from '@iwsdk/core';
 import { PlannerApp } from './xr/app.js';
 
 let instance: PlannerApp | null = null;
@@ -12,12 +12,20 @@ export function whenPlannerReady(): Promise<PlannerApp> {
 /** Drives the planner once per frame and gives it the detected room planes. */
 export class PlannerSystem extends createSystem({
   planes: { required: [XRPlane] },
+  meshes: { required: [XRMesh] },
 }) {
   private app!: PlannerApp;
 
   init(): void {
     this.app = new PlannerApp(this.world);
     this.app.planeQuery = () => this.queries.planes.entities;
+    this.app.meshQuery = () => this.queries.meshes.entities;
+    // Re-read the room scan whenever the headset reports new or removed planes/objects.
+    const onScan = () => this.app.scheduleAutoImport();
+    for (const q of [this.queries.planes, this.queries.meshes]) {
+      this.cleanupFuncs.push(q.subscribe('qualify', onScan));
+      this.cleanupFuncs.push(q.subscribe('disqualify', onScan));
+    }
     this.app.init();
     instance = this.app;
     // Handy for debugging from the browser console (and used by the e2e smoke test).

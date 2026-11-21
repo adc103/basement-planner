@@ -1,6 +1,8 @@
 import {
   BufferGeometry,
   Color,
+  CylinderGeometry,
+  MeshBasicMaterial,
   DoubleSide,
   EdgesGeometry,
   Float32BufferAttribute,
@@ -54,6 +56,8 @@ export class PlanView {
   showLabels = true;
   /** Meshes for raycasting, wallId in userData. */
   wallMeshes: Mesh[] = [];
+  /** Utility pin meshes for raycasting, markerId in userData. */
+  markerMeshes: Mesh[] = [];
 
   private matNew = new MeshStandardMaterial({ color: 0xf2efe8, roughness: 0.95, metalness: 0, side: DoubleSide });
   private matExisting = new MeshStandardMaterial({
@@ -72,9 +76,39 @@ export class PlanView {
     opacity: 0.75,
     side: DoubleSide,
   });
+  private matHover = new MeshStandardMaterial({
+    color: 0x9cc7ff,
+    emissive: new Color(0x10305a),
+    roughness: 0.9,
+    transparent: true,
+    opacity: 0.6,
+    side: DoubleSide,
+  });
+  private matSelected = new MeshStandardMaterial({
+    color: 0x3d8bff,
+    emissive: new Color(0x0d2a55),
+    roughness: 0.9,
+    transparent: true,
+    opacity: 0.7,
+    side: DoubleSide,
+  });
+  private matObstacle = new MeshStandardMaterial({
+    color: 0xa08a6a,
+    roughness: 1,
+    transparent: true,
+    opacity: 0.28,
+    depthWrite: false,
+    side: DoubleSide,
+  });
+  private edgeMatObstacle = new LineBasicMaterial({ color: 0xe0c49a, transparent: true, opacity: 0.8 });
+  private tapeMat = new MeshBasicMaterial({ color: 0xffd60a });
+  private tapeGeo = new CylinderGeometry(0.003, 0.003, 1, 6, 1).translate(0, 0.5, 0).rotateX(Math.PI / 2);
   private edgeMat = new LineBasicMaterial({ color: 0x2b3440 });
   private edgeMatExisting = new LineBasicMaterial({ color: 0x9fb4c8, transparent: true, opacity: 0.6 });
   private highlighted: string | null = null;
+  private highlightKind: 'hover' | 'danger' = 'danger';
+  private selected: string | null = null;
+  private extraLabels: TextLabel[] = [];
 
   constructor() {
     this.root.add(this.content);
@@ -99,14 +133,17 @@ export class PlanView {
     for (const c of [...this.content.children]) {
       this.content.remove(c);
       c.traverse((o) => {
-        if (o instanceof Mesh || o instanceof LineSegments) o.geometry.dispose();
+        if ((o instanceof Mesh || o instanceof LineSegments) && !o.userData.shared) o.geometry.dispose();
       });
     }
     for (const l of this.labels) l.label.dispose();
     for (const l of this.refMarkers) l.dispose();
+    for (const l of this.extraLabels) l.dispose();
+    this.extraLabels = [];
     this.labels = [];
     this.refMarkers = [];
     this.wallMeshes = [];
+    this.markerMeshes = [];
 
     const fps = computeFootprints(plan);
     for (const wall of plan.walls) {
@@ -114,6 +151,9 @@ export class PlanView {
       if (!fp) continue;
       this.buildWall(plan, wall, fp);
     }
+
+    this.buildObstacles(plan);
+    this.buildMeasures(plan);
 
     if (plan.reference) {
       const { r1, r2 } = plan.reference;
@@ -125,6 +165,53 @@ export class PlanView {
       });
     }
     this.highlighted = null;
+    this.applyMaterials();
+  }
+
+  private buildObstacles(plan: Plan): void {
+    for (const o of plan.obstacles) {
+      const pos: number[] = [];
+      appendPrism(pos, o.poly, 0, o.height);
+      const geo = new BufferGeometry();
+      geo.setAttribute('position', new Float32BufferAttribute(pos, 3));
+      geo.computeVertexNormals();
+      const mesh = new Mesh(geo, this.matObstacle);
+      mesh.renderOrder = 1;
+      mesh.raycast = () => {};
+      this.content.add(mesh);
+      const edges = new LineSegments(new EdgesGeometry(geo, 25), this.edgeMatObstacle);
+      edges.raycast = () => {};
+      this.content.add(edges);
+      const c = o.poly.reduce((acc, p) => ({ x: acc.x + p.x / o.poly.length, y: acc.y + p.y / o.poly.length }), { x: 0, y: 0 });
+      const l = new TextLabel(prettyLabel(o.label), { height: 0.035, bg: 'rgba(90,70,40,0.85)' });
+      planToLocal(c, o.height + 3, l.sprite.position);
+      this.content.add(l.sprite);
+      this.extraLabels.push(l);
+    }
+  }
+
+  private buildMeasures(plan: Plan): void {
+    const A = new Vector3();
+    const B = new Vector3();
+    const Z = new Vector3(0, 0, 1);
+    for (const m of plan.measures) {
+      planToLocal(m.a, m.a.z + 0.2, A);
+      planToLocal(m.b, m.b.z + 0.2, B);
+      const l = A.distanceTo(B);
+      if (l < 1e-3) continue;
+      const tape = new Mesh(this.tapeGeo, this.tapeMat);
+      tape.position.copy(A);
+      tape.quaternion.setFromUnitVectors(Z, B.clone().sub(A).normalize());
+      tape.scale.set(1, 1, l);
+      tape.raycast = () => {};
+      tape.userData.shared = true;
+      this.content.add(tape);
+      const label = new TextLabel(measureLabel(m.a, m.b), { height: 0.045, bg: 'rgba(120,95,0,0.9)' });
+      label.sprite.position.copy(A).add(B).multiplyScalar(0.5);
+      label.sprite.position.y += 0.05;
+      this.content.add(label.sprite);
+      this.extraLabels.push(label);
+    }
   }
 
   private buildWall(plan: Plan, wall: Wall, fp: WallFootprint): void {
@@ -195,13 +282,34 @@ export class PlanView {
     }
   }
 
-  setHighlight(wallId: string | null): void {
-    if (wallId === this.highlighted) return;
-    for (const m of this.wallMeshes) {
-      const isExisting = m.userData.kind === 'existing';
-      m.material = m.userData.wallId === wallId ? this.matHighlight : isExisting ? this.matExisting : this.matNew;
-    }
+  /** Hover highlight: 'danger' (red, delete tool) or 'hover' (light blue, edit tool). */
+  setHighlight(wallId: string | null, kind: 'hover' | 'danger' = 'danger'): void {
+    if (wallId === this.highlighted && kind === this.highlightKind) return;
     this.highlighted = wallId;
+    this.highlightKind = kind;
+    this.applyMaterials();
+  }
+
+  /** Persistent selection highlight (blue). */
+  setSelected(wallId: string | null): void {
+    if (wallId === this.selected) return;
+    this.selected = wallId;
+    this.applyMaterials();
+  }
+
+  private applyMaterials(): void {
+    for (const m of this.wallMeshes) {
+      const id = m.userData.wallId as string;
+      const base = m.userData.kind === 'existing' ? this.matExisting : this.matNew;
+      m.material =
+        id === this.highlighted
+          ? this.highlightKind === 'danger'
+            ? this.matHighlight
+            : this.matHover
+          : id === this.selected
+            ? this.matSelected
+            : base;
+    }
   }
 }
 
@@ -235,6 +343,15 @@ export function appendPrism(out: number[], poly: Vec2[], z0: number, z1: number)
     push(P[j][0], y0, P[j][1]);
     push(P[k][0], y0, P[k][1]);
   }
+}
+
+function prettyLabel(label: string): string {
+  const l = label.trim() || 'object';
+  return l.charAt(0).toUpperCase() + l.slice(1);
+}
+
+function measureLabel(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): string {
+  return formatLength(Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z), 8);
 }
 
 /** Door widths read better in inches (32"), long openings in feet. */

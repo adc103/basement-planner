@@ -46,3 +46,4 @@ pids/
 
 # Test output
 artifacts/
+.scratch/

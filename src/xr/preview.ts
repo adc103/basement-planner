@@ -1,5 +1,6 @@
 import {
   BoxGeometry,
+  CylinderGeometry,
   BufferGeometry,
   Color,
   DoubleSide,
@@ -66,6 +67,13 @@ export class Preview {
   readonly hintLabel = new TextLabel('', { height: 0.04, bg: 'rgba(0,0,0,0.75)' });
   private markers: Mesh[] = [];
   private m = new Matrix4();
+  private color = new Color();
+  private up = new Vector3(0, 1, 0);
+  private tapeMat = new MeshBasicMaterial({ color: 0xffd60a, depthTest: false, transparent: true });
+  private tape: Mesh;
+  private surfaceDisc: Mesh;
+  private tmpA = new Vector3();
+  private tmpB = new Vector3();
   private q = new Quaternion();
   private s = new Vector3();
   private p = new Vector3();
@@ -89,7 +97,15 @@ export class Preview {
     this.rubber.renderOrder = 25;
     this.openingBox = new Mesh(new BoxGeometry(1, 1, 1), this.openingMat);
     this.openingBox.renderOrder = 26;
-    for (const o of [this.cursor, this.dot, this.dashes, this.rubber, this.openingBox]) {
+    // Tape line: a unit cylinder stretched between two points.
+    this.tape = new Mesh(new CylinderGeometry(0.004, 0.004, 1, 8, 1).translate(0, 0.5, 0).rotateX(Math.PI / 2), this.tapeMat);
+    this.tape.renderOrder = 31;
+    this.surfaceDisc = new Mesh(
+      new RingGeometry(0.025, 0.04, 32),
+      new MeshBasicMaterial({ color: 0x31d158, depthTest: false, transparent: true, side: DoubleSide }),
+    );
+    this.surfaceDisc.renderOrder = 31;
+    for (const o of [this.cursor, this.dot, this.dashes, this.rubber, this.openingBox, this.tape, this.surfaceDisc]) {
       o.raycast = () => {};
       this.root.add(o);
     }
@@ -106,7 +122,45 @@ export class Preview {
     this.lengthLabel.sprite.visible = false;
     this.snapLabel.sprite.visible = false;
     this.hintLabel.sprite.visible = false;
+    this.tape.visible = false;
+    this.surfaceDisc.visible = false;
     this.dashCount = 0;
+  }
+
+  /** Cursor at a 3D plan point (z = height in inches). */
+  showCursorAt(p: { x: number; y: number; z: number }, kind: SnapKind, fine: boolean): void {
+    this.showCursor(p, kind, fine);
+    if (p.z > 0.5) {
+      planToLocal(p, p.z, this.cursor.position);
+      this.dot.position.copy(this.cursor.position);
+      planToLocal(p, p.z + 4, this.snapLabel.sprite.position);
+    }
+  }
+
+  /** Yellow tape line between two 3D plan points with a length label. */
+  showMeasureLine(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }, text: string): void {
+    const A = planToLocal(a, a.z + 0.2, this.tmpA);
+    const B = planToLocal(b, b.z + 0.2, this.tmpB);
+    const l = A.distanceTo(B);
+    if (l < 1e-3) return;
+    this.tape.position.copy(A);
+    this.lengthLabel.sprite.position.copy(A).add(B).multiplyScalar(0.5);
+    const dir = B.sub(A).normalize();
+    this.tape.quaternion.setFromUnitVectors(this.up.set(0, 0, 1), dir);
+    this.up.set(0, 1, 0);
+    this.tape.scale.set(1, 1, l);
+    this.tape.visible = true;
+    this.lengthLabel.setText(text);
+    this.lengthLabel.sprite.position.y += 0.06;
+    this.lengthLabel.sprite.visible = true;
+  }
+
+  /** Ring on a real surface, facing along its normal (plan-space horizontal normal). */
+  showSurfaceCursor(p: { x: number; y: number; z: number }, n: Vec2): void {
+    planToLocal(p, p.z, this.surfaceDisc.position);
+    this.tmpA.set(n.x, 0, n.y).normalize();
+    this.surfaceDisc.quaternion.setFromUnitVectors(this.tmpB.set(0, 0, 1), this.tmpA);
+    this.surfaceDisc.visible = true;
   }
 
   showCursor(p: Vec2, kind: SnapKind, fine: boolean): void {
@@ -134,7 +188,7 @@ export class Preview {
     if (l < 1e-3) return;
     const d = norm(sub(b, a));
     const ang = Math.atan2(d.y, d.x);
-    this.q.setFromAxisAngle(new Vector3(0, 1, 0), -ang);
+    this.q.setFromAxisAngle(this.up, -ang);
     const step = DASH_M + GAP_M;
     const n = Math.min(Math.floor(l / step) + 1, MAX_DASHES - this.dashCount);
     for (let i = 0; i < n; i++) {
@@ -145,7 +199,7 @@ export class Preview {
       this.s.set(len, 1, 0.006);
       this.m.compose(this.p, this.q, this.s);
       this.dashes.setMatrixAt(this.dashCount, this.m);
-      this.dashes.setColorAt(this.dashCount, new Color(color));
+      this.dashes.setColorAt(this.dashCount, this.color.set(color));
       this.dashCount++;
     }
   }

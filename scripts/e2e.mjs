@@ -124,8 +124,8 @@ try {
   // Press the Doors button on the menu with the controller ray, then place a door.
   const btn = await page.evaluate(() => {
     const app = window.basementPlanner;
-    const panel = app.menuPanel;
-    const mesh = panel.root.children.find((c) => c.name === 'btn:tool-doors');
+    const panel = app.menu.panel;
+    const mesh = panel.root.getObjectByName('btn:tool-doors');
     if (!panel.visible || !mesh) return null;
     mesh.updateWorldMatrix(true, false);
     const v = mesh.getWorldPosition(mesh.position.clone());
@@ -189,7 +189,7 @@ try {
   const clickButton = async (panelExpr, name) => {
     const b = await page.evaluate(({ panelExpr, name }) => {
       const panel = eval(panelExpr);
-      const mesh = panel.root.children.find((c) => c.name === name);
+      const mesh = panel.root.getObjectByName(name);
       if (!panel.visible || !mesh) return null;
       mesh.updateWorldMatrix(true, false);
       const v = mesh.getWorldPosition(mesh.position.clone());
@@ -212,8 +212,9 @@ try {
     await page.waitForTimeout(200); // human-speed taps
     return true;
   };
-  const menu = 'window.basementPlanner.menuPanel';
+  const menu = 'window.basementPlanner.menu.panel';
   const keypad = 'window.basementPlanner.keypad.panel';
+  check(await clickButton(menu, 'btn:tool-walls'), 'Walls tool tile');
   check(await clickButton(menu, 'btn:len'), 'Length... button reachable');
   check(await page.evaluate(() => window.basementPlanner.keypad.open), 'keypad opens');
   check(await clickButton(keypad, 'btn:kclr'), 'keypad Clear');
@@ -254,6 +255,87 @@ try {
   await page.evaluate(() => (window.__dev.primaryInputMode = 'controller'));
   await frames(6);
 
+  // Edit: drag a corner to a new spot (snapped), then select a wall and type its length.
+  {
+    check(await clickButton(menu, 'btn:tab-edit'), 'Edit tab opens');
+    const tool = await page.evaluate(() => window.basementPlanner.toolName);
+    check(tool === 'edit', `Edit tab selects the Select tool (tool=${tool})`);
+    // The first wall runs from (0,-1) m; drag that corner to (-0.3,-1.2) m.
+    const before = await plan();
+    const start = before.nodes.reduce((a, n) => (Math.hypot(n.x, n.y + 39.37) < Math.hypot(a.x, a.y + 39.37) ? n : a));
+    await aimDown('right', start.x * 0.0254, start.y * 0.0254);
+    await frames(5);
+    await page.evaluate(() => window.__dev.controllers.right.updateButtonValue('trigger', 1));
+    await frames(4);
+    for (let i = 1; i <= 6; i++) {
+      await aimDown('right', start.x * 0.0254 - 0.05 * i, start.y * 0.0254 - 0.0333 * i);
+      await frames(2);
+    }
+    await page.evaluate(() => window.__dev.controllers.right.updateButtonValue('trigger', 0));
+    await frames(4);
+    const after = await plan();
+    const moved = after.nodes.find((n) => n.id === start.id);
+    const dx = moved ? (moved.x - start.x) * 0.0254 : 0;
+    check(!!moved && Math.abs(dx + 0.3) < 0.03, `dragging moves the corner (${dx.toFixed(3)} m in x)`);
+    check(after.walls.length === before.walls.length, 'dragging keeps the walls connected');
+    const undoOne = await page.evaluate(() => {
+      window.basementPlanner.menu.panel.refresh();
+      return window.basementPlanner.store.undoLabel;
+    });
+    check(undoOne === 'Move corner', `the whole drag is one undo step (${undoOne})`);
+
+    // Tap the middle of the first wall to select it.
+    const w = after.walls[0];
+    const A = after.nodes.find((n) => n.id === w.a);
+    const B = after.nodes.find((n) => n.id === w.b);
+    const mid = { x: ((A.x + B.x) / 2) * 0.0254, z: ((A.y + B.y) / 2) * 0.0254 };
+    await page.evaluate((m) => {
+      const c = window.__dev.controllers.right;
+      c.position.set(m.x + 0.6, 1.0, m.z + 0.6);
+      const dx = -0.6, dy = -0.5, dz = -0.6;
+      const l = Math.hypot(dx, dy, dz);
+      const t = [dx / l, dy / l, dz / l];
+      // rotate (0,0,-1) onto t
+      const cx = t[1], cy = -t[0], cz = 0, ww = 1 - t[2];
+      const n = Math.hypot(cx, cy, cz, ww);
+      c.quaternion.set(cx / n, cy / n, cz / n, ww / n);
+    }, mid);
+    await frames(6);
+    await press('right');
+    await frames(4);
+    const selKind = await page.evaluate(() => window.basementPlanner.editTool.selection?.kind ?? null);
+    check(selKind === 'wall', `tapping a wall selects it (${selKind})`);
+    if (selKind === 'wall') {
+      check(await clickButton(menu, 'btn:e-len'), 'selection Length chip');
+      await clickButton(keypad, 'btn:kclr');
+      for (const k of ['9', '6']) await clickButton(keypad, `btn:k${k}`);
+      await clickButton(keypad, 'btn:kok');
+      const sel = await page.evaluate(() => window.basementPlanner.editTool.selection.id);
+      const p3 = await plan();
+      const sw = p3.walls.find((x) => x.id === sel);
+      const a3 = p3.nodes.find((n) => n.id === sw.a);
+      const b3 = p3.nodes.find((n) => n.id === sw.b);
+      check(Math.abs(Math.hypot(a3.x - b3.x, a3.y - b3.y) - 96) < 1e-6, 'selected wall set to 8\' 0" from the keypad');
+    }
+  }
+
+  // Tape measure: two floor points 1 m apart.
+  {
+    check(await clickButton(menu, 'btn:tab-measure'), 'Measure tab opens');
+    const n0 = (await plan()).measures.length;
+    await aimDown('right', 1.5, 0.5);
+    await frames(5);
+    await press('right');
+    await aimDown('right', 2.5, 0.5);
+    await frames(5);
+    await press('right');
+    const p4 = await plan();
+    const m = p4.measures.at(-1);
+    const len = m ? Math.hypot(m.a.x - m.b.x, m.a.y - m.b.y, m.a.z - m.b.z) : 0;
+    check(p4.measures.length === n0 + 1 && Math.abs(len - 39.37) < 0.5, `tape measures ~39 3/8" (${len.toFixed(2)})`);
+    await clickButton(menu, 'btn:tab-build');
+  }
+
   // Fine mode: hold the trigger, then move; the point moves at 1/4 speed.
   {
     await clickButton(menu, 'btn:tool-walls');
@@ -281,6 +363,7 @@ try {
 
   // Two-point alignment: save references, knock the plan out of place, re-align.
   {
+    check(await clickButton(menu, 'btn:tab-scan'), 'Room tab opens');
     check(await clickButton(menu, 'btn:tool-align'), 'Align tool selected');
     const corner = async (x, z) => {
       await aimDown('right', x, z);
@@ -301,6 +384,7 @@ try {
     const t = await page.evaluate(() => ({ ...window.basementPlanner.transform }));
     const errIn = Math.hypot(t.tx - good.tx, t.tz - good.tz) / 0.0254;
     check(Math.abs(t.theta - good.theta) < 0.002 && errIn < 0.5, `re-align restores the plan (offset ${errIn.toFixed(3)}", angle ${(t.theta - good.theta).toFixed(5)} rad)`);
+    await clickButton(menu, 'btn:tab-build');
     await clickButton(menu, 'btn:tool-walls');
   }
 
@@ -325,7 +409,12 @@ try {
   failures++;
 } finally {
   if (offlineHosts.length) console.log(`note: could not reach ${[...new Set(offlineHosts)].join(', ')} (offline sandbox)`);
-  const relevant = errors.filter((e) => !/favicon|DevTools|WebGL|GPU stall|gl_/i.test(e) && !(offlineHosts.length && /ERR_NAME_NOT_RESOLVED|ERR_TUNNEL|ERR_PROXY/.test(e)));
+  // The desktop emulator can't hit-test real surfaces without its synthetic-room module; the headset can.
+  const relevant = errors.filter(
+    (e) =>
+      !/favicon|DevTools|WebGL|GPU stall|gl_|Synthethic Environment Module/i.test(e) &&
+      !(offlineHosts.length && /ERR_NAME_NOT_RESOLVED|ERR_TUNNEL|ERR_PROXY/.test(e)),
+  );
   check(relevant.length === 0, `no page errors${relevant.length ? ':\n  ' + relevant.join('\n  ') : ''}`);
   await browser.close();
   server.httpServer.close();

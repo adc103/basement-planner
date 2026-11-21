@@ -19,6 +19,8 @@ export interface AimSample {
   dir: Vector3;
 }
 
+const HISTORY_LEN = 48; // ring buffer, ~0.5 s at 90 Hz
+
 export type PressPhase = 'idle' | 'pressing' | 'fine';
 
 const FINE_DELAY_S = 0.5;
@@ -43,8 +45,12 @@ export class HandAim {
   /** True when this frame's press began while pointing at UI. */
   pressOnUI = false;
 
+  /** Drag-style tools follow the live ray while pressed (no lock, no fine mode). */
+  dragMode = false;
+
   private filters: OneEuroFilter[] = [];
-  private history: AimSample[] = [];
+  private history: AimSample[] = Array.from({ length: HISTORY_LEN }, () => ({ t: -1, origin: new Vector3(), dir: new Vector3() }));
+  private head = 0;
   private pressT = 0;
   private lockOrigin = new Vector3();
   private lockDir = new Vector3();
@@ -52,6 +58,8 @@ export class HandAim {
   private wasActive = false;
   private tmpQ = new Quaternion();
   private tmpV = new Vector3();
+  private rawD = new Vector3();
+  private fwd = new Vector3(0, 0, -1);
 
   constructor(side: Side) {
     this.side = side;
@@ -76,18 +84,21 @@ export class HandAim {
     space.getWorldPosition(this.tmpV);
     space.getWorldQuaternion(this.tmpQ);
     const rawO = this.tmpV;
-    const rawD = new Vector3(0, 0, -1).applyQuaternion(this.tmpQ);
+    const rawD = this.rawD.copy(this.fwd).applyQuaternion(this.tmpQ);
     if (this.isHand) {
-      const vals = [rawO.x, rawO.y, rawO.z, rawD.x, rawD.y, rawD.z].map((v, i) => this.filters[i].filter(v, time));
-      this.origin.set(vals[0], vals[1], vals[2]);
-      this.dir.set(vals[3], vals[4], vals[5]).normalize();
+      const f = this.filters;
+      this.origin.set(f[0].filter(rawO.x, time), f[1].filter(rawO.y, time), f[2].filter(rawO.z, time));
+      this.dir.set(f[3].filter(rawD.x, time), f[4].filter(rawD.y, time), f[5].filter(rawD.z, time)).normalize();
     } else {
       this.origin.copy(rawO);
       this.dir.copy(rawD);
     }
 
-    this.history.push({ t: time, origin: this.origin.clone(), dir: this.dir.clone() });
-    while (this.history.length && this.history[0].t < time - HISTORY_S) this.history.shift();
+    const slot = this.history[this.head];
+    slot.t = time;
+    slot.origin.copy(this.origin);
+    slot.dir.copy(this.dir);
+    this.head = (this.head + 1) % HISTORY_LEN;
 
     // Select edges: hand pinch (session select events) or controller trigger.
     const st = xr.getSelectState(this.side);
@@ -96,7 +107,7 @@ export class HandAim {
     if (active && !this.wasActive) {
       this.selectStarted = true;
       this.pressT = time;
-      const past = this.isHand ? this.sampleAt(time - LOCK_LOOKBACK_S) : null;
+      const past = this.isHand && !this.dragMode ? this.sampleAt(time - LOCK_LOOKBACK_S) : null;
       this.lockOrigin.copy(past?.origin ?? this.origin);
       this.lockDir.copy(past?.dir ?? this.dir);
       this.phase = 'pressing';
@@ -105,12 +116,12 @@ export class HandAim {
     }
     this.wasActive = active;
 
-    if (this.phase === 'pressing' && time - this.pressT > FINE_DELAY_S) {
+    if (this.phase === 'pressing' && !this.dragMode && time - this.pressT > FINE_DELAY_S) {
       this.phase = 'fine';
       this.fineRefDir.copy(this.dir);
     }
 
-    if (this.phase === 'pressing') {
+    if (this.phase === 'pressing' && !this.dragMode) {
       this.aimOrigin.copy(this.lockOrigin);
       this.aimDir.copy(this.lockDir);
     } else if (this.phase === 'fine') {
@@ -130,13 +141,23 @@ export class HandAim {
     this.pressOnUI = false;
   }
 
+  /** Newest sample at or before time t (falls back to the oldest within history). */
   private sampleAt(t: number): AimSample | null {
     let best: AimSample | null = null;
+    let oldest: AimSample | null = null;
     for (const s of this.history) {
-      if (s.t <= t) best = s;
-      else break;
+      if (s.t < 0 || s.t < t - HISTORY_S) continue;
+      if (!oldest || s.t < oldest.t) oldest = s;
+      if (s.t <= t && (!best || s.t > best.t)) best = s;
     }
-    return best ?? this.history[0] ?? null;
+    return best ?? oldest;
+  }
+
+  /** Controller rumble (no-op for hands). */
+  pulse(world: World, intensity: number, ms: number): void {
+    const src = world.input.xr.getPrimaryInputSource(this.side);
+    const act = src?.gamepad?.hapticActuators?.[0] as { pulse?: (v: number, d: number) => Promise<boolean> } | undefined;
+    act?.pulse?.(intensity, ms)?.catch(() => {});
   }
 
   // --- Buttons (controllers only) -------------------------------------------

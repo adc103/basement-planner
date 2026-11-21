@@ -16,8 +16,8 @@
         "handTracking": true,
         "anchors": true,
         "planeDetection": true,
-        "meshDetection": false,
-        "hitTest": false
+        "meshDetection": true,
+        "hitTest": true
       }
     },
     "input": {
@@ -45,7 +45,7 @@
       "grabbing": false,
       "physics": false,
       "sceneUnderstanding": true,
-      "environmentRaycast": false,
+      "environmentRaycast": true,
       "spatialUI": {
         "kit": "horizon",
         "preferredColorScheme": "dark"

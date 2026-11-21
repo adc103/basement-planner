@@ -5,12 +5,21 @@ import type { PlanView } from '../planView.js';
 import type { Preview } from '../preview.js';
 
 export interface AimHit {
-  /** Raw aim point on the floor (plan inches), or null if the ray misses the floor. */
+  /** Aim point on the floor (plan inches), or null if the ray misses the floor. */
   floor: Vec2 | null;
   /** Distance from the hand to the floor point, meters (for snap radius). */
   floorDistM: number;
-  /** Closest wall mesh hit by the ray, if any. */
-  wall: { wallId: string; point: Vec2; distM: number } | null;
+  /** Closest planned/scanned wall hit by the ray. z = height of the hit, inches. */
+  wall: { wallId: string; point: Vec2; z: number; distM: number } | null;
+  /** Utility marker under the ray. */
+  marker: { id: string; distM: number } | null;
+  /**
+   * Real-world surface under the ray (headset hit test). n = horizontal part of the
+   * surface normal in plan space, ny = its vertical part.
+   */
+  surface: { p: Vec2; z: number; n: Vec2; ny: number; distM: number } | null;
+  /** Where the ray meets the ceiling plane (default wall height). */
+  ceiling: Vec2 | null;
   /** Fine mode: holding the press. */
   fine: boolean;
   pressing: boolean;
@@ -37,10 +46,16 @@ export interface Tool {
   deactivate(): void;
   /** Every frame with the active hand's aim (null when no hand is aiming). */
   hover(aim: AimHit | null): void;
+  /** Press began (not on UI). */
+  pressStart?(aim: AimHit): void;
+  /** Every frame while pressed. */
+  drag?(aim: AimHit): void;
   /** Press released: commit at the aim. */
   commit(aim: AimHit): void;
+  /** 'drag' tools follow the live ray while pressed (no pinch-lock, no fine mode). */
+  inputMode?(): 'place' | 'drag';
   /** Undo key: return true if handled by the tool. */
   undo?(): boolean;
-  /** Short instruction for the menu title. */
+  /** Short instruction for the menu header. */
   hint(): string;
 }

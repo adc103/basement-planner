@@ -1,5 +1,5 @@
 import { Vector3, type World } from '@iwsdk/core';
-import type { ButtonPanel } from './panel.js';
+import type { SpatialPanel } from './ui/spatialPanel.js';
 
 /**
  * Keeps the main menu on the left wrist (or pinned in the world).
@@ -15,10 +15,13 @@ export class WristMenu {
   private tmpC = new Vector3();
   private head = new Vector3();
   private wrist = new Vector3();
+  private tmpD = new Vector3();
 
   constructor(
     private world: World,
-    private panels: ButtonPanel[],
+    private panels: SpatialPanel[],
+    /** Height of the panel center above the wrist, meters. */
+    private lift = 0.16,
   ) {}
 
   update(): void {
@@ -42,11 +45,11 @@ export class WristMenu {
     }
     this.panels[0].setVisible(show);
     if (!show) return;
-    this.place(this.panels[0], this.wrist, source.hand ? 0.13 : 0.16);
+    this.place(this.panels[0], this.wrist, source.hand ? this.lift : this.lift + 0.03);
   }
 
   /** Place a panel above a point, facing the head (upright). */
-  place(panel: ButtonPanel, at: Vector3, up: number): void {
+  place(panel: SpatialPanel, at: Vector3, up: number): void {
     const root = panel.root;
     const pos = this.tmpA.copy(at);
     pos.y += up;
@@ -85,7 +88,7 @@ export class WristMenu {
     const toP = this.tmpC.set(p.transform.position.x, p.transform.position.y, p.transform.position.z).sub(W);
     // Left hand: palm normal = (pinky - wrist) x (index - wrist).
     const normal = toP.cross(toI).normalize();
-    const toHead = new Vector3().copy(this.head).sub(W).normalize();
+    const toHead = this.tmpD.copy(this.head).sub(W).normalize();
     const d = normal.dot(toHead);
     if (this.palmFacing && d < 0.25) this.palmFacing = false;
     else if (!this.palmFacing && d > 0.5) this.palmFacing = true;
