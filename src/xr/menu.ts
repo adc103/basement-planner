@@ -5,8 +5,13 @@ import type { SpatialPanel } from './ui/spatialPanel.js';
  * Keeps the main menu on the left wrist (or pinned in the world).
  * Hands: shown when the left palm faces you. Controllers: always above the left controller.
  */
+export type MenuMode = 'wrist' | 'float' | 'pinned';
+
 export class WristMenu {
-  pinned = false;
+  mode: MenuMode = 'wrist';
+  get pinned(): boolean {
+    return this.mode === 'pinned';
+  }
   /** Manual override for controllers (X button). */
   hiddenByUser = false;
   private palmFacing = false;
@@ -28,8 +33,9 @@ export class WristMenu {
     const world = this.world;
     const cam = world.camera;
     cam.getWorldPosition(this.head);
-    if (this.pinned) {
-      this.panels[0].setVisible(true);
+    if (this.mode !== 'wrist') {
+      // Pinned: stays put. Float: the Follower component moves it.
+      this.panels[0].setVisible(!this.hiddenByUser);
       return;
     }
     const source = world.input.xr.getPrimaryInputSource('left');
@@ -95,8 +101,8 @@ export class WristMenu {
     return this.palmFacing;
   }
 
-  /** Pin the menu where it is now (or unpin). */
+  /** Pin the menu where it is now (or go back to the wrist). */
   togglePin(): void {
-    this.pinned = !this.pinned;
+    this.mode = this.mode === 'pinned' ? 'wrist' : 'pinned';
   }
 }

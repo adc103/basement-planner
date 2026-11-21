@@ -1,6 +1,9 @@
 import {
   BoxGeometry,
   BufferGeometry,
+  CanvasTexture,
+  RepeatWrapping,
+  SRGBColorSpace,
   Color,
   InstancedMesh,
   Matrix4,
@@ -24,7 +27,8 @@ import {
 } from '@iwsdk/core';
 import { add, scale, type Vec2 } from '../core/geom2d.js';
 import { wallEnds } from '../core/ops.js';
-import type { Finish, Plan, Wall } from '../core/plan.js';
+import type { CeilingType, Finish, Plan, Wall } from '../core/plan.js';
+import { roomCeiling } from '../core/ops.js';
 import { FINISH_COLORS, FINISH_NAMES, MARKER_INFO } from '../core/plan2d.js';
 import { generateFraming, type Member, type MemberKind } from '../core/framing.js';
 
@@ -143,7 +147,7 @@ export class PlanView {
 
   /** Materials that real-world depth should be able to hide (planned content only). */
   occludableMaterials(): Material[] {
-    return [this.matNew, this.matHover, this.matSelected, this.matHighlight, this.matLumber];
+    return [this.matNew, this.matHover, this.matSelected, this.matHighlight, this.matLumber, this.matSoffit];
   }
 
   private applyMode(): void {
@@ -191,6 +195,8 @@ export class PlanView {
     this.buildRooms(plan);
     this.buildObstacles(plan);
     this.buildMarkers(plan);
+    this.buildSoffits(plan);
+    if (plan.settings.showCeiling) this.buildCeilings(plan);
     this.framing = [];
     if (this.mode === 'xray') this.buildFraming(plan);
     this.buildMeasures(plan);
@@ -298,6 +304,71 @@ export class PlanView {
     });
     mesh.instanceMatrix.needsUpdate = true;
     this.content.add(mesh);
+  }
+
+  private matSoffit = new MeshStandardMaterial({ color: 0xecebff, roughness: 0.95, transparent: true, opacity: 0.55, side: DoubleSide });
+  private ceilingMats = new Map<CeilingType, MeshBasicMaterial>();
+
+  private ceilingMat(type: CeilingType): MeshBasicMaterial {
+    let m = this.ceilingMats.get(type);
+    if (!m) {
+      m = new MeshBasicMaterial({ map: ceilingTexture(type), transparent: true, opacity: 0.55, depthWrite: false, side: DoubleSide });
+      this.ceilingMats.set(type, m);
+    }
+    return m;
+  }
+
+  private buildSoffits(plan: Plan): void {
+    for (const sf of plan.soffits) {
+      const top = plan.settings.wallHeight;
+      if (sf.bottom >= top) continue;
+      const pos: number[] = [];
+      appendPrism(pos, sf.poly, sf.bottom, top);
+      const geo = new BufferGeometry();
+      geo.setAttribute('position', new Float32BufferAttribute(pos, 3));
+      geo.computeVertexNormals();
+      const mesh = new Mesh(geo, this.matSoffit);
+      mesh.raycast = () => {};
+      mesh.renderOrder = 2;
+      this.content.add(mesh);
+      const edges = new LineSegments(new EdgesGeometry(geo, 25), this.edgeMat);
+      edges.raycast = () => {};
+      this.content.add(edges);
+      const c = sf.poly.reduce((acc, p) => ({ x: acc.x + p.x / sf.poly.length, y: acc.y + p.y / sf.poly.length }), { x: 0, y: 0 });
+      const l = new TextLabel(`Soffit ${formatLength(sf.bottom)}`, { height: 0.035, bg: 'rgba(70,60,160,0.85)' });
+      planToLocal(c, sf.bottom - 3, l.sprite.position);
+      this.content.add(l.sprite);
+      this.extraLabels.push(l);
+    }
+  }
+
+  /** Ceiling planes over every closed area, in each room's type and height. */
+  private buildCeilings(plan: Plan): void {
+    const faces = findRoomFaces(plan);
+    const rooms = resolveRooms(plan, faces);
+    for (const face of faces) {
+      const room = rooms.find((r) => r.face?.key === face.key)?.room ?? null;
+      const c = roomCeiling(plan, room);
+      const contour = face.inner.map((p) => new Vector2(p.x * INCH_M, p.y * INCH_M));
+      const holes = face.holes.map((h) => h.map((p) => new Vector2(p.x * INCH_M, p.y * INCH_M)));
+      const all = [...contour, ...holes.flat()];
+      const pos: number[] = [];
+      const uv: number[] = [];
+      const y = c.height * INCH_M - 0.003;
+      for (const tri of ShapeUtils.triangulateShape(contour, holes)) {
+        for (const t of tri) {
+          pos.push(all[t].x, y, all[t].y);
+          uv.push(all[t].x / 1.2192, all[t].y / 1.2192); // texture tile = 4 ft
+        }
+      }
+      const geo = new BufferGeometry();
+      geo.setAttribute('position', new Float32BufferAttribute(pos, 3));
+      geo.setAttribute('uv', new Float32BufferAttribute(uv, 2));
+      const mesh = new Mesh(geo, this.ceilingMat(c.type));
+      mesh.raycast = () => {};
+      mesh.renderOrder = 1;
+      this.content.add(mesh);
+    }
   }
 
   private markerMat(color: string): MeshStandardMaterial {
@@ -501,6 +572,37 @@ export function appendPrism(out: number[], poly: Vec2[], z0: number, z1: number)
     push(P[j][0], y0, P[j][1]);
     push(P[k][0], y0, P[k][1]);
   }
+}
+
+/** 4 ft repeating ceiling pattern: plain drywall, a 2x4 drop-ceiling grid, or joists at 16" o.c. */
+function ceilingTexture(type: CeilingType): CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 256;
+  const g = c.getContext('2d')!;
+  if (type === 'open') {
+    g.fillStyle = '#3c3f45';
+    g.fillRect(0, 0, 256, 256);
+    g.fillStyle = '#b08a58';
+    for (let i = 0; i < 3; i++) g.fillRect(((i * 16) / 48) * 256, 0, 10, 256); // joists every 16"
+  } else {
+    g.fillStyle = '#f4f4f2';
+    g.fillRect(0, 0, 256, 256);
+    if (type === 'drop') {
+      g.strokeStyle = '#9aa0a8';
+      g.lineWidth = 5;
+      g.strokeRect(0, 0, 256, 256);
+      g.beginPath();
+      g.moveTo(128, 0);
+      g.lineTo(128, 256);
+      g.stroke(); // 2' x 4' tiles
+    }
+  }
+  const t = new CanvasTexture(c);
+  t.wrapS = RepeatWrapping;
+  t.wrapT = RepeatWrapping;
+  t.colorSpace = SRGBColorSpace;
+  return t;
 }
 
 function prettyLabel(label: string): string {

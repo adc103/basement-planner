@@ -465,6 +465,35 @@ try {
     await clickButton(menu, 'btn:tool-walls');
   }
 
+  // Ceiling: drag a soffit, switch the ceiling type.
+  {
+    check(await clickButton(menu, 'btn:tab-ceiling'), 'Ceiling tab opens');
+    check(await clickButton(menu, 'btn:tool-soffit'), 'Soffit tool');
+    await aimDown('right', 0.5, 2.0);
+    await frames(5);
+    await page.evaluate(() => window.__dev.controllers.right.updateButtonValue('trigger', 1));
+    await frames(3);
+    for (let i = 1; i <= 5; i++) {
+      await aimDown('right', 0.5 + i * 0.12, 2.0 + i * 0.06);
+      await frames(2);
+    }
+    await page.evaluate(() => window.__dev.controllers.right.updateButtonValue('trigger', 0));
+    await frames(4);
+    const sf = (await plan()).soffits;
+    check(sf.length === 1 && sf[0].bottom === 84, `soffit added at 7' (${sf.length})`);
+    await clickButton(menu, 'btn:ceil-drop');
+    // A room is still selected from the Rooms step, so the change applies to that room.
+    const pc = await plan();
+    const sel = await page.evaluate(() => window.basementPlanner.roomsTool.selectedId);
+    const target = sel ? pc.rooms.find((r) => r.id === sel)?.ceilingType : pc.settings.ceilingType;
+    check(target === 'drop' && pc.settings.showCeiling, `ceiling set to drop and shown (${sel ? 'selected room' : 'all rooms'})`);
+    await clickButton(menu, 'btn:tab-build');
+  }
+
+  const anchorsSaved = await page.evaluate(() => !!localStorage.getItem('basement-planner:ref-anchors:v1'));
+  check(anchorsSaved, 'reference corners are saved as persistent anchors');
+  const goodT = await page.evaluate(() => ({ ...window.basementPlanner.transform }));
+
   // Autosave reaches localStorage.
   await page.waitForTimeout(700);
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('basement-planner:plan:v1') || 'null'));
@@ -478,6 +507,20 @@ try {
   await page.waitForSelector('#planner-dom');
   const after = await plan();
   check(after.walls.length === saved.walls.length && after.openings.length === 1, 'plan restores after a reload');
+  // Next session: the plan is knocked out of place, and the anchors pull it back.
+  await page.evaluate(() => window.basementPlanner.setTransform({ theta: 0.3, tx: 0.4, tz: -0.3 }));
+  await page.click('#bp-enter');
+  await page.waitForFunction(() => !!window.__dev.activeSession, null, { timeout: 15000 });
+  await page.waitForFunction(
+    (g) => {
+      const t = window.basementPlanner.transform;
+      return Math.abs(t.theta - g.theta) < 0.002 && Math.hypot(t.tx - g.tx, t.tz - g.tz) < 0.01;
+    },
+    goodT,
+    { timeout: 8000 },
+  ).then(() => check(true, 'saved anchors re-lock the plan in a new session'), () => check(false, 'saved anchors re-lock the plan in a new session'));
+  await page.evaluate(() => window.__dev.activeSession?.end());
+  await page.waitForTimeout(300);
   const stats = await page.locator('#bp-stats').innerText();
   check(new RegExp(`${after.walls.length}\\s*new walls`, 'i').test(stats.replace(/\n/g, ' ')), 'flat page shows plan stats');
   await page.screenshot({ path: 'artifacts/e2e-page.png' });

@@ -104,13 +104,28 @@ export type Marker = z.infer<typeof MarkerSchema>;
 export const FINISHES = ['none', 'carpet', 'lvp', 'tile', 'concrete', 'epoxy'] as const;
 export type Finish = (typeof FINISHES)[number];
 
+export const CEILING_TYPES = ['drywall', 'drop', 'open'] as const;
+export type CeilingType = (typeof CEILING_TYPES)[number];
+
 /** A named room. Its outline is the closed wall loop containing `seed`. */
 export const RoomSchema = z.object({
   id: z.string(),
   name: z.string(),
   seed: PointSchema,
   finish: z.enum(FINISHES).default('none'),
+  /** Overrides of the plan-wide ceiling (null = use the default). */
+  ceilingType: z.enum(CEILING_TYPES).nullable().default(null),
+  ceilingHeight: z.number().positive().nullable().default(null),
 });
+
+/** A lowered box in the ceiling (around ducts, beams, pipes). Footprint in plan inches. */
+export const SoffitSchema = z.object({
+  id: z.string(),
+  poly: z.array(PointSchema),
+  /** Height of the soffit's underside above the floor, inches. */
+  bottom: z.number().positive(),
+});
+export type Soffit = z.infer<typeof SoffitSchema>;
 export type Room = z.infer<typeof RoomSchema>;
 
 /** A saved tape-measure line, plan inches (z = height). */
@@ -137,6 +152,10 @@ export const PlanSchema = z.object({
     /** Fingerprint of the last room scan imported, so unchanged scans aren't re-imported. */
     scanSignature: z.string().nullable().default(null),
     autoImportScan: z.boolean().default(true),
+    ceilingType: z.enum(CEILING_TYPES).default('drywall'),
+    showCeiling: z.boolean().default(false),
+    /** Default underside height for new soffits, inches. */
+    soffitBottom: z.number().positive().default(84),
   }),
   nodes: z.array(NodeSchema).default([]),
   walls: z.array(WallSchema).default([]),
@@ -145,6 +164,7 @@ export const PlanSchema = z.object({
   markers: z.array(MarkerSchema).default([]),
   rooms: z.array(RoomSchema).default([]),
   measures: z.array(MeasureSchema).default([]),
+  soffits: z.array(SoffitSchema).default([]),
   /**
    * Two reference points (plan space) recorded on real-world corners.
    * Re-clicking the same two physical corners realigns the plan.

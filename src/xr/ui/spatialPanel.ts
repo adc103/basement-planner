@@ -28,7 +28,8 @@ export const THEME = {
   font: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
 };
 
-const PX_PER_M = 2400;
+/** Canvas pixels per meter of panel: high enough to stay crisp at arm's length. */
+const PX_PER_M = 3200;
 
 export interface ElState {
   hover: boolean;
@@ -83,6 +84,7 @@ export class SpatialPanel {
   readonly backing: Mesh;
   private els: Element[] = [];
   private openT = 1;
+  private aniso: number;
   feedback: Feedback | null = null;
 
   constructor(
@@ -91,6 +93,7 @@ export class SpatialPanel {
     readonly height: number,
     opts: { radius?: number; parent?: Entity } = {},
   ) {
+    this.aniso = Math.min(8, world.renderer.capabilities.getMaxAnisotropy());
     this.entity = world.createTransformEntity(this.root, { parent: opts.parent ?? world.sceneEntity, persistent: true });
     this.root.add(this.content);
     // Rounded glass backing.
@@ -122,6 +125,7 @@ export class SpatialPanel {
     canvas.height = H;
     const texture = new CanvasTexture(canvas);
     texture.colorSpace = SRGBColorSpace;
+    texture.anisotropy = this.aniso;
     const mesh = new Mesh(new PlaneGeometry(spec.w, spec.h), new MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false }));
     mesh.position.set(spec.x, spec.y, 0.001);
     mesh.renderOrder = 41;

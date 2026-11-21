@@ -91,7 +91,8 @@ export function mountDom(app: PlannerApp): void {
         <tr><td>Exact length</td><td>Menu Length... then type, e.g. <code>10'4 1/2</code>. A bare number is inches.</td></tr>
         <tr><td>Wall height</td><td>Menu H..., or the right thumbstick up/down (1" steps).</td></tr>
         <tr><td>Room scan</td><td>Your Quest Space Setup (walls, ceiling height, furniture boxes) loads automatically. New walls snap 1" off foundation walls and to object corners.</td></tr>
-        <tr><td>Coming back later</td><td>The plan normally reappears in place. If not: Align, then click Ref 1 and Ref 2 (the two floor corners you saved the first time).</td></tr>
+        <tr><td>Coming back later</td><td>Set two reference corners once (Room &gt; Align). They're saved as headset anchors, so the plan relocks itself every session. If the headset ever loses them: Align, then click Ref 1 and Ref 2 again.</td></tr>
+        <tr><td>Ceiling</td><td>Ceiling tab: drywall, drop or open joists, and height, for all rooms or the room selected in the Rooms tab. Soffit: drag a rectangle on the floor under a duct or beam.</td></tr>
       </table>
     </div>
   </main>`;

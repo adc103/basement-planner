@@ -1,6 +1,6 @@
 import { add, norm, perp, scale, sub, type Vec2 } from './geom2d.js';
-import { wallEnds } from './ops.js';
-import type { Finish, MarkerType, Plan } from './plan.js';
+import { roomCeiling, wallEnds } from './ops.js';
+import type { CeilingType, Finish, MarkerType, Plan, Room } from './plan.js';
 import { centroid } from './poly.js';
 import { findRoomFaces, resolveRooms } from './rooms.js';
 import { formatLength } from './units.js';
@@ -191,7 +191,12 @@ export function renderPlanSvg(plan: Plan, opts: PlanSvgOptions = {}): string {
   for (const face of faces) {
     const r = named.get(face.key);
     const lines = r
-      ? [r.room.name, `${face.areaSqFt.toFixed(0)} sq ft`, ...(r.room.finish !== 'none' ? [FINISH_NAMES[r.room.finish]] : [])]
+      ? [
+          r.room.name,
+          `${face.areaSqFt.toFixed(0)} sq ft`,
+          ...(r.room.finish !== 'none' ? [FINISH_NAMES[r.room.finish]] : []),
+          ...ceilingLine(plan, r.room),
+        ]
       : [`${face.areaSqFt.toFixed(0)} sq ft`];
     lines.forEach((l, i) => {
       const y = face.center.y + (i - (lines.length - 1) / 2) * text * 1.25;
@@ -199,6 +204,15 @@ export function renderPlanSvg(plan: Plan, opts: PlanSvgOptions = {}): string {
         `<text x="${f(face.center.x)}" y="${f(y)}" font-size="${f(i === 0 && r ? text * 1.15 : text * 0.9)}" font-weight="${i === 0 && r ? 700 : 500}" text-anchor="middle" dominant-baseline="middle" fill="${i === 0 && r ? '#1d2633' : '#55627a'}">${esc(l)}</text>`,
       );
     });
+  }
+
+  // Soffits (dashed: they are overhead).
+  for (const sf of plan.soffits) {
+    out.push(`<polygon points="${pts(sf.poly)}" fill="none" stroke="#6b5fd0" stroke-width="0.8" stroke-dasharray="5 3"/>`);
+    const c = centroid(sf.poly);
+    out.push(
+      `<text x="${f(c.x)}" y="${f(c.y)}" font-size="${f(text * 0.8)}" text-anchor="middle" dominant-baseline="middle" fill="#5a4fc0">Soffit ${esc(formatLength(sf.bottom))}</text>`,
+    );
   }
 
   // Measurements.
@@ -236,4 +250,12 @@ export function renderPlanSvg(plan: Plan, opts: PlanSvgOptions = {}): string {
 function cap(s: string): string {
   const t = s.trim() || 'object';
   return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+export const CEILING_NAMES: Record<CeilingType, string> = { drywall: 'Drywall ceiling', drop: 'Drop ceiling', open: 'Open joists' };
+
+function ceilingLine(plan: Plan, room: Room): string[] {
+  const c = roomCeiling(plan, room);
+  const custom = room.ceilingHeight !== null || room.ceilingType !== null;
+  return custom ? [`${CEILING_NAMES[c.type]} ${formatLength(c.height)}`] : [];
 }

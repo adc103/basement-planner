@@ -3,8 +3,8 @@ import { formatLength } from '../../core/units.js';
 import type { IconName } from './icons.js';
 import { chipRenderer, roundRenderer, SpatialPanel, tabRenderer, textRenderer, tileRenderer, THEME } from './spatialPanel.js';
 
-export type TabName = 'build' | 'edit' | 'measure' | 'rooms' | 'pins' | 'scan' | 'view';
-export type ToolName = 'walls' | 'doors' | 'capture' | 'edit' | 'delete' | 'measure' | 'align' | 'rooms' | 'pins';
+export type TabName = 'build' | 'edit' | 'measure' | 'rooms' | 'pins' | 'ceiling' | 'scan' | 'view';
+export type ToolName = 'walls' | 'doors' | 'capture' | 'edit' | 'delete' | 'measure' | 'align' | 'rooms' | 'pins' | 'soffit';
 
 /** Everything the menu needs from the app. */
 export interface MenuApi {
@@ -64,6 +64,8 @@ export interface MenuApi {
   toggleSnap(): void;
   pinned(): boolean;
   togglePin(): void;
+  menuMode(): string;
+  cycleMenuMode(): void;
   exit(): void;
   /** Extra tab content providers (rooms, pins), registered by later features. */
   extraTabs?: ExtraTab[];
@@ -95,7 +97,7 @@ export interface ChipDef {
 
 // Layout (meters).
 export const MENU_W = 0.34;
-export const MENU_H = 0.205;
+export const MENU_H = 0.25;
 const RAIL_W = 0.046;
 const PAD = 0.008;
 const CX0 = -MENU_W / 2 + RAIL_W + PAD * 1.5; // content left
@@ -415,7 +417,14 @@ export class MainMenu {
             { id: 'occlusion', label: () => 'Real objects hide walls', icon: 'eye', span: 4, onClick: () => a.toggleOcclusion(), active: () => a.occlusion() },
           ],
           [
-            { id: 'pin', label: () => (a.pinned() ? 'Unpin menu' : 'Pin menu here'), icon: 'thumbtack', span: 2, onClick: () => a.togglePin(), active: () => a.pinned() },
+            {
+              id: 'pin',
+              label: () => `Menu: ${a.menuMode() === 'wrist' ? 'wrist' : a.menuMode() === 'float' ? 'float' : 'pinned'}`,
+              icon: 'thumbtack',
+              span: 2,
+              onClick: () => a.cycleMenuMode(),
+              active: () => a.menuMode() !== 'wrist',
+            },
             { id: 'exit', label: () => 'Exit AR', icon: 'exit', tone: 'danger', span: 2, onClick: () => a.exit() },
           ],
         ],

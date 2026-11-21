@@ -19,8 +19,9 @@ controller). Tabs down the left side:
 | **Measure** | Tape measure between any two spots on the floor or walls; saved lines appear in the plan |
 | **Rooms** | Tap inside a closed area, pick a name and floor finish; area in sq ft |
 | **Pins** | Outlets, switches, panel (on walls, snapping to 12"/48"/54"), lights (ceiling), water heater, furnace, drain, pipe, post (floor) |
-| **Room** | Re-import the room scan, auto-import on/off, **Align** with two reference corners |
-| **View** | Ghost / Solid / **X-ray** (generated framing: studs at 16" o.c., plates, kings, jacks, headers), labels, snapping, real objects hide walls, pin menu, exit |
+| **Ceiling** | Ceiling type (drywall / drop / open joists) and height, plan-wide or for the selected room; show it in AR; **Soffit** tool (drag a rectangle under a duct or beam) |
+| **Room** | Re-import the room scan, auto-import on/off, **Align** with two reference corners (saved as persistent anchors: the plan relocks itself next session) |
+| **View** | Ghost / Solid / **X-ray** (generated framing: studs at 16" o.c., plates, kings, jacks, headers), labels, snapping, real objects hide walls, menu on wrist / floating / pinned, exit |
 
 Undo/redo sit in the menu's top-right corner (B/Y on controllers). Controllers: flick the
 right thumbstick left/right to switch tools; up/down changes wall height in the Walls tool.

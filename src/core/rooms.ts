@@ -14,6 +14,8 @@ export interface RoomFace {
   areaSqFt: number;
   /** Label position. */
   center: Vec2;
+  /** Outlines of rooms nested inside this one (holes in its floor/ceiling). */
+  holes: Vec2[][];
 }
 
 /**
@@ -81,6 +83,7 @@ export function findRoomFaces(plan: Plan): RoomFace[] {
         inner,
         areaSqFt: Math.abs(polygonArea(inner)) / 144,
         center: centroid(inner),
+        holes: [],
       });
     }
   }
@@ -96,6 +99,9 @@ export function findRoomFaces(plan: Plan): RoomFace[] {
       area -= Math.abs(polygonArea(grown));
     }
     f.areaSqFt = Math.max(0, area) / 144;
+    f.holes = top.map((g) =>
+      insetPolygon(g.outline, g.nodeIds.map((id, i) => -(half.get(`${id}|${g.nodeIds[(i + 1) % g.nodeIds.length]}`) ?? 0))),
+    );
     f.center = openSpot(f.inner, top.map((g) => g.outline));
   }
   return faces;

@@ -293,3 +293,20 @@ describe('scan objects', () => {
     expect(scanSignature(w, [])).not.toBe(scanSignature([{ a: { x: 0, y: 0 }, b: { x: 150, y: 0 } }], []));
   });
 });
+
+describe('ceiling', () => {
+  it('stores soffits and per-room ceiling overrides', async () => {
+    const { addSoffit, roomCeiling } = await import('../src/core/ops');
+    const s = mk((s) => box(s, 0, 0, 144, 120));
+    s.edit('sf', (d) => addSoffit(d, [{ x: 10, y: 10 }, { x: 40, y: 10 }, { x: 40, y: 22 }, { x: 10, y: 22 }], 84));
+    s.edit('room', (d) => upsertRoom(d, { x: 50, y: 50 }, { name: 'Theater', ceilingType: 'drop', ceilingHeight: 90 }));
+    expect(s.plan.soffits).toHaveLength(1);
+    const r = s.plan.rooms[0];
+    expect(roomCeiling(s.plan, r)).toEqual({ height: 90, type: 'drop' });
+    expect(roomCeiling(s.plan, null)).toEqual({ height: 96, type: 'drywall' });
+    const { renderPlanSvg } = await import('../src/core/plan2d');
+    const svg = renderPlanSvg(s.plan);
+    expect(svg).toContain('Soffit 7');
+    expect(svg).toContain('Drop ceiling 7');
+  });
+});

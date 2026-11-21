@@ -6,6 +6,8 @@ import type { AimHit, Tool, ToolContext } from './tool.js';
 export interface AlignHost {
   getTransform(): PlanTransform;
   setTransform(t: PlanTransform): void;
+  /** Lock the reference corners to the room with persistent anchors. */
+  anchorReferences(): void;
 }
 
 /**
@@ -75,7 +77,8 @@ export class AlignTool implements Tool {
         this.ctx.store.edit('Set reference corners', (d) => {
           d.reference = { r1, r2 };
         });
-        this.ctx.toast('Reference corners saved. Next session: Align, then click Ref 1 and Ref 2 again.', 6);
+        this.host.anchorReferences();
+        this.ctx.toast('Reference corners saved and anchored. The plan will relock itself next time.', 6);
       }
     } else {
       const sol = solveTwoPoint(ref.r1, ref.r2, w1, w2);
@@ -83,6 +86,7 @@ export class AlignTool implements Tool {
         this.ctx.toast('Those clicks were too close together. Try again.');
       } else {
         this.host.setTransform(sol.transform);
+        this.host.anchorReferences();
         const err = Math.abs(sol.spanError);
         const quality = err <= 0.5 ? 'great' : err <= 1.5 ? 'ok' : 'check the corners';
         this.ctx.toast(`Aligned (${quality}). Corner spacing off by ${formatLength(err, 8)}.`, 6);

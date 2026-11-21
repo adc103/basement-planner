@@ -324,7 +324,14 @@ export function upsertRoom(d: Draft<Plan>, seed: Vec2, patch: Partial<Omit<Room,
     return r.id;
   }
   const id = newId('r');
-  d.rooms.push({ id, seed: { ...seed }, name: patch.name ?? 'Room', finish: patch.finish ?? 'none' });
+  d.rooms.push({
+    id,
+    seed: { ...seed },
+    name: patch.name ?? 'Room',
+    finish: patch.finish ?? 'none',
+    ceilingType: patch.ceilingType ?? null,
+    ceilingHeight: patch.ceilingHeight ?? null,
+  });
   return id;
 }
 
@@ -345,4 +352,30 @@ export function deleteMeasure(d: Draft<Plan>, id: string): void {
 export function setObstacles(d: Draft<Plan>, obstacles: Array<Omit<Obstacle, 'id'>>): void {
   d.obstacles = d.obstacles.filter((o) => o.source === 'manual');
   for (const o of obstacles) d.obstacles.push({ ...o, id: newId('ob'), poly: o.poly.map((p) => ({ ...p })) });
+}
+
+// --- Ceiling ----------------------------------------------------------------------
+
+export function addSoffit(d: Draft<Plan>, poly: Vec2[], bottom: number): string | null {
+  if (poly.length < 3) return null;
+  const id = newId('sf');
+  d.soffits.push({ id, poly: poly.map((p) => ({ x: p.x, y: p.y })), bottom });
+  return id;
+}
+
+export function deleteSoffit(d: Draft<Plan>, id: string): void {
+  d.soffits = d.soffits.filter((s) => s.id !== id);
+}
+
+export function setSoffitBottom(d: Draft<Plan>, id: string, bottom: number): void {
+  const s = d.soffits.find((x) => x.id === id);
+  if (s && bottom > 0) s.bottom = bottom;
+}
+
+/** Ceiling height and type for a room (its overrides or the plan default). */
+export function roomCeiling(plan: AnyPlan, room?: Room | null): { height: number; type: Plan['settings']['ceilingType'] } {
+  return {
+    height: room?.ceilingHeight ?? plan.settings.wallHeight,
+    type: room?.ceilingType ?? plan.settings.ceilingType,
+  };
 }

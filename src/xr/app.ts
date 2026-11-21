@@ -1,5 +1,7 @@
 import {
   DepthOccludable,
+  FollowBehavior,
+  Follower,
   EnvironmentRaycastTarget,
   Group,
   Mesh,
@@ -41,6 +43,13 @@ import type { AimHit, Tool, ToolContext } from './tools/tool.js';
 import { WallTool } from './tools/wallTool.js';
 import { RoomsTool } from './tools/roomsTool.js';
 import { PinsTool } from './tools/pinsTool.js';
+import { SoffitTool } from './tools/soffitTool.js';
+import { RefAnchors } from './refAnchors.js';
+import { planToLocal } from './planView.js';
+import { solveTwoPoint } from '../core/alignment.js';
+import { roomCeiling } from '../core/ops.js';
+import { CEILING_NAMES } from '../core/plan2d.js';
+import type { CeilingType } from '../core/plan.js';
 import { MARKER_INFO } from '../core/plan2d.js';
 import { MARKER_TYPES } from '../core/plan.js';
 import { summarizeFraming } from '../core/framing.js';
@@ -68,6 +77,7 @@ const TOOL_LABEL: Record<ToolName, string> = {
   align: 'Align',
   rooms: 'Rooms',
   pins: 'Pins',
+  soffit: 'Soffit',
 };
 
 export interface AppStatus {
@@ -127,6 +137,8 @@ export class PlannerApp {
     right: { ok: false, t: -1, p: new Vector3(), n: new Vector3() },
   };
   private meshCache: { key: unknown; pts: PP[] } | null = null;
+  private refAnchors!: RefAnchors;
+  private anchorLockToasted = false;
   // Scratch objects (no per-frame allocation).
   private tmpV = new Vector3();
   private tmpV2 = new Vector3();
@@ -158,6 +170,7 @@ export class PlannerApp {
     // Keep the plan attached to IWSDK's persistent scene anchor, so it stays put in the
     // room across sessions when the headset can restore the anchor.
     this.planEntity.addComponent(XRAnchor);
+    this.refAnchors = new RefAnchors(world);
 
     // Real-world hit testing for point-and-capture, one target per hand.
     for (const side of ['left', 'right'] as Side[]) {
@@ -208,7 +221,9 @@ export class PlannerApp {
       align: new AlignTool(ctx, {
         getTransform: () => this.transform,
         setTransform: (t) => this.setTransform(t),
+        anchorReferences: () => this.anchorReferences(),
       }),
+      soffit: new SoffitTool(ctx, () => this.axisAngle),
     };
 
     this.menu = new MainMenu(world, this.menuApi());
@@ -216,10 +231,20 @@ export class PlannerApp {
     this.menu.panel.setVisible(false);
     this.keypad = new Keypad(world);
     this.wrist = new WristMenu(world, [this.menu.panel], MENU_H / 2 + 0.045);
-    world.scene.add(this.toastLabel.sprite);
+    // Toasts trail your view smoothly (SDK Follower) instead of being head-locked.
+    const toastEnt = world.createTransformEntity(this.toastLabel.sprite, { parent: world.sceneEntity, persistent: true });
+    toastEnt.addComponent(Follower, {
+      target: world.player.head,
+      offsetPosition: [0, -0.3, -0.9],
+      behavior: FollowBehavior.FaceTarget,
+      maxAngle: 25,
+      tolerance: 0.2,
+      speed: 4,
+    });
     world.scene.add(this.toolChip.sprite);
     this.toastLabel.sprite.visible = false;
     this.toolChip.sprite.visible = false;
+    TextLabel.anisotropy = Math.min(8, world.renderer.capabilities.getMaxAnisotropy());
     this.showToolChip();
     this.uiObjs = [this.menu.panel.backing, this.keypad.panel.backing];
 
@@ -308,9 +333,96 @@ export class PlannerApp {
       toggleSnap: () => this.toggleSnap(),
       pinned: () => !!this.wrist?.pinned,
       togglePin: () => this.wrist.togglePin(),
+      menuMode: () => this.wrist?.mode ?? 'wrist',
+      cycleMenuMode: () => this.cycleMenuMode(),
       exit: () => this.world.exitXR(),
-      extraTabs: [this.roomsTab(), this.pinsTab()],
+      extraTabs: [this.roomsTab(), this.pinsTab(), this.ceilingTab()],
     };
+  }
+
+  private ceilingTab(): NonNullable<MenuApi['extraTabs']>[number] {
+    const room = () => this.roomsTool.selectedRoom() ?? null;
+    const type = (t: CeilingType, label: string) => ({
+      id: `ceil-${t}`,
+      label: () => label,
+      onClick: () => this.setCeiling({ type: t }),
+      active: () => roomCeiling(this.store.plan, room()).type === t,
+    });
+    return {
+      name: 'ceiling',
+      label: 'Ceiling',
+      icon: 'height',
+      tiles: [{ id: 'soffit', icon: 'walls', label: () => 'Soffit', tool: 'soffit' }],
+      text: () => {
+        const r = room();
+        const c = roomCeiling(this.store.plan, r);
+        return `${r ? r.name : 'All rooms'}: ${CEILING_NAMES[c.type]}, ${formatLength(c.height)}`;
+      },
+      rows: [
+        [type('drywall', 'Drywall'), type('drop', 'Drop'), type('open', 'Open joists'), {
+          id: 'ceil-show',
+          label: () => (this.store.plan.settings.showCeiling ? 'Shown' : 'Hidden'),
+          icon: 'eye',
+          onClick: () =>
+            this.store.edit('Show ceiling', (d) => {
+              d.settings.showCeiling = !d.settings.showCeiling;
+            }),
+          active: () => this.store.plan.settings.showCeiling,
+        }],
+        [
+          { id: 'ceil-h', label: () => 'Height', icon: 'height', onClick: () => this.typeCeilingHeight() },
+          {
+            id: 'ceil-default',
+            label: () => 'Use default',
+            span: 2,
+            onClick: () => this.setCeiling({ type: null, height: null }),
+            visible: () => !!room() && (room()!.ceilingType !== null || room()!.ceilingHeight !== null),
+          },
+        ],
+        [
+          {
+            id: 'soffit-h',
+            label: () => `Soffit bottom ${formatLength(this.store.plan.settings.soffitBottom)}`,
+            icon: 'keypad',
+            span: 3,
+            onClick: () =>
+              this.openKeypad('Soffit bottom height', this.store.plan.settings.soffitBottom, (h) =>
+                this.store.edit('Soffit height', (d) => {
+                  d.settings.soffitBottom = h;
+                }),
+              ),
+          },
+        ],
+      ],
+    };
+  }
+
+  /** Change the ceiling of the selected room, or the plan default when no room is selected. */
+  private setCeiling(patch: { type?: CeilingType | null; height?: number | null }): void {
+    const r = this.roomsTool.selectedRoom();
+    this.store.edit('Ceiling', (d) => {
+      if (r) {
+        const room = d.rooms.find((x) => x.id === r.id);
+        if (!room) return;
+        if (patch.type !== undefined) room.ceilingType = patch.type;
+        if (patch.height !== undefined) room.ceilingHeight = patch.height;
+      } else {
+        if (patch.type) d.settings.ceilingType = patch.type;
+        if (patch.height) d.settings.wallHeight = patch.height;
+      }
+      d.settings.showCeiling = true;
+    });
+  }
+
+  private typeCeilingHeight(): void {
+    const c = roomCeiling(this.store.plan, this.roomsTool.selectedRoom());
+    this.openKeypad(this.roomsTool.selectedRoom() ? 'Room ceiling height' : 'Ceiling height', c.height, (h) => {
+      if (h < 60 || h > 180) {
+        this.toast('Ceiling height should be between 5 and 15 ft');
+        return;
+      }
+      this.setCeiling({ height: h });
+    });
   }
 
   private pinsTab(): NonNullable<MenuApi['extraTabs']>[number] {
@@ -407,6 +519,26 @@ export class PlannerApp {
     this.refreshUi();
   }
 
+  /** Wrist -> Float (follows your view) -> Pinned (stays in the room). */
+  private cycleMenuMode(): void {
+    const order = ['wrist', 'float', 'pinned'] as const;
+    const next = order[(order.indexOf(this.wrist.mode) + 1) % order.length];
+    const ent = this.menu.panel.entity;
+    if (ent.hasComponent(Follower)) ent.removeComponent(Follower);
+    if (next === 'float') {
+      ent.addComponent(Follower, {
+        target: this.world.player.head,
+        offsetPosition: [0, -0.2, -0.55],
+        behavior: FollowBehavior.PivotY,
+        maxAngle: 40,
+        tolerance: 0.3,
+        speed: 2,
+      });
+    }
+    this.wrist.mode = next;
+    this.toast(next === 'wrist' ? 'Menu on your left wrist' : next === 'float' ? 'Menu floats in front of you' : 'Menu pinned here');
+  }
+
   private toggleOcclusion(): void {
     this.occlusionOn = !this.occlusionOn;
     if (this.occlusionOn) this.occluder.addComponent(DepthOccludable);
@@ -442,6 +574,17 @@ export class PlannerApp {
     root.position.copy(head).addScaledVector(fwd, 0.45);
     root.position.y -= 0.25;
     root.rotation.set(-0.5, Math.atan2(-fwd.x, -fwd.z), 0, 'YXZ');
+    // Keep it in front of you if you turn while typing.
+    if (!this.keypad.panel.entity.hasComponent(Follower)) {
+      this.keypad.panel.entity.addComponent(Follower, {
+        target: this.world.player.head,
+        offsetPosition: [0, -0.25, -0.45],
+        behavior: FollowBehavior.PivotY,
+        maxAngle: 35,
+        tolerance: 0.25,
+        speed: 3,
+      });
+    }
     this.refreshUi();
   }
 
@@ -465,6 +608,7 @@ export class PlannerApp {
   }
 
   private resetReference(): void {
+    this.refAnchors.forget();
     this.store.edit('Reset reference corners', (d) => {
       d.reference = null;
     });
@@ -555,7 +699,9 @@ export class PlannerApp {
       this.hands.left.update(world, time);
       this.hands.right.update(world, time);
       this.updateSurfaces(time);
+      this.updateRefAnchors();
       this.handleButtons(time);
+      if (!this.keypad.open && this.keypad.panel.entity.hasComponent(Follower)) this.keypad.panel.entity.removeComponent(Follower);
       this.wrist.update();
       this.menu.panel.tick(delta);
       this.handleTool();
@@ -564,6 +710,39 @@ export class PlannerApp {
 
     this.view.updateLabels(world.camera);
     this.updateToast();
+  }
+
+  /** Two persistent anchors on the reference corners keep the plan locked to the room. */
+  private anchorReferences(): void {
+    const ref = this.store.plan.reference;
+    if (!ref) return;
+    const root = this.view.root;
+    root.updateWorldMatrix(true, false);
+    const w1 = root.localToWorld(planToLocal(ref.r1));
+    const w2 = root.localToWorld(planToLocal(ref.r2));
+    this.refAnchors.place(w1, w2);
+  }
+
+  private updateRefAnchors(): void {
+    const ref = this.store.plan.reference;
+    if (!ref || !this.refAnchors.update()) return;
+    const parent = this.view.root.parent;
+    if (!parent) return;
+    const [w1, w2] = this.refAnchors.localPositions(parent);
+    const sol = solveTwoPoint(ref.r1, ref.r2, w1, w2);
+    if (!sol) return;
+    const t = this.transform;
+    const moveIn = Math.hypot(sol.transform.tx - t.tx, sol.transform.tz - t.tz) / INCH_M;
+    const turn = Math.abs(sol.transform.theta - t.theta);
+    // Ignore sub-quarter-inch jitter; correct anything bigger (session start, drift).
+    if (moveIn > 0.25 || turn > 0.0015) {
+      this.setTransform(sol.transform);
+      if (!this.anchorLockToasted) {
+        this.anchorLockToasted = true;
+        this.toast('Plan locked to your reference corners', 3);
+      }
+    }
+    this.needsAlignWarned = true; // the corners are tracked; no need to warn about the scene anchor
   }
 
   private checkAnchor(): void {
@@ -836,10 +1015,6 @@ export class PlannerApp {
       s.visible = false;
       return;
     }
-    const cam = this.world.camera;
-    const p = cam.getWorldPosition(this.tmpV);
-    const fwd = this.tmpV2.set(0, -0.35, -1).applyQuaternion(cam.getWorldQuaternion(this.tmpQ)).normalize();
-    s.position.copy(p).addScaledVector(fwd, 0.9);
   }
 
   /** Small tool name floating above the drawing hand. */
