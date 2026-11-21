@@ -505,6 +505,34 @@ try {
     await clickButton(menu, 'btn:tab-build');
   }
 
+  // Scan basement: start/stop with depth (emulator may lack it), then detect from a synthetic room.
+  {
+    check(await clickButton(menu, 'btn:tab-scan'), 'Room tab opens for scanning');
+    check(await clickButton(menu, 'btn:scan-depth'), 'Scan button starts a scan');
+    await page.waitForTimeout(1200);
+    const scanning = await page.evaluate(() => window.basementPlanner.scan.scanning);
+    check(scanning, 'scan is running');
+    const before = await page.evaluate(() => window.basementPlanner.store.plan.walls.length);
+    // Paint a 20' x 14' box room 30 ft away from the drawn walls, so detection has real structure.
+    await page.evaluate(() => {
+      const m = window.basementPlanner.scan.map;
+      const ox = 400, oy = 400, W = 240, D = 168, H = 96;
+      for (let k = 0; k < 2; k++) {
+        for (let x = 0; x <= W; x += 2) for (let z = 0; z <= H; z += 3) { m.add(ox + x, oy, z); m.add(ox + x, oy + D, z); }
+        for (let y = 0; y <= D; y += 2) for (let z = 0; z <= H; z += 3) { m.add(ox, oy + y, z); m.add(ox + W, oy + y, z); }
+        for (let x = 0; x <= W; x += 4) for (let y = 0; y <= D; y += 4) { m.add(ox + x, oy + y, 0); m.add(ox + x, oy + y, H); }
+      }
+    });
+    check(await clickButton(menu, 'btn:scan-depth'), 'Scan button stops the scan');
+    const found = await page.evaluate(() => window.basementPlanner.scan.count());
+    check(found >= 4, `scan finds the walls (${found} items)`);
+    check(await clickButton(menu, 'btn:scan-accept'), 'Add found button');
+    const after = await page.evaluate(() => window.basementPlanner.store.plan.walls.length);
+    check(after - before >= 4, `scanned walls added to the plan (${after - before})`);
+    await page.evaluate(() => window.basementPlanner.store.undo());
+    await clickButton(menu, 'btn:tab-build');
+  }
+
   const anchorsSaved = await page.evaluate(() => !!localStorage.getItem('basement-planner:ref-anchors:v1'));
   check(anchorsSaved, 'reference corners are saved as persistent anchors');
   const goodT = await page.evaluate(() => ({ ...window.basementPlanner.transform }));

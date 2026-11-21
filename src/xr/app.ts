@@ -57,6 +57,9 @@ import { summarizeFraming } from '../core/framing.js';
 import type { Finish } from '../core/plan.js';
 import { MainMenu, MENU_H, type MenuApi, type ToolName } from './ui/mainMenu.js';
 import { Sfx } from './ui/sfx.js';
+import { ScanSession } from './scanSession.js';
+import { addSoffit, addWallBetween } from '../core/ops.js';
+import { newId } from '../core/plan.js';
 
 const TRANSFORM_KEY = 'basement-planner:transform:v1';
 const IWSDK_ANCHOR_KEY = 'iwsdk_scene_anchor_uuid';
@@ -140,7 +143,9 @@ export class PlannerApp {
   private meshCache: { key: unknown; pts: PP[] } | null = null;
   private refAnchors!: RefAnchors;
   private probe!: CameraProbe;
+  scan!: ScanSession;
   private anchorLockToasted = false;
+  private depthWarned = false;
   // Scratch objects (no per-frame allocation).
   private tmpV = new Vector3();
   private tmpV2 = new Vector3();
@@ -173,6 +178,7 @@ export class PlannerApp {
     // room across sessions when the headset can restore the anchor.
     this.planEntity.addComponent(XRAnchor);
     this.refAnchors = new RefAnchors(world);
+    this.scan = new ScanSession(world, this.view.root);
     this.probe = new CameraProbe(world, () => this.meshQuery?.() ?? [], () => this.planeQuery?.() ?? []);
 
     // Real-world hit testing for point-and-capture, one target per hand.
@@ -309,6 +315,20 @@ export class PlannerApp {
         }),
       scanStatus: () => this.scanStatus(),
       importScan: () => this.importScan(false),
+      scanning: () => this.scan.scanning,
+      toggleScan: () => this.toggleDepthScan(),
+      scanProposals: () => this.scan.count(),
+      acceptScan: () => this.acceptDepthScan(),
+      discardScan: () => {
+        this.scan.discard();
+        this.scan.hide();
+        this.toast('Discarded what the scan found');
+      },
+      clearScan: () => {
+        this.scan.clear();
+        this.toast('Scan cleared');
+      },
+      hasScanMap: () => this.scan.hasMap,
       autoImport: () => this.store.plan.settings.autoImportScan,
       toggleAutoImport: () =>
         this.store.edit('Auto-import', (d) => {
@@ -722,6 +742,11 @@ export class PlannerApp {
       this.hands.left.update(world, time);
       this.hands.right.update(world, time);
       this.updateSurfaces(time);
+      this.scan.tick(time);
+      if (this.scan.scanning && this.scan.depthOk === false && !this.depthWarned) {
+        this.depthWarned = true;
+        this.toast('Depth is not available on this device, so scanning cannot work here', 6);
+      }
       this.updateRefAnchors();
       this.handleButtons(time);
       if (!this.keypad.open && this.keypad.panel.entity.hasComponent(Follower)) this.keypad.panel.entity.removeComponent(Follower);
@@ -918,7 +943,11 @@ export class PlannerApp {
         mesh = e;
       }
     }
-    if (!mesh || best < 30) return null;
+    if (!mesh || best < 30) {
+      if (!this.scan?.hasMap) return null;
+      const pts = this.scan.points().filter((p) => Math.hypot(p.x - center.x, p.y - center.y) <= radius);
+      return pts.length >= 30 ? pts : null;
+    }
     const raw = mesh.getValue(XRMesh, '_mesh') as unknown as { vertices: Float32Array };
     const root = this.view.root;
     const key = `${best}|${this.transform.theta}|${this.transform.tx}|${this.transform.tz}|${this.transform.floorY}`;
@@ -1052,7 +1081,68 @@ export class PlannerApp {
 
   // ------------------------------------------------------------- scan ----
 
+  private toggleDepthScan(): void {
+    const s = this.scan;
+    if (!s.scanning) {
+      this.depthWarned = false;
+      void s.start();
+      this.toast('Scanning: walk slowly and look at every wall, the ceiling and the floor', 6);
+      return;
+    }
+    s.stop();
+    const root = this.view.root;
+    root.updateWorldMatrix(true, false);
+    const e = root.worldToLocal(this.world.camera.getWorldPosition(this.eyeV));
+    const res = s.analyze(this.store.plan, { x: e.x / INCH_M, y: e.z / INCH_M });
+    const n = s.count();
+    if (!n) {
+      this.toast(s.map.size < 500 ? 'Not enough was seen yet. Scan again and look around more.' : 'No new walls or ceiling features found', 5);
+      return;
+    }
+    const parts = [`${res.walls.length} walls`];
+    if (res.soffits.length) parts.push(`${res.soffits.length} low areas`);
+    if (res.posts.length) parts.push(`${res.posts.length} posts`);
+    if (res.ceiling) parts.push(`ceiling ${formatLength(res.ceiling)}`);
+    this.toast(`Found ${parts.join(', ')}. Add them from the Room tab.`, 6);
+  }
+
+  private acceptDepthScan(): void {
+    const res = this.scan.proposals;
+    if (!res) return;
+    // Settle the floor first so heights match.
+    if (res.floorOffset && Math.abs(res.floorOffset) <= 8) {
+      this.transform.floorY += res.floorOffset * INCH_M;
+      this.applyTransform();
+      this.storeTransform();
+    }
+    const off = res.floorOffset ?? 0;
+    const ceiling = res.ceiling !== null ? res.ceiling - off : null;
+    const goodCeiling = ceiling !== null && ceiling > 60 && ceiling < 180;
+    this.store.edit('Add scanned structure', (d) => {
+      const H = goodCeiling ? ceiling! : d.settings.wallHeight;
+      if (goodCeiling) {
+        const old = d.settings.wallHeight;
+        d.settings.wallHeight = H;
+        for (const w of d.walls) if (w.kind === 'new' && w.height === old) setWallHeight(d, w.id, H);
+      }
+      for (const w of res.walls) {
+        addWallBetween(d, w.a, w.b, { height: H, thickness: w.thickness, kind: 'existing', source: 'capture', againstFoundation: w.foundation });
+      }
+      for (const s of res.soffits) addSoffit(d, s.poly, Math.min(H - 1, s.bottom - off));
+      for (const p of res.posts) d.obstacles.push({ id: newId('ob'), label: 'Post', poly: p.poly.map((q) => ({ ...q })), height: H, source: 'manual' });
+    });
+    const n = this.scan.count();
+    this.scan.discard();
+    this.scan.hide();
+    this.toast(`Added ${n} items from the scan`, 4);
+  }
+
   private scanStatus(): string {
+    if (this.scan?.scanning) {
+      const k = this.scan.map.size;
+      return k < 200 ? 'Scanning... look around' : `Scanning: ${(k / 1000).toFixed(1)}k points`;
+    }
+    if (this.scan?.count()) return 'Green: walls  Orange: low areas  Yellow: posts';
     const p = this.store.plan;
     const scanned = p.walls.filter((w) => w.kind === 'existing' && w.source !== 'capture').length;
     const captured = p.walls.filter((w) => w.source === 'capture').length;

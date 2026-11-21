@@ -47,6 +47,14 @@ export interface MenuApi {
   // scan
   scanStatus(): string;
   importScan(): void;
+  /** Depth scan: walk the basement, then review what was found. */
+  scanning(): boolean;
+  toggleScan(): void;
+  scanProposals(): number;
+  acceptScan(): void;
+  discardScan(): void;
+  clearScan(): void;
+  hasScanMap(): boolean;
   autoImport(): boolean;
   toggleAutoImport(): void;
   hasRefs(): boolean;
@@ -95,6 +103,8 @@ export interface ChipDef {
   active?: () => boolean;
   enabled?: () => boolean;
   visible?: () => boolean;
+  /** Fixed start column, for chips that swap places with each other. */
+  col?: number;
 }
 
 // Layout (meters).
@@ -217,6 +227,7 @@ export class MainMenu {
         let col = 0;
         for (const chip of row) {
           const span = chip.span ?? 1;
+          if (chip.col !== undefined) col = chip.col;
           const w = span * COL_W + (span - 1) * GAP;
           this.panel.add({
             id: chip.id,
@@ -392,16 +403,20 @@ export class MainMenu {
         label: 'Room',
         icon: 'scan',
         tiles: [
-          { id: 'scan-now', icon: 'import', label: () => 'Import', onClick: () => a.importScan() },
+          { id: 'scan-depth', icon: 'scan', label: () => (a.scanning() ? 'Stop' : 'Scan'), onClick: () => a.toggleScan() },
+          { id: 'scan-now', icon: 'import', label: () => 'Space Setup', onClick: () => a.importScan() },
           { id: 'align', icon: 'align', label: () => 'Align', tool: 'align' },
         ],
         text: () => a.scanStatus(),
         rows: [
           [
-            { id: 'auto', label: () => (a.autoImport() ? 'Auto-import on' : 'Auto-import off'), span: 2, onClick: () => a.toggleAutoImport(), active: () => a.autoImport() },
-            { id: 'refreset', label: () => 'Reset refs', span: 2, onClick: () => a.resetRefs(), enabled: () => a.hasRefs() },
+            { id: 'scan-accept', label: () => `Add ${a.scanProposals()} found`, tone: 'primary', span: 2, onClick: () => a.acceptScan(), visible: () => a.scanProposals() > 0 },
+            { id: 'scan-discard', label: () => 'Discard', span: 2, onClick: () => a.discardScan(), visible: () => a.scanProposals() > 0 },
+            { id: 'auto', label: () => (a.autoImport() ? 'Auto-import on' : 'Auto-import off'), span: 2, col: 0, onClick: () => a.toggleAutoImport(), active: () => a.autoImport(), visible: () => a.scanProposals() === 0 },
+            { id: 'refreset', label: () => 'Reset refs', span: 2, onClick: () => a.resetRefs(), enabled: () => a.hasRefs(), visible: () => a.scanProposals() === 0 },
           ],
           [
+            { id: 'scan-clear', label: () => 'Clear scan', icon: 'trash', tone: 'danger', span: 2, onClick: () => a.clearScan(), enabled: () => a.hasScanMap() && !a.scanning() },
             {
               id: 'camtest',
               label: () => (a.cameraTestRunning() ? 'Testing camera...' : 'Camera test'),

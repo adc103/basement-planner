@@ -109,8 +109,13 @@ export function detectWallFromMesh(
   // 1. Local plane around the seed.
   const near = wallPts.filter((p) => Math.hypot(p.x - seed.x, p.y - seed.y) <= 18);
   if (near.length < 8) return null;
-  const local = robustFit(near, 1.5);
-  if (!local || local.fit.rms > 1.5) return null; // not flat here (corner, clutter)
+  let local = robustFit(near, 1.5);
+  if (!local) return null;
+  // A thin wall seen from both sides gives two parallel faces: keep the seed's face.
+  const seedOff = across(seed, local.fit);
+  const sameFace = near.filter((p) => Math.abs(across(p, local!.fit) - seedOff) <= 1.5);
+  if (sameFace.length >= 8) local = robustFit(sameFace, 1.5) ?? local;
+  if (local.fit.rms > 1.5) return null; // not flat here (corner, clutter)
   const fit0 = local.fit;
   if (Math.abs(across(seed, fit0)) > 4) return null;
 
