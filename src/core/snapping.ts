@@ -70,6 +70,8 @@ export interface SnapOptions {
   maxGuideNodes?: number;
   /** Ignore this node and its walls (the corner being dragged). */
   excludeNodeId?: string;
+  /** Points the user hovered recently (SketchUp-style inference): guides run through them. */
+  acquired?: Vec2[];
 }
 
 export const defaultSnapOptions: SnapOptions = {
@@ -135,7 +137,7 @@ export function buildGuides(plan: Plan, p: Vec2, opts: SnapOptions): GuideLine[]
   }
 
   // 2. Extension guides through nearby nodes, along the axis and perpendicular.
-  const maxNodes = opts.maxGuideNodes ?? 10;
+  const maxNodes = opts.maxGuideNodes ?? 6;
   const nearNodes = [...plan.nodes]
     .map((nd) => ({ nd, d: Math.hypot(nd.x - p.x, nd.y - p.y) }))
     .sort((x, y) => x.d - y.d)
@@ -147,6 +149,13 @@ export function buildGuides(plan: Plan, p: Vec2, opts: SnapOptions): GuideLine[]
     if (opts.from && dist(np, opts.from) < 0.05) continue; // covered by angle guides
     guides.push({ line: { p: np, d: axisDir }, kind: 'extension', origin: np });
     guides.push({ line: { p: np, d: axisPerp }, kind: 'extension', origin: np });
+  }
+
+  // 2b. Acquired points: axis, perpendicular and (from the chain start) aligned guides.
+  for (const q of opts.acquired ?? []) {
+    if (opts.from && dist(q, opts.from) < 0.05) continue;
+    guides.push({ line: { p: q, d: axisDir }, kind: 'extension', origin: q });
+    guides.push({ line: { p: q, d: axisPerp }, kind: 'extension', origin: q });
   }
 
   // 3. Wall extensions (collinear) and foundation-follow lines.
@@ -192,9 +201,9 @@ export function snap(fullPlan: Plan, raw: Vec2, opts: SnapOptions): SnapResult {
   }
   const tol = opts.tolerance;
 
-  // --- Point snaps --------------------------------------------------------
+  // --- Point snaps (stickier than lines: corners are what you aim for) -----
   let best: SnapResult | null = null;
-  let bestD = tol;
+  let bestD = tol * 1.5;
   for (const n of plan.nodes) {
     const d = Math.hypot(n.x - raw.x, n.y - raw.y);
     if (d <= bestD) {
@@ -214,7 +223,7 @@ export function snap(fullPlan: Plan, raw: Vec2, opts: SnapOptions): SnapResult {
   }
   if (best) return best;
 
-  bestD = tol * 0.8;
+  bestD = tol;
   for (const w of plan.walls) {
     const { a, b } = wallEnds(plan, w);
     const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };

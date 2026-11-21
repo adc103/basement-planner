@@ -51,6 +51,9 @@ export class RefAnchors {
   }
 
   /** Place new anchors at two world points (the reference corners), replacing old ones. */
+  private localSpace: XRReferenceSpace | null = null;
+  private localFor: unknown = null;
+
   place(p1: Vector3, p2: Vector3): void {
     this.pending = [p1, p2].map((p) => ({ x: p.x, y: p.y, z: p.z }));
   }
@@ -75,6 +78,14 @@ export class RefAnchors {
     const frame = this.world.xrFrame as (XRFrame & { createAnchor?: (t: XRRigidTransform, s: XRSpace) => Promise<AnchorLike> }) | null;
     const ref = this.world.xrReferenceSpace;
     if (!session || !frame || !ref) return false;
+    if (this.localFor !== session) {
+      this.localFor = session;
+      this.localSpace = null;
+      (session as unknown as XRSession)
+        .requestReferenceSpace('local')
+        .then((s) => (this.localSpace = s))
+        .catch(() => {});
+    }
 
     if (this.pending) {
       const pts = this.pending;
@@ -84,7 +95,22 @@ export class RefAnchors {
         return false;
       }
       const old = this.load();
-      Promise.all(pts.map((p) => frame.createAnchor!(new XRRigidTransform(p), ref)))
+      // Some runtimes refuse anchors in an 'unbounded' space: fall back to a 'local'
+      // space, converting the points into it with this frame's relative pose.
+      const local = this.localSpace;
+      const rel = local ? frame.getPose(ref, local) : undefined;
+      const create = (p: { x: number; y: number; z: number }) =>
+        frame.createAnchor!(new XRRigidTransform(p), ref).catch((e) => {
+          if (!local || !rel) throw e;
+          const m = rel.transform.matrix;
+          const q = {
+            x: m[0] * p.x + m[4] * p.y + m[8] * p.z + m[12],
+            y: m[1] * p.x + m[5] * p.y + m[9] * p.z + m[13],
+            z: m[2] * p.x + m[6] * p.y + m[10] * p.z + m[14],
+          };
+          return frame.createAnchor!(new XRRigidTransform(q), local);
+        });
+      Promise.all(pts.map(create))
         .then(async (anchors) => {
           for (const a of this.anchors) a.delete?.();
           this.anchors = anchors;

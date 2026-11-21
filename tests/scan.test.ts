@@ -28,6 +28,9 @@ function basement(): PP[] {
   for (let y = 0; y <= 120; y += 3) for (let z = 0; z <= H; z += 4) pts.push({ x: 200 + n(), y, z }, { x: 204.5 + n(), y, z });
   // Duct underside at 88" plus its sides.
   for (let x = 40; x <= 280; x += 3) for (let y = 174; y <= 186; y += 3) pts.push({ x, y, z: 88 + n() });
+  // A jacket hanging on the south wall, and an armful of clutter in the middle of the room.
+  for (let x = 100; x <= 124; x += 2) for (let z = 30; z <= 62; z += 2) pts.push({ x, y: 4 + (x % 6) * 0.5, z });
+  for (let i = 0; i < 400; i++) pts.push({ x: 150 + r() * 15, y: 60 + r() * 15, z: 40 + r() * 15 });
   // Post.
   for (let z = 0; z <= H; z += 2) for (const [dx, dy] of [[0, 0], [4, 0], [0, 4], [4, 4], [2, 0], [0, 2]]) pts.push({ x: 300 + dx, y: 120 + dy, z });
   return pts;
@@ -55,6 +58,12 @@ describe('scan map', () => {
     expect(p.x).toBeCloseTo(2);
   });
 });
+
+function rotateAll(pts: PP[], ang: number): PP[] {
+  const c = Math.cos(ang);
+  const s = Math.sin(ang);
+  return pts.map((p) => ({ x: p.x * c - p.y * s, y: p.x * s + p.y * c, z: p.z }));
+}
 
 describe('structure detection', () => {
   const res = findStructure(basement(), createEmptyPlan(), {
@@ -85,6 +94,25 @@ describe('structure detection', () => {
     const xs = s.poly.map((p) => p.x);
     expect(Math.min(...xs)).toBeLessThan(48);
     expect(Math.max(...xs)).toBeGreaterThan(272);
+  });
+
+  it('keeps one wall behind clutter, and no posts from clutter', () => {
+    const south = res.walls.filter((w) => Math.abs(w.face.a.y) < 6 && Math.abs(w.face.b.y) < 6);
+    expect(south).toHaveLength(1);
+    expect(Math.abs(south[0].face.b.x - south[0].face.a.x)).toBeGreaterThan(340);
+    expect(res.posts).toHaveLength(1);
+  });
+
+  it('finds a rotated room without being told its direction', () => {
+    const r2 = findStructure(rotateAll(basement(), 0.3), createEmptyPlan(), {
+      eye: { x: 0, y: 0 },
+      axisAngle: null,
+      partitionThickness: 4.5,
+      foundationThickness: 8,
+    });
+    const a = ((r2.axis % (Math.PI / 2)) + Math.PI / 2) % (Math.PI / 2);
+    expect(Math.abs(a - 0.3)).toBeLessThan(0.01);
+    expect(r2.walls.length).toBe(5);
   });
 
   it('finds the post', () => {

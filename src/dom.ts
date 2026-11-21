@@ -38,6 +38,8 @@ export function mountDom(app: PlannerApp): void {
     #planner-dom .rooms td:nth-child(2), #planner-dom .rooms td:nth-child(3) { color: #e6edf5; }
     #planner-dom .head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
     #planner-dom .head .row { margin: 0; }
+    #planner-dom label.check { display: flex; align-items: center; gap: 8px; font-size: 15px; opacity: 0.85; }
+    #planner-dom label.check input { width: 22px; height: 22px; }
     #planner-dom button.small { padding: 8px 12px; font-size: 14px; }
     @media print {
       body > *:not(#planner-dom) { display: none !important; }
@@ -53,7 +55,8 @@ export function mountDom(app: PlannerApp): void {
   <main>
     <h1>Basement Planner</h1>
     <p class="sub">Lay out walls and doors in your real basement with Meta Quest.</p>
-    <div class="row"><button class="primary" id="bp-enter">Enter AR</button></div>
+    <div class="row"><button class="primary" id="bp-enter">Enter AR</button>
+      <label class="check"><input type="checkbox" id="bp-large" /> Large space (no Quest boundary, walk the whole basement)</label></div>
     <p class="msg" id="bp-msg"></p>
     <div class="card">
       <h2>This plan</h2>
@@ -198,6 +201,9 @@ export function mountDom(app: PlannerApp): void {
       })
       .catch(() => {});
   }
+  const large = $('bp-large') as HTMLInputElement;
+  large.checked = app.largeSpace;
+  large.onchange = () => app.setLargeSpace(large.checked);
   enter.onclick = () => {
     msg('');
     app.enterAR();

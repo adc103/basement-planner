@@ -33,6 +33,8 @@ export interface ToolContext {
   preview: Preview;
   toast(msg: string, seconds?: number): void;
   snapOptions(aim: AimHit, from?: Vec2): SnapOptions;
+  /** Report the corner/midpoint under the cursor (or null) for inference guides. */
+  acquire(p: Vec2 | null): void;
   openKeypad(title: string, initial: number | null, onOk: (inches: number) => void): void;
   /** Current door/opening preset. */
   openingPreset(): { type: 'door' | 'opening'; width: number; height: number };

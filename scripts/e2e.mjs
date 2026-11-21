@@ -526,6 +526,16 @@ try {
     check(await clickButton(menu, 'btn:scan-depth'), 'Scan button stops the scan');
     const found = await page.evaluate(() => window.basementPlanner.scan.count());
     check(found >= 4, `scan finds the walls (${found} items)`);
+    const review = await page.evaluate(() => {
+      const s = window.basementPlanner.scan;
+      const n0 = s.count();
+      s.toggle('walls:0');
+      const n1 = s.count();
+      s.toggle('walls:0');
+      return { n0, n1, tool: window.basementPlanner.toolName };
+    });
+    check(review.n1 === review.n0 - 1 && review.tool === 'review', `clicking a found wall skips it (${JSON.stringify(review)})`);
+    check(await clickButton(menu, 'btn:scan-kind-posts'), 'posts toggle chip');
     check(await clickButton(menu, 'btn:scan-accept'), 'Add found button');
     const after = await page.evaluate(() => window.basementPlanner.store.plan.walls.length);
     check(after - before >= 4, `scanned walls added to the plan (${after - before})`);

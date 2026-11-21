@@ -4,12 +4,12 @@ import {
   Mesh,
   MeshBasicMaterial,
   PlaneGeometry,
-  PokeInteractable,
   RayInteractable,
   SRGBColorSpace,
   type Entity,
   type World,
 } from '@iwsdk/core';
+import { registerPokeButton } from './poke.js';
 import { roundRect } from '../labels.js';
 import { drawIcon, type IconName } from './icons.js';
 
@@ -135,7 +135,7 @@ export class SpatialPanel {
     if (spec.onClick) {
       const ent = this.world.createTransformEntity(mesh, { parent: this.entity, persistent: true });
       ent.addComponent(RayInteractable);
-      ent.addComponent(PokeInteractable);
+      registerPokeButton(ent);
       mesh.addEventListener('pointerenter', () => {
         el.hover = true;
         if (this.isEnabled(el)) this.feedback?.('hover');

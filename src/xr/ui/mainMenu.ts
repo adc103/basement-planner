@@ -4,7 +4,7 @@ import type { IconName } from './icons.js';
 import { chipRenderer, roundRenderer, SpatialPanel, tabRenderer, textRenderer, tileRenderer, THEME } from './spatialPanel.js';
 
 export type TabName = 'build' | 'edit' | 'measure' | 'rooms' | 'pins' | 'ceiling' | 'scan' | 'view';
-export type ToolName = 'walls' | 'doors' | 'capture' | 'edit' | 'delete' | 'measure' | 'align' | 'rooms' | 'pins' | 'soffit';
+export type ToolName = 'walls' | 'doors' | 'capture' | 'edit' | 'delete' | 'measure' | 'align' | 'rooms' | 'pins' | 'soffit' | 'review';
 
 /** Everything the menu needs from the app. */
 export interface MenuApi {
@@ -51,6 +51,9 @@ export interface MenuApi {
   scanning(): boolean;
   toggleScan(): void;
   scanProposals(): number;
+  scanReviewing(): boolean;
+  scanKind(k: 'walls' | 'soffits' | 'posts'): { on: boolean; n: number };
+  toggleScanKind(k: 'walls' | 'soffits' | 'posts'): void;
   acceptScan(): void;
   discardScan(): void;
   clearScan(): void;
@@ -410,13 +413,21 @@ export class MainMenu {
         text: () => a.scanStatus(),
         rows: [
           [
-            { id: 'scan-accept', label: () => `Add ${a.scanProposals()} found`, tone: 'primary', span: 2, onClick: () => a.acceptScan(), visible: () => a.scanProposals() > 0 },
-            { id: 'scan-discard', label: () => 'Discard', span: 2, onClick: () => a.discardScan(), visible: () => a.scanProposals() > 0 },
-            { id: 'auto', label: () => (a.autoImport() ? 'Auto-import on' : 'Auto-import off'), span: 2, col: 0, onClick: () => a.toggleAutoImport(), active: () => a.autoImport(), visible: () => a.scanProposals() === 0 },
-            { id: 'refreset', label: () => 'Reset refs', span: 2, onClick: () => a.resetRefs(), enabled: () => a.hasRefs(), visible: () => a.scanProposals() === 0 },
+            { id: 'scan-accept', label: () => `Add ${a.scanProposals()} found`, tone: 'primary', span: 2, onClick: () => a.acceptScan(), visible: () => a.scanReviewing(), enabled: () => a.scanProposals() > 0 },
+            { id: 'scan-discard', label: () => 'Discard', span: 2, onClick: () => a.discardScan(), visible: () => a.scanReviewing() },
+            { id: 'auto', label: () => (a.autoImport() ? 'Auto-import on' : 'Auto-import off'), span: 2, col: 0, onClick: () => a.toggleAutoImport(), active: () => a.autoImport(), visible: () => !a.scanReviewing() },
+            { id: 'refreset', label: () => 'Reset refs', span: 2, onClick: () => a.resetRefs(), enabled: () => a.hasRefs(), visible: () => !a.scanReviewing() },
           ],
           [
-            { id: 'scan-clear', label: () => 'Clear scan', icon: 'trash', tone: 'danger', span: 2, onClick: () => a.clearScan(), enabled: () => a.hasScanMap() && !a.scanning() },
+            ...(['walls', 'soffits', 'posts'] as const).map((k, i) => ({
+              id: `scan-kind-${k}`,
+              col: i,
+              label: () => `${k === 'walls' ? 'Walls' : k === 'soffits' ? 'Low' : 'Posts'} ${a.scanKind(k).n}`,
+              onClick: () => a.toggleScanKind(k),
+              active: () => a.scanKind(k).on,
+              visible: () => a.scanReviewing(),
+            })),
+            { id: 'scan-clear', col: 0, label: () => 'Clear scan', icon: 'trash', tone: 'danger', span: 2, onClick: () => a.clearScan(), enabled: () => a.hasScanMap() && !a.scanning(), visible: () => !a.scanReviewing() },
             {
               id: 'camtest',
               label: () => (a.cameraTestRunning() ? 'Testing camera...' : 'Camera test'),
@@ -424,6 +435,7 @@ export class MainMenu {
               span: 2,
               onClick: () => a.cameraTest(),
               enabled: () => !a.cameraTestRunning(),
+              visible: () => !a.scanReviewing(),
             },
           ],
         ],

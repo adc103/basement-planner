@@ -38,7 +38,13 @@ export class WallTool implements Tool {
   private current(aim: AimHit): SnapResult | null {
     if (!aim.floor) return null;
     const from = this.chain.at(-1);
-    return snap(this.ctx.store.plan, aim.floor, this.ctx.snapOptions(aim, from));
+    const s = snap(this.ctx.store.plan, aim.floor, this.ctx.snapOptions(aim, from));
+    // Closing the loop: the chain start is a magnet even before it's a saved corner.
+    const start = this.chain[0];
+    if (start && this.chain.length > 2 && dist(aim.floor, start) < Math.max(8, this.ctx.snapOptions(aim, from).tolerance * 2)) {
+      return { point: { ...start }, kind: 'endpoint', guides: [] };
+    }
+    return s;
   }
 
   hover(aim: AimHit | null): void {
@@ -51,6 +57,7 @@ export class WallTool implements Tool {
     }
     const s = this.current(aim);
     this.lastSnap = s;
+    this.ctx.acquire(s && (s.kind === 'endpoint' || s.kind === 'midpoint') ? s.point : null);
     if (s) {
       pv.showCursor(s.point, s.kind, aim.fine);
       pv.showGuides(s.guides, s.point);

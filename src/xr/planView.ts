@@ -222,10 +222,12 @@ export class PlanView {
   private roomMat(finish: Finish): MeshBasicMaterial {
     let m = this.roomMats.get(finish);
     if (!m) {
+      const opacity: Record<Finish, number> = { none: 0.12, carpet: 0.8, lvp: 0.85, tile: 0.85, concrete: 0.55, epoxy: 0.75 };
       m = new MeshBasicMaterial({
-        color: new Color(FINISH_COLORS[finish]),
+        color: finish === 'none' ? new Color(FINISH_COLORS.none) : 0xffffff,
+        map: finish === 'none' ? null : floorTexture(finish),
         transparent: true,
-        opacity: finish === 'none' ? 0.1 : 0.32,
+        opacity: opacity[finish],
         depthWrite: false,
         side: DoubleSide,
       });
@@ -233,6 +235,7 @@ export class PlanView {
     }
     return m;
   }
+
 
   /** Flat polygon (plan inches) with holes at a height (m), with 4 ft texture UVs. */
   private flatArea(outline: Array<{ x: number; y: number }>, holes: Array<Array<{ x: number; y: number }>>, y: number): BufferGeometry {
@@ -267,13 +270,7 @@ export class PlanView {
     for (const r of rooms) if (r.face) byKey.set(r.face.key, r);
     for (const face of faces) {
       const r = byKey.get(face.key);
-      const pos: number[] = [];
-      const contour = face.inner.map((p) => new Vector2(p.x * INCH_M, p.y * INCH_M));
-      for (const [i, j, k] of ShapeUtils.triangulateShape(contour, [])) {
-        for (const t of [i, j, k]) pos.push(contour[t].x, 0.004, contour[t].y);
-      }
-      const geo = new BufferGeometry();
-      geo.setAttribute('position', new Float32BufferAttribute(pos, 3));
+      const geo = this.flatArea(face.inner, face.holes, 0.004);
       const mesh = new Mesh(geo, this.roomMat(r?.room.finish ?? 'none'));
       mesh.userData.baseMat = mesh.material;
       mesh.renderOrder = 0;
@@ -337,7 +334,7 @@ export class PlanView {
   private ceilingMat(type: CeilingType): MeshBasicMaterial {
     let m = this.ceilingMats.get(type);
     if (!m) {
-      m = new MeshBasicMaterial({ map: ceilingTexture(type), transparent: true, opacity: 0.55, depthWrite: false, side: DoubleSide });
+      m = new MeshBasicMaterial({ map: ceilingTexture(type), transparent: true, opacity: type === 'drywall' ? 0.7 : 0.85, depthWrite: false, side: DoubleSide });
       this.ceilingMats.set(type, m);
     }
     return m;
@@ -619,8 +616,14 @@ function ceilingTexture(type: CeilingType): CanvasTexture {
     g.fillStyle = '#b08a58';
     for (let i = 0; i < 3; i++) g.fillRect(((i * 16) / 48) * 256, 0, 10, 256); // joists every 16"
   } else {
-    g.fillStyle = '#f4f4f2';
+    g.fillStyle = type === 'drop' ? '#f1f0ea' : '#e9edf2';
     g.fillRect(0, 0, 256, 256);
+    if (type === 'drywall') {
+      // 4' x 8' sheet seams, faint, so the plane reads against a white real ceiling.
+      g.strokeStyle = '#b9c3cf';
+      g.lineWidth = 3;
+      g.strokeRect(0, 0, 256, 256);
+    }
     if (type === 'drop') {
       g.strokeStyle = '#9aa0a8';
       g.lineWidth = 5;
@@ -635,6 +638,79 @@ function ceilingTexture(type: CeilingType): CanvasTexture {
   t.wrapS = RepeatWrapping;
   t.wrapT = RepeatWrapping;
   t.colorSpace = SRGBColorSpace;
+  return t;
+}
+
+/** 4 ft repeating floor pattern for each finish. */
+function floorTexture(finish: Finish): CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 256;
+  const g = c.getContext('2d')!;
+  const px = 256 / 48; // pixels per inch
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  if (finish === 'lvp') {
+    // 7" x 48" planks, staggered, with wood tone variation.
+    const tones = ['#c79a63', '#b98a55', '#d2a873', '#a97b4b', '#c09060'];
+    const w = 7 * px;
+    for (let r = 0; r * w < 256; r++) {
+      const off = ((r * 17) % 48) * px;
+      for (let k = -1; k < 2; k++) {
+        g.fillStyle = tones[Math.floor(rnd() * tones.length)];
+        g.fillRect(off + k * 256, r * w, 256, w);
+        g.fillStyle = 'rgba(60,40,20,0.55)';
+        g.fillRect(off + k * 256, r * w, 2, w);
+      }
+      g.fillStyle = 'rgba(60,40,20,0.55)';
+      g.fillRect(0, r * w, 256, 2);
+    }
+  } else if (finish === 'tile') {
+    g.fillStyle = '#d7dde2';
+    g.fillRect(0, 0, 256, 256);
+    g.strokeStyle = '#8b959e';
+    g.lineWidth = 3;
+    for (let i = 0; i <= 4; i++) {
+      g.beginPath();
+      g.moveTo(i * 12 * px, 0);
+      g.lineTo(i * 12 * px, 256);
+      g.moveTo(0, i * 12 * px);
+      g.lineTo(256, i * 12 * px);
+      g.stroke();
+    }
+  } else if (finish === 'carpet') {
+    g.fillStyle = '#9c8f80';
+    g.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 2500; i++) {
+      g.fillStyle = rnd() > 0.5 ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)';
+      g.fillRect(rnd() * 256, rnd() * 256, 2, 2);
+    }
+  } else if (finish === 'epoxy') {
+    g.fillStyle = '#7f95ad';
+    g.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 900; i++) {
+      g.fillStyle = ['#e6e9ee', '#2c3440', '#b9c4d2'][i % 3];
+      g.fillRect(rnd() * 256, rnd() * 256, 3, 2);
+    }
+  } else {
+    // Sealed concrete: mottled grey with a saw cut every 4 ft.
+    g.fillStyle = '#a9adb2';
+    g.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 60; i++) {
+      g.fillStyle = `rgba(${rnd() > 0.5 ? 255 : 0},${rnd() > 0.5 ? 255 : 0},255,0.04)`;
+      g.beginPath();
+      g.arc(rnd() * 256, rnd() * 256, 10 + rnd() * 30, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.fillStyle = '#6f757c';
+    g.fillRect(0, 0, 256, 3);
+    g.fillRect(0, 0, 3, 256);
+  }
+  const t = new CanvasTexture(c);
+  t.wrapS = RepeatWrapping;
+  t.wrapT = RepeatWrapping;
+  t.colorSpace = SRGBColorSpace;
+  t.anisotropy = 8;
   return t;
 }
 

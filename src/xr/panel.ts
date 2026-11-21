@@ -4,12 +4,12 @@ import {
   Mesh,
   MeshBasicMaterial,
   PlaneGeometry,
-  PokeInteractable,
   RayInteractable,
   SRGBColorSpace,
   type Entity,
   type World,
 } from '@iwsdk/core';
+import { registerPokeButton } from './ui/poke.js';
 import { roundRect } from './labels.js';
 
 export interface ButtonSpec {
@@ -131,7 +131,7 @@ export class ButtonPanel {
     this.root.add(mesh);
     const ent = this.world.createTransformEntity(mesh, { parent: this.entity, persistent: true });
     ent.addComponent(RayInteractable);
-    ent.addComponent(PokeInteractable);
+    registerPokeButton(ent);
     const state: ButtonState = { spec, mesh, canvas, texture, hovered: false, lastKey: '', cooldownUntil: 0, pxW, pxH };
     mesh.addEventListener('pointerenter', () => {
       state.hovered = true;

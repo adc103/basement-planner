@@ -36,13 +36,16 @@ const MAX_SHOWN = 60_000;
  * are found and shown as ghosts to accept or discard.
  */
 export class ScanSession {
-  readonly map = new ScanMap(2);
+  readonly map = new ScanMap(3, 1_200_000);
   readonly group = new Group();
   scanning = false;
   proposals: StructureResult | null = null;
+  /** Review: kinds included, and single items turned off by tapping them. */
+  kinds = { walls: true, soffits: true, posts: false };
+  excluded = new Set<string>();
   depthOk: boolean | null = null;
 
-  private sampler: DepthSampler;
+  readonly sampler: DepthSampler;
   private dots: Points;
   private dotPos = new Float32Array(MAX_SHOWN * 3);
   private dotCol = new Float32Array(MAX_SHOWN * 3);
@@ -51,6 +54,9 @@ export class ScanSession {
   private lastShown = -1;
   private lastShowT = 0;
   private tmp = new Vector3();
+  private head = new Vector3();
+  private handL = new Vector3();
+  private handR = new Vector3();
   private col = new Color();
   private loaded: Promise<void>;
 
@@ -114,7 +120,31 @@ export class ScanSession {
       root.updateWorldMatrix(true, false);
       const tmp = this.tmp;
       const map = this.map;
+      // Your own body and arms are in view while scanning: drop points near them.
+      const pl = this.world.player;
+      const hd = pl.head.getWorldPosition(this.head);
+      const hl = pl.gripSpaces.left.getWorldPosition(this.handL);
+      const hr = pl.gripSpaces.right.getWorldPosition(this.handR);
+      const nearArm = (x: number, y: number, z: number, h: Vector3) => {
+        // Distance to the segment from the shoulders (just below the head) to the hand.
+        const sx = hd.x;
+        const sy = hd.y - 0.25;
+        const sz = hd.z;
+        const dx = h.x - sx;
+        const dy = h.y - sy;
+        const dz = h.z - sz;
+        const L2 = dx * dx + dy * dy + dz * dz || 1;
+        const t = Math.max(0, Math.min(1, ((x - sx) * dx + (y - sy) * dy + (z - sz) * dz) / L2));
+        const ex = x - (sx + dx * t);
+        const ey = y - (sy + dy * t);
+        const ez = z - (sz + dz * t);
+        return ex * ex + ey * ey + ez * ez < 0.22 * 0.22;
+      };
       const n = this.sampler.sample((x, y, z) => {
+        const bx = x - hd.x;
+        const bz = z - hd.z;
+        if (bx * bx + bz * bz < 0.45 * 0.45 && y < hd.y + 0.2) return; // torso and legs
+        if (nearArm(x, y, z, hl) || nearArm(x, y, z, hr)) return;
         tmp.set(x, y, z);
         root.worldToLocal(tmp);
         map.add(tmp.x / INCH_M, tmp.z / INCH_M, tmp.y / INCH_M);
@@ -153,25 +183,117 @@ export class ScanSession {
   /** Find structure in the map and show it as ghosts. */
   analyze(plan: Plan, eye: Vec2): StructureResult {
     const pts = this.points();
-    const axis = primaryAxis(plan);
     const res = findStructure(pts, plan, {
       eye,
-      axisAngle: axis,
+      axisAngle: plan.walls.length ? primaryAxis(plan) : null,
       partitionThickness: plan.settings.wallThickness,
       foundationThickness: plan.settings.foundationThickness,
     });
     this.proposals = res;
+    this.excluded.clear();
+    this.lastPlan = plan;
     this.showGhosts(res, plan);
     return res;
   }
 
-  count(): number {
+  private lastPlan: Plan | null = null;
+
+  /** What will be added: included kinds, minus tapped-off items. */
+  chosen(): StructureResult | null {
     const r = this.proposals;
-    return r ? r.walls.length + r.soffits.length + r.posts.length : 0;
+    if (!r) return null;
+    const keep = <T>(kind: 'walls' | 'soffits' | 'posts', list: T[]) =>
+      this.kinds[kind] ? list.filter((_, i) => !this.excluded.has(`${kind}:${i}`)) : [];
+    return { ...r, walls: keep('walls', r.walls), soffits: keep('soffits', r.soffits), posts: keep('posts', r.posts) };
+  }
+
+  count(): number {
+    const c = this.chosen();
+    return c ? c.walls.length + c.soffits.length + c.posts.length : 0;
+  }
+
+  /** Any proposals to review (even if all are switched off). */
+  get reviewing(): boolean {
+    const r = this.proposals;
+    return !!r && r.walls.length + r.soffits.length + r.posts.length > 0;
+  }
+
+  total(kind: 'walls' | 'soffits' | 'posts'): number {
+    return this.proposals?.[kind].length ?? 0;
+  }
+
+  toggleKind(kind: 'walls' | 'soffits' | 'posts'): void {
+    this.kinds[kind] = !this.kinds[kind];
+    this.restyle();
+  }
+
+  /** Proposal nearest a floor point (plan inches), within reach. */
+  pick(p: Vec2): string | null {
+    const r = this.proposals;
+    if (!r) return null;
+    let best: string | null = null;
+    let bestD = 18;
+    r.walls.forEach((w, i) => {
+      if (!this.kinds.walls) return;
+      const dx = w.b.x - w.a.x;
+      const dy = w.b.y - w.a.y;
+      const L2 = dx * dx + dy * dy || 1;
+      const t = Math.max(0, Math.min(1, ((p.x - w.a.x) * dx + (p.y - w.a.y) * dy) / L2));
+      const d = Math.hypot(p.x - (w.a.x + dx * t), p.y - (w.a.y + dy * t));
+      if (d < bestD) [best, bestD] = [`walls:${i}`, d];
+    });
+    const inPoly = (poly: Vec2[]) => {
+      let c = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const a = poly[i];
+        const b = poly[j];
+        if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) c = !c;
+      }
+      return c;
+    };
+    r.posts.forEach((q, i) => {
+      if (!this.kinds.posts) return;
+      const cx = q.poly.reduce((s, v) => s + v.x, 0) / q.poly.length;
+      const cy = q.poly.reduce((s, v) => s + v.y, 0) / q.poly.length;
+      const d = Math.hypot(p.x - cx, p.y - cy) - 3;
+      if (d < bestD) [best, bestD] = [`posts:${i}`, d];
+    });
+    if (!best) r.soffits.forEach((q, i) => {
+      if (this.kinds.soffits && inPoly(q.poly)) best = `soffits:${i}`;
+    });
+    return best;
+  }
+
+  toggle(id: string): void {
+    if (this.excluded.has(id)) this.excluded.delete(id);
+    else this.excluded.add(id);
+    this.restyle();
+  }
+
+  /** Highlight the item under the cursor. */
+  hover(id: string | null): void {
+    if (id === this.hovered) return;
+    this.hovered = id;
+    this.restyle();
+  }
+
+  private hovered: string | null = null;
+
+  private restyle(): void {
+    for (const c of this.ghosts.children) {
+      const id = c.userData.id as string;
+      const kind = id.split(':')[0] as 'walls' | 'soffits' | 'posts';
+      const off = !this.kinds[kind] || this.excluded.has(id);
+      c.visible = this.kinds[kind];
+      const m = c as Mesh;
+      const base = m.userData.mat as MeshBasicMaterial;
+      m.material = off ? this.offMat : id === this.hovered ? this.hoverMat : base;
+    }
   }
 
   discard(): void {
     this.proposals = null;
+    this.excluded.clear();
     this.clearGhosts();
   }
 
@@ -191,34 +313,44 @@ export class ScanSession {
   private wallMat = new MeshBasicMaterial({ color: 0x4ade80, transparent: true, opacity: 0.35, depthWrite: false, side: DoubleSide });
   private soffitMat = new MeshBasicMaterial({ color: 0xfb923c, transparent: true, opacity: 0.4, depthWrite: false, side: DoubleSide });
   private postMat = new MeshBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.5, depthWrite: false });
+  private offMat = new MeshBasicMaterial({ color: 0x94a3b8, transparent: true, opacity: 0.12, depthWrite: false, side: DoubleSide });
+  private hoverMat = new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, depthWrite: false, side: DoubleSide });
 
   private showGhosts(res: StructureResult, plan: Plan): void {
     this.clearGhosts();
     const H = res.ceiling ?? plan.settings.wallHeight;
-    for (const w of res.walls) {
+    const tag = (m: Mesh, id: string, mat: MeshBasicMaterial) => {
+      m.userData.id = id;
+      m.userData.mat = mat;
+    };
+    res.walls.forEach((w, i) => {
       const len = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
       const m = new Mesh(new BoxGeometry(len * INCH_M, H * INCH_M, w.thickness * INCH_M), this.wallMat);
       m.position.set(((w.a.x + w.b.x) / 2) * INCH_M, (H / 2) * INCH_M, ((w.a.y + w.b.y) / 2) * INCH_M);
       m.rotation.y = -Math.atan2(w.b.y - w.a.y, w.b.x - w.a.x);
+      tag(m, `walls:${i}`, this.wallMat);
       this.ghosts.add(m);
-    }
-    const flat = (poly: Vec2[], z: number, mat: MeshBasicMaterial) => {
+    });
+    const flat = (poly: Vec2[], z: number, mat: MeshBasicMaterial, id: string) => {
       const s = new Shape(poly.map((p) => ({ x: p.x * INCH_M, y: p.y * INCH_M }) as never));
       const m = new Mesh(new ShapeGeometry(s), mat);
       m.rotation.x = Math.PI / 2; // shape xy -> plan xz
       m.position.y = z * INCH_M;
+      tag(m, id, mat);
       this.ghosts.add(m);
     };
-    for (const s of res.soffits) flat(s.poly, s.bottom, this.soffitMat);
-    for (const p of res.posts) {
+    res.soffits.forEach((s, i) => flat(s.poly, s.bottom, this.soffitMat, `soffits:${i}`));
+    res.posts.forEach((p, i) => {
       const xs = p.poly.map((q) => q.x);
       const ys = p.poly.map((q) => q.y);
       const w = Math.max(...xs) - Math.min(...xs);
       const d = Math.max(...ys) - Math.min(...ys);
       const m = new Mesh(new BoxGeometry(w * INCH_M, H * INCH_M, d * INCH_M), this.postMat);
       m.position.set(((Math.max(...xs) + Math.min(...xs)) / 2) * INCH_M, (H / 2) * INCH_M, ((Math.max(...ys) + Math.min(...ys)) / 2) * INCH_M);
+      tag(m, `posts:${i}`, this.postMat);
       this.ghosts.add(m);
-    }
+    });
     for (const c of this.ghosts.children) c.raycast = () => {};
+    this.restyle();
   }
 }

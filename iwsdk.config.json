@@ -22,7 +22,16 @@
           "required": false,
           "usage": "gpu-optimized",
           "format": "float32"
-        }
+        },
+        "unbounded": true
+      },
+      "referenceSpace": {
+        "type": "unbounded",
+        "fallbackOrder": [
+          "local-floor",
+          "local",
+          "viewer"
+        ]
       }
     },
     "input": {

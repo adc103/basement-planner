@@ -138,6 +138,7 @@ export class EditTool implements Tool {
         }
         d.moved = true;
         const s = snap(plan, aim.floor, { ...this.ctx.snapOptions(aim), excludeNodeId: id });
+        this.ctx.acquire(s.kind === 'endpoint' || s.kind === 'midpoint' ? s.point : null);
         this.ctx.store.edit('Move corner', (dr) => moveNode(dr, id, s.point));
         pv.showCursor(s.point, s.kind, false);
         pv.showGuides(s.guides, s.point);

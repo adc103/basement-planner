@@ -59,6 +59,11 @@ import type { Finish } from '../core/plan.js';
 import { MainMenu, MENU_H, type MenuApi, type ToolName } from './ui/mainMenu.js';
 import { Sfx } from './ui/sfx.js';
 import { ScanSession } from './scanSession.js';
+import { ScanReviewTool } from './tools/scanReviewTool.js';
+import { findRoomFaces, openArea } from '../core/rooms.js';
+import { Acquired } from './acquired.js';
+import { FloorFinder } from './floorFinder.js';
+import { setPokeEnabled } from './ui/poke.js';
 import { addSoffit, addWallBetween } from '../core/ops.js';
 import { newId } from '../core/plan.js';
 
@@ -83,6 +88,7 @@ const TOOL_LABEL: Record<ToolName, string> = {
   rooms: 'Rooms',
   pins: 'Pins',
   soffit: 'Soffit',
+  review: 'Review scan',
 };
 
 export interface AppStatus {
@@ -147,6 +153,20 @@ export class PlannerApp {
   scan!: ScanSession;
   private anchorLockToasted = false;
   private depthWarned = false;
+  /** Corners and midpoints the user hovered, for inference guides (shared by tools). */
+  readonly acquired = new Acquired();
+  private floor = new FloorFinder();
+  private floorT = 0;
+  private sessionT0 = -1;
+  private floorToasted = false;
+  /** Large-space mode: no Quest boundary, walk the whole basement (device setting). */
+  largeSpace = (() => {
+    try {
+      return localStorage.getItem('basement-planner:large-space') !== 'off';
+    } catch {
+      return true;
+    }
+  })();
   // Scratch objects (no per-frame allocation).
   private tmpV = new Vector3();
   private tmpV2 = new Vector3();
@@ -210,6 +230,7 @@ export class PlannerApp {
       preview: this.preview,
       toast: (m, s) => this.toast(m, s),
       snapOptions: (aim, from) => this.snapOptions(aim, from),
+      acquire: (p) => this.acquired.hover(p, this.time),
       openKeypad: (title, initial, onOk) => this.openKeypad(title, initial, onOk),
       openingPreset: () => this.preset,
       refreshUi: () => this.refreshUi(),
@@ -234,6 +255,7 @@ export class PlannerApp {
         anchorReferences: () => this.anchorReferences(),
       }),
       soffit: new SoffitTool(ctx, () => this.axisAngle),
+      review: new ScanReviewTool(ctx, this.scan),
     };
 
     this.menu = new MainMenu(world, this.menuApi());
@@ -319,10 +341,14 @@ export class PlannerApp {
       scanning: () => this.scan.scanning,
       toggleScan: () => this.toggleDepthScan(),
       scanProposals: () => this.scan.count(),
+      scanReviewing: () => this.scan.reviewing,
+      scanKind: (k) => ({ on: this.scan.kinds[k], n: this.scan.total(k) }),
+      toggleScanKind: (k) => this.scan.toggleKind(k),
       acceptScan: () => this.acceptDepthScan(),
       discardScan: () => {
         this.scan.discard();
         this.scan.hide();
+        this.endReview();
         this.toast('Discarded what the scan found');
       },
       clearScan: () => {
@@ -371,7 +397,10 @@ export class PlannerApp {
     const type = (t: CeilingType, label: string) => ({
       id: `ceil-${t}`,
       label: () => label,
-      onClick: () => this.setCeiling({ type: t }, true),
+      onClick: () => {
+        this.setCeiling({ type: t }, true);
+        if (!openArea(this.store.plan) && !findRoomFaces(this.store.plan).length) this.toast('Draw or scan a few walls first so the ceiling knows where the basement is', 5);
+      },
       active: () => roomCeiling(this.store.plan, room()).type === t,
     });
     return {
@@ -494,10 +523,12 @@ export class PlannerApp {
       label: () => label,
       onClick: () => {
         if (has()) rt().setFinish(f);
-        else
+        else {
           this.store.edit('Floor finish', (d) => {
             d.settings.floorFinish = f;
           });
+          if (!openArea(this.store.plan) && !findRoomFaces(this.store.plan).length) this.toast('Draw or scan a few walls first so the floor knows where the basement is', 5);
+        }
       },
       active: () => (has() ? rt().selectedRoom()?.finish === f : this.store.plan.settings.floorFinish === f),
     });
@@ -750,6 +781,7 @@ export class PlannerApp {
       this.hands.right.update(world, time);
       this.updateSurfaces(time);
       this.scan.tick(time);
+      this.updateFloor(time);
       if (this.scan.scanning && this.scan.depthOk === false && !this.depthWarned) {
         this.depthWarned = true;
         this.toast('Depth is not available on this device, so scanning cannot work here', 6);
@@ -758,13 +790,77 @@ export class PlannerApp {
       this.handleButtons(time);
       if (!this.keypad.open && this.keypad.panel.entity.hasComponent(Follower)) this.keypad.panel.entity.removeComponent(Follower);
       this.wrist.update();
+      this.updatePokeMode(time);
       this.menu.panel.tick(delta);
       this.handleTool();
       this.updateToolChip();
     }
 
+    if (!inXR) this.sessionT0 = -1;
     this.view.updateLabels(world.camera);
     this.updateToast();
+  }
+
+  /**
+   * Keep the plan floor on the real floor. Runs for the first seconds of every
+   * session (and slowly after), from depth below the eyes and floor hit tests.
+   */
+  private updateFloor(time: number): void {
+    if (this.sessionT0 < 0) {
+      this.sessionT0 = time;
+      this.floor.reset();
+      this.floorToasted = false;
+    }
+    const early = time - this.sessionT0 < 12;
+    if (time - this.floorT < (early ? 0.4 : 3)) return;
+    this.floorT = time;
+    const eye = this.world.camera.getWorldPosition(this.eyeV);
+    const eyeY = eye.y;
+    // Floor hit tests count too (pointing at the floor), heavily weighted.
+    for (const side of ['left', 'right'] as Side[]) {
+      const o = this.surfaceTargets[side];
+      if (!o.visible) continue;
+      this.tmpV.set(0, 1, 0).applyQuaternion(o.getWorldQuaternion(this.tmpQ));
+      if (this.tmpV.y > 0.95) for (let i = 0; i < 20; i++) this.floor.add(o.getWorldPosition(this.tmpV2).y, eyeY);
+    }
+    const f = this.floor;
+    this.scan.sampler.sample((_x, y) => f.add(y, eyeY), 2);
+    const fy = f.solve();
+    if (fy === null) return;
+    const parent = this.view.root.parent;
+    if (!parent) return;
+    parent.updateWorldMatrix(true, false);
+    const local = parent.worldToLocal(this.tmpV3.set(eye.x, fy, eye.z)).y;
+    if (Math.abs(local - this.transform.floorY) > 0.01) {
+      this.transform.floorY = local;
+      this.applyTransform();
+      this.storeTransform();
+      if (!this.floorToasted && this.largeSpace) {
+        this.floorToasted = true;
+        this.toast('Found the floor', 2);
+      }
+    }
+  }
+
+  setLargeSpace(on: boolean): void {
+    this.largeSpace = on;
+    try {
+      localStorage.setItem('basement-planner:large-space', on ? 'on' : 'off');
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private pokeCheckT = 0;
+  /** Finger poking on the menu only with tracked hands (see ui/poke.ts). */
+  private updatePokeMode(time: number): void {
+    if (time - this.pokeCheckT < 0.5) return;
+    this.pokeCheckT = time;
+    const srcs = this.world.session?.inputSources;
+    if (!srcs) return;
+    let hands = false;
+    for (const s of srcs) if (s.hand) hands = true;
+    setPokeEnabled(hands);
   }
 
   /** Two persistent anchors on the reference corners keep the plan locked to the room. */
@@ -1053,11 +1149,12 @@ export class PlannerApp {
 
   private snapOptions(aim: AimHit, from?: Vec2): SnapOptions {
     const st = this.store.plan.settings;
-    // ~1.5 degrees of arc at the aim distance, clamped to 1-6 inches.
-    const tolIn = Math.min(6, Math.max(1, (Math.tan((1.5 * Math.PI) / 180) * aim.floorDistM) / INCH_M));
+    // ~3 degrees of arc at the aim distance, clamped to 2-10 inches: easy to hit with a hand or controller.
+    const tolIn = Math.min(10, Math.max(2, (Math.tan((3 * Math.PI) / 180) * aim.floorDistM) / INCH_M));
     return {
       ...defaultSnapOptions,
-      tolerance: aim.fine ? 0.75 : tolIn,
+      tolerance: aim.fine ? 1.25 : tolIn,
+      acquired: this.acquired.points(),
       grid: aim.fine ? 0.25 : 1,
       from,
       axisAngle: this.axisAngle,
@@ -1102,19 +1199,27 @@ export class PlannerApp {
     const e = root.worldToLocal(this.world.camera.getWorldPosition(this.eyeV));
     const res = s.analyze(this.store.plan, { x: e.x / INCH_M, y: e.z / INCH_M });
     const n = s.count();
-    if (!n) {
+    if (!s.reviewing) {
       this.toast(s.map.size < 500 ? 'Not enough was seen yet. Scan again and look around more.' : 'No new walls or ceiling features found', 5);
       return;
     }
     const parts = [`${res.walls.length} walls`];
     if (res.soffits.length) parts.push(`${res.soffits.length} low areas`);
-    if (res.posts.length) parts.push(`${res.posts.length} posts`);
-    if (res.ceiling) parts.push(`ceiling ${formatLength(res.ceiling)}`);
-    this.toast(`Found ${parts.join(', ')}. Add them from the Room tab.`, 6);
+    if (res.posts.length) parts.push(`${res.posts.length} possible posts (off)`);
+    if (res.ceiling) parts.push(`ceiling ${formatLength(res.ceiling - (res.floorOffset ?? 0))}`);
+    this.toast(`Found ${parts.join(', ')}. Click items to skip them, then Add.`, 7);
+    this.reviewReturn = this.toolName === 'review' ? 'walls' : this.toolName;
+    this.setTool('review');
+  }
+
+  private reviewReturn: ToolName = 'walls';
+
+  private endReview(): void {
+    if (this.toolName === 'review') this.setTool(this.reviewReturn);
   }
 
   private acceptDepthScan(): void {
-    const res = this.scan.proposals;
+    const res = this.scan.chosen();
     if (!res) return;
     // Settle the floor first so heights match.
     if (res.floorOffset && Math.abs(res.floorOffset) <= 8) {
@@ -1135,12 +1240,13 @@ export class PlannerApp {
       for (const w of res.walls) {
         addWallBetween(d, w.a, w.b, { height: H, thickness: w.thickness, kind: 'existing', source: 'capture', againstFoundation: w.foundation });
       }
-      for (const s of res.soffits) addSoffit(d, s.poly, Math.min(H - 1, s.bottom - off));
+      for (const s of res.soffits) addSoffit(d, s.poly, Math.min(H - 1, s.bottom));
       for (const p of res.posts) d.obstacles.push({ id: newId('ob'), label: 'Post', poly: p.poly.map((q) => ({ ...q })), height: H, source: 'manual' });
     });
     const n = this.scan.count();
     this.scan.discard();
     this.scan.hide();
+    this.endReview();
     this.toast(`Added ${n} items from the scan`, 4);
   }
 
@@ -1149,7 +1255,7 @@ export class PlannerApp {
       const k = this.scan.map.size;
       return k < 200 ? 'Scanning... look around' : `Scanning: ${(k / 1000).toFixed(1)}k points`;
     }
-    if (this.scan?.count()) return 'Green: walls  Orange: low areas  Yellow: posts';
+    if (this.scan?.reviewing) return 'Click an item to skip it. Green walls, orange low areas, yellow posts';
     const p = this.store.plan;
     const scanned = p.walls.filter((w) => w.kind === 'existing' && w.source !== 'capture').length;
     const captured = p.walls.filter((w) => w.source === 'capture').length;
@@ -1273,7 +1379,9 @@ export class PlannerApp {
   }
 
   enterAR(): void {
-    this.world.launchXR();
+    this.world.launchXR(
+      this.largeSpace ? undefined : { referenceSpace: { type: 'local-floor' as never, required: false, fallbackOrder: ['local' as never, 'viewer' as never] } },
+    );
   }
 
   loadPlan(plan: Plan): void {
