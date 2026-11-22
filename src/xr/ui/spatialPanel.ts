@@ -115,6 +115,10 @@ export class SpatialPanel {
     this.backing = new Mesh(new PlaneGeometry(width, height), new MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
     this.backing.renderOrder = 40;
     this.content.add(this.backing);
+    // The whole panel takes the pointer, not just its buttons: the ray and its dot stay
+    // on the menu while you move between buttons instead of vanishing in the gaps.
+    const back = world.createTransformEntity(this.backing, { parent: this.entity, persistent: true });
+    back.addComponent(RayInteractable);
   }
 
   add(spec: ElementSpec): void {
