@@ -1,0 +1,36 @@
+name: Deploy room AI to Modal
+
+on:
+  push:
+    branches: [main]
+    paths: ['cloud/**', '.github/workflows/room-ai.yml']
+  workflow_dispatch:
+    inputs:
+      selftest:
+        description: Run the model on a test scene after deploying
+        type: boolean
+        default: true
+
+concurrency: room-ai
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install modal==1.6.4 huggingface_hub==0.26.2
+      - name: Store the service key on Modal
+        env:
+          ROOM_AI_KEY: ${{ secrets.ROOM_AI_KEY }}
+        run: modal secret create room-ai ROOM_AI_KEY="$ROOM_AI_KEY" --force > /dev/null
+      - run: modal deploy cloud/room_ai.py
+      - name: Self-test on a SpatialLM test scene
+        if: github.event_name == 'push' || inputs.selftest
+        run: modal run cloud/room_ai.py
