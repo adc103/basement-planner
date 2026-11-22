@@ -1,3 +1,4 @@
+import { sameWall } from '../core/fit.js';
 import { disprovedWalls } from '../core/wallFinder.js';
 import { lensCamera } from '../core/camCalib.js';
 import {
@@ -135,6 +136,7 @@ export class ScanSession {
   }
 
   async start(): Promise<void> {
+    this.livePrev = [];
     await this.loaded;
     this.proposals = null;
     this.clearGhosts();
@@ -252,8 +254,14 @@ export class ScanSession {
     void this.detect(plan, this.liveEye).then((res) => {
       this.liveBusy = false;
       if (!res || !this.scanning) return;
-      this.live = res;
-      this.showGhosts(res, plan, true);
+      // Only walls the mesh backs up, and only once two previews in a row agree:
+      // a wall from one noisy glance doesn't flash up and then hang around.
+      const prev = this.livePrev;
+      this.livePrev = res.walls;
+      const steady = res.walls.filter((w) => w.evidence !== 'inferred' && prev.some((p) => sameWall(w, p)));
+      const shown = { ...res, walls: steady, posts: [] };
+      this.live = shown;
+      this.showGhosts(shown, plan, true);
     });
   }
 
@@ -292,6 +300,8 @@ export class ScanSession {
   livePlan: Plan | null = null;
   liveEye: Vec2 = { x: 0, y: 0 };
   live: StructureResult | null = null;
+  /** The previous live preview's walls, before filtering. */
+  private livePrev: StructureResult['walls'] = [];
 
   private opts(plan: Plan, eye: Vec2) {
     return {
@@ -363,6 +373,7 @@ export class ScanSession {
   async analyze(plan: Plan, eye: Vec2): Promise<StructureResult> {
     const res = (await this.detect(plan, eye, true)) ?? findStructure(this.points(), plan, this.opts(plan, eye), this.free);
     this.live = null;
+    this.livePrev = [];
     this.proposals = res;
     this.excluded.clear();
     // Walls the mesh barely supports start switched off: tap one to add it anyway.

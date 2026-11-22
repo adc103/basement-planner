@@ -43,8 +43,14 @@ for (const file of files) {
   const plan = createEmptyPlan();
   const eye = frames.length ? { x: frames[0].head[0] / IN, y: frames[0].head[2] / IN } : { x: 0, y: 0 };
   const t0 = performance.now();
-  const raw = findStructure(map.points(2), plan, { eye, axisAngle: null, partitionThickness: plan.settings.wallThickness, foundationThickness: plan.settings.foundationThickness }, free);
-  const res = refineStructure(raw, surfaceFromMeshes(vol.meshDirty()));
+  const surf0 = surfaceFromMeshes(vol.meshDirty());
+  const meshPts: Array<{ x: number; y: number; z: number }> = [];
+  for (let i = 0; i < surf0.pos.length; i += 3) meshPts.push({ x: surf0.pos[i], y: surf0.pos[i + 1], z: surf0.pos[i + 2] });
+  const K = Number(process.env.K ?? 4);
+  const src = process.env.SRC === 'mesh' ? meshPts : process.env.SRC === 'forget' ? map.points(2).filter((p) => free.count(p.x, p.y, p.z) < K) : map.points(2);
+  if (process.env.SRC === 'forget') console.log(`  kept ${src.length} of ${map.points(2).length} points`);
+  const raw = findStructure(src, plan, { eye, axisAngle: null, partitionThickness: plan.settings.wallThickness, foundationThickness: plan.settings.foundationThickness }, free);
+  const res = refineStructure(raw, surf0);
   const ms = performance.now() - t0;
   const shown = res.walls.filter((w) => w.evidence !== 'inferred');
 
