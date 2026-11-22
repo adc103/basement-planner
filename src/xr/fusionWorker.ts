@@ -1,0 +1,57 @@
+/// <reference lib="webworker" />
+import type { DepthFrame } from '../core/scanIngest.js';
+import { TsdfVolume, type BrickMesh } from '../core/tsdf.js';
+import { idbGet, idbSet } from './idb.js';
+
+/**
+ * Depth fusion off the render thread: frames in, mesh pieces out.
+ * The volume saves itself to IndexedDB so the room mesh survives a restart.
+ */
+
+export type FusionIn =
+  | { type: 'frame'; frame: DepthFrame }
+  | { type: 'mesh' }
+  | { type: 'clear' }
+  | { type: 'save' }
+  | { type: 'load' };
+
+export type FusionOut =
+  | { type: 'meshes'; meshes: BrickMesh[]; bricks: number; frames: number; ms: number }
+  | { type: 'stats'; bricks: number; frames: number; integrateMs: number };
+
+const KEY = 'scan-tsdf:v1';
+const vol = new TsdfVolume();
+const post = (m: FusionOut, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
+let integrateMs = 0;
+
+function sendMeshes(meshes: BrickMesh[], ms: number): void {
+  const transfer: Transferable[] = [];
+  for (const m of meshes) transfer.push(m.positions.buffer, m.normals.buffer, m.indices.buffer);
+  post({ type: 'meshes', meshes, bricks: vol.brickCount, frames: vol.frames, ms }, transfer);
+}
+
+self.onmessage = async (e: MessageEvent<FusionIn>) => {
+  const m = e.data;
+  if (m.type === 'frame') {
+    const t0 = performance.now();
+    vol.integrate(m.frame);
+    integrateMs = integrateMs * 0.9 + (performance.now() - t0) * 0.1;
+    post({ type: 'stats', bricks: vol.brickCount, frames: vol.frames, integrateMs });
+  } else if (m.type === 'mesh') {
+    if (!vol.dirty.size) return;
+    const t0 = performance.now();
+    const meshes = vol.meshDirty();
+    sendMeshes(meshes, performance.now() - t0);
+  } else if (m.type === 'clear') {
+    vol.clear();
+    await idbSet(KEY, new Uint8Array(0));
+  } else if (m.type === 'save') {
+    await idbSet(KEY, vol.serialize());
+  } else if (m.type === 'load') {
+    const bytes = await idbGet<Uint8Array>(KEY);
+    if (bytes && bytes.length && vol.load(bytes)) {
+      const t0 = performance.now();
+      sendMeshes(vol.meshAll(), performance.now() - t0);
+    }
+  }
+};

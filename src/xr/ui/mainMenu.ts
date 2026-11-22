@@ -75,6 +75,8 @@ export interface MenuApi {
   viewModes(): Array<{ id: string; label: string }>;
   viewText(): string;
   realWalls(): 'shown' | 'outline' | 'hidden';
+  roomMesh(): boolean;
+  toggleRoomMesh(): void;
   cycleRealWalls(): void;
   labels(): boolean;
   toggleLabels(): void;
@@ -497,7 +499,8 @@ export class MainMenu {
             { id: 'snap', label: () => 'Snapping', icon: 'magnet', span: 2, onClick: () => a.toggleSnap(), active: () => a.snap() },
           ],
           [
-            { id: 'occlusion', label: () => 'Real objects hide walls', icon: 'eye', span: 4, onClick: () => a.toggleOcclusion(), active: () => a.occlusion() },
+            { id: 'occlusion', label: () => 'Objects hide walls', icon: 'eye', span: 2, onClick: () => a.toggleOcclusion(), active: () => a.occlusion() },
+            { id: 'roommesh', label: () => 'Room mesh', span: 2, onClick: () => a.toggleRoomMesh(), active: () => a.roomMesh() },
           ],
           [
             {

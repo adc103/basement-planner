@@ -386,6 +386,12 @@ export class PlannerApp {
         return `Framing: ${f.studs} studs, ${f.plateFeet.toFixed(0)} ft of plate, ${f.headers} headers`;
       },
       realWalls: () => this.store.plan.settings.realWalls,
+      roomMesh: () => this.scan.mesh.shown,
+      toggleRoomMesh: () => {
+        const m = this.scan.mesh;
+        m.setShown(!m.shown);
+        this.toast(m.shown ? (m.triangles ? 'Room mesh shown' : 'Room mesh shown (scan the room to build it)') : 'Room mesh hidden (still shows while scanning)', 3);
+      },
       cycleRealWalls: () => {
         const order = ['shown', 'outline', 'hidden'] as const;
         const next = order[(order.indexOf(this.store.plan.settings.realWalls) + 1) % 3];
@@ -1280,7 +1286,10 @@ export class PlannerApp {
   private scanStatus(): string {
     if (this.scan?.scanning) {
       const k = this.scan.map.size;
-      return k < 200 ? 'Scanning... look around' : `Scanning: ${(k / 1000).toFixed(1)}k points`;
+      if (this.scan.depthOk === false) return 'Scanning... no depth yet (check camera permission)';
+      if (k < 200) return 'Scanning... look around';
+      const m = this.scan.mesh;
+      return `Scanning: ${(k / 1000).toFixed(1)}k points, room mesh ${(m.triangles / 1000).toFixed(0)}k triangles`;
     }
     if (this.scan?.reviewing) return 'Click an item to skip it. Green walls, orange low areas, yellow posts';
     const p = this.store.plan;

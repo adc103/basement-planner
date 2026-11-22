@@ -575,6 +575,22 @@ try {
     await page.waitForTimeout(1200);
     const scanning = await page.evaluate(() => window.basementPlanner.scan.scanning);
     check(scanning, 'scan is running');
+    // The emulator has no depth sensor: hand the room mesh a few frames of a flat wall 2 m ahead.
+    await page.evaluate(() => {
+      const W = 80, H = 60;
+      const proj = new Float32Array(16);
+      proj[0] = 1; proj[5] = 1.33; proj[10] = -1; proj[11] = -1; proj[14] = -0.2;
+      for (let n = 0; n < 6; n++) {
+        const depthMM = new Uint16Array(W * H).fill(2000 + n);
+        const viewToRoot = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 30, 1.5, 30, 1]);
+        window.basementPlanner.scan.mesh.push({ t: n, w: W, h: H, depthMM, proj, viewToRoot, head: [30, 1.5, 30], handL: [30, 0, 31], handR: [30, 0, 31] });
+      }
+    });
+    const tris = await page
+      .waitForFunction(() => window.basementPlanner.scan.mesh.triangles > 0 && window.basementPlanner.scan.mesh.triangles, null, { timeout: 8000 })
+      .then((h) => h.jsonValue())
+      .catch(() => 0);
+    check(tris > 1000, `depth frames build a live room mesh (${tris} triangles)`);
     const before = await page.evaluate(() => window.basementPlanner.store.plan.walls.length);
     // Paint a 20' x 14' box room 30 ft away from the drawn walls, so detection has real structure.
     await page.evaluate(() => {

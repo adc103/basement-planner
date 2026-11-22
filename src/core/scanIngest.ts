@@ -44,6 +44,30 @@ function nearArm(x: number, y: number, z: number, hd: readonly number[], h: read
 }
 
 /**
+ * Pixels that see your own body or arms (1 = drop). Your torso and legs are
+ * the column under your head; an arm is the line from shoulder to hand.
+ */
+export function bodyMask(f: DepthFrame): Uint8Array {
+  const M = f.viewToRoot;
+  const hd = f.head;
+  const mask = new Uint8Array(f.w * f.h);
+  for (let j = 0; j < f.h; j++) {
+    for (let i = 0; i < f.w; i++) {
+      const m = f.depthMM[j * f.w + i] / 1000;
+      if (m < DEPTH_MIN_M || m > DEPTH_MAX_M) continue;
+      const p = unprojectDepth((i + 0.5) / f.w, (j + 0.5) / f.h, m, f.proj);
+      const x = M[0] * p.x + M[4] * p.y + M[8] * p.z + M[12];
+      const y = M[1] * p.x + M[5] * p.y + M[9] * p.z + M[13];
+      const z = M[2] * p.x + M[6] * p.y + M[10] * p.z + M[14];
+      const bx = x - hd[0];
+      const bz = z - hd[2];
+      if ((bx * bx + bz * bz < 0.45 * 0.45 && y < hd[1] + 0.2) || nearArm(x, y, z, hd, f.handL) || nearArm(x, y, z, hd, f.handR)) mask[j * f.w + i] = 1;
+    }
+  }
+  return mask;
+}
+
+/**
  * Add one depth frame to the point map and free-space grid (plan inches).
  * Drops points on your own body and arms. Returns points added.
  */

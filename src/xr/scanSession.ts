@@ -28,6 +28,7 @@ import { FreeGrid } from '../core/freeSpace.js';
 import { idbGet, idbSet } from './idb.js';
 import { ingestFrame, type DepthFrame } from '../core/scanIngest.js';
 import { ScanRecorder } from './scanRecorder.js';
+import { RoomMesh } from './roomMesh.js';
 
 const STORE_KEY = 'scan-map:v1';
 const FREE_KEY = 'scan-free:v1';
@@ -71,6 +72,8 @@ export class ScanSession {
   private tmp = new Vector3();
   /** Every depth frame of the scan, kept so a real scan can be saved and replayed. */
   readonly recorder = new ScanRecorder();
+  /** The live 3D mesh of the room, fused from the same frames. */
+  readonly mesh: RoomMesh;
   private col = new Color();
   private loaded: Promise<void>;
 
@@ -79,6 +82,7 @@ export class ScanSession {
     private root: Object3D,
   ) {
     this.sampler = new DepthSampler(world);
+    this.mesh = new RoomMesh(root);
     const g = new BufferGeometry();
     g.setAttribute('position', new BufferAttribute(this.dotPos, 3));
     g.setAttribute('color', new BufferAttribute(this.dotCol, 3));
@@ -125,12 +129,15 @@ export class ScanSession {
     this.proposals = null;
     this.clearGhosts();
     this.scanning = true;
+    this.mesh.setActive(true);
     this.depthOk = null;
     this.group.visible = true;
   }
 
   stop(): void {
     this.scanning = false;
+    this.mesh.setActive(false);
+    this.mesh.save();
     void idbSet(STORE_KEY, this.map.serialize());
     void idbSet(FREE_KEY, this.free.serialize());
     void this.recorder.save();
@@ -138,6 +145,7 @@ export class ScanSession {
 
   clear(): void {
     this.recorder.clear();
+    this.mesh.clear();
     this.map.clear();
     this.free.clear();
     void idbSet(FREE_KEY, this.free.serialize());
@@ -147,16 +155,23 @@ export class ScanSession {
     void idbSet(STORE_KEY, new Float32Array(0));
   }
 
+  /** One depth frame into the point map, the room mesh and the recording. */
+  ingest(f: DepthFrame): void {
+    ingestFrame(f, this.map, this.free);
+    this.mesh.push(f);
+    this.recorder.add(f);
+  }
+
   /** Per frame while in XR. */
   tick(time: number): void {
+    this.mesh.tick(time);
     if (!this.scanning) return;
     if (time - this.lastSample >= SAMPLE_EVERY) {
       this.lastSample = time;
       const f = this.captureFrame(time);
       this.depthOk = !!f;
       if (f) {
-        ingestFrame(f, this.map, this.free);
-        this.recorder.add(f);
+        this.ingest(f);
       }
     }
     if (time - this.lastShowT > 0.6) {
