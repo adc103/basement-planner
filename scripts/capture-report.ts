@@ -113,6 +113,14 @@ if (ex.plan) {
 
 // --- Space Setup ----------------------------------------------------------------------------
 const ss = ex.spaceSetup ?? { planes: [], meshes: [] };
+// Older captures lost the planes when the session ended; the last room import still has them.
+const imp = [...(ex.journal ?? [])].reverse().find((j: any) => j.name === 'scan.importRoom')?.params?.scan;
+if (!ss.planes.length && imp) {
+  ss.planes = [
+    ...imp.walls.map((w: any) => ({ label: 'wall (import)', polygon: [[w.a.x, w.a.y, 0], [w.b.x, w.b.y, 0]] })),
+    ...imp.objects.map((o: any) => ({ label: `${o.label} (import)`, polygon: o.poly.map((p: any) => [p.x, p.y, o.height]) })),
+  ];
+}
 L('## Quest Space Setup data');
 L();
 L(`${ss.planes.length} planes (${[...new Set(ss.planes.map((p: any) => p.label))].join(', ') || 'none'}), ${ss.meshes.length} meshes (${ss.meshes.reduce((n: number, m: any) => n + m.vertices.length, 0)} vertices).`);

@@ -1027,6 +1027,19 @@ export class PlannerApp {
     this.checkAnchor();
     this.updateSection();
 
+    // Keep a copy of Space Setup while in a session, for review captures saved after it ends.
+    // Re-read only when the set of planes and meshes changes, since meshes are large.
+    if (inXR && time - this.spaceSetupAt > 2) {
+      this.spaceSetupAt = time;
+      let n = 0;
+      for (const _ of this.planeQuery?.() ?? []) n++;
+      for (const _ of this.meshQuery?.() ?? []) n += 1000;
+      if (n && n !== this.spaceSetupCount) {
+        this.spaceSetupCount = n;
+        this.spaceSetupSeen = this.readSpaceSetup();
+      }
+    }
+
     if (inXR) {
       const tool = this.tools[this.toolName];
       const dragMode = tool.inputMode?.() === 'drag';
@@ -1643,7 +1656,12 @@ export class PlannerApp {
    * can be reviewed off the headset: the plan, what the scanner last proposed,
    * the headset's own Space Setup planes and meshes, and the app version.
    */
-  captureExtras(): Record<string, unknown> {
+  /** Space Setup as last seen in a session; the planes are gone once the session ends. */
+  private spaceSetupSeen: { planes: unknown[]; meshes: unknown[]; seenAt: string } | null = null;
+  private spaceSetupAt = -1e9;
+  private spaceSetupCount = 0;
+
+  private readSpaceSetup(): { planes: unknown[]; meshes: unknown[]; seenAt: string } {
     const root = this.view.root;
     root.updateWorldMatrix(true, false);
     const toPlan = (o: Object3D, x: number, y: number, z: number) => {
@@ -1675,6 +1693,12 @@ export class PlannerApp {
       }
       meshes.push({ label: (e.getValue(XRMesh, 'semanticLabel') as string) ?? '', bounded: !!e.getValue(XRMesh, 'isBounded3D'), vertices: verts });
     }
+    return { planes, meshes, seenAt: new Date().toISOString() };
+  }
+
+  captureExtras(): Record<string, unknown> {
+    const now = this.readSpaceSetup();
+    const spaceSetup = now.planes.length || now.meshes.length ? now : (this.spaceSetupSeen ?? now);
     const sc = this.scan;
     return {
       app: { version: __APP_VERSION__, builtAt: __BUILD_TIME__ },
@@ -1682,7 +1706,7 @@ export class PlannerApp {
       plan: JSON.parse(JSON.stringify(this.store.plan)),
       proposals: sc.proposals ?? sc.live ?? null,
       roomMesh: { bricks: sc.mesh.bricks, triangles: sc.mesh.triangles },
-      spaceSetup: { planes, meshes },
+      spaceSetup,
       transform: this.transform,
       journal: this.cmd.journal.slice(-200),
     };
