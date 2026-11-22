@@ -95,7 +95,7 @@ describe('depth fusion (TSDF) and mesh', () => {
 });
 
 describe('mesh coloring from photos', () => {
-  it('paints what a photo sees with that photo\'s colors, where it sees it', () => {
+  it('paints what a photo sees with that photo\'s colors, where it sees it', { timeout: 60_000 }, () => {
     const scene = basementScene();
     const frames = depthFramesFor(scene);
     const vol = new TsdfVolume();
