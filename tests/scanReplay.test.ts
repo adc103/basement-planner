@@ -7,7 +7,7 @@ import { ScanMap } from '../src/core/scanMap';
 import { decodeRecording, encodeRecording, ingestFrame, type DepthFrame } from '../src/core/scanIngest';
 import { findStructure } from '../src/core/structure';
 import { TsdfVolume } from '../src/core/tsdf';
-import { refineStructure, surfaceFromMeshes } from '../src/core/fit';
+import { refineStructure, sameWall, surfaceFromMeshes } from '../src/core/fit';
 import { basementScene, depthFramesFor } from './synthScan';
 
 function replay(frames: DepthFrame[]) {
@@ -93,13 +93,19 @@ describe('scan recording and replay', () => {
   const dir = new URL('./scans/', import.meta.url);
   const files = existsSync(dir) ? readdirSync(dir).filter((f) => /\.bpscan(\.gz)?$/.test(f)) : [];
   for (const file of files) {
-    it(`replays the real scan ${file}`, () => {
+    it(`replays the real scan ${file}`, { timeout: 60_000 }, () => {
       let bytes = new Uint8Array(readFileSync(new URL(file, dir)));
       if (bytes[0] === 0x1f && bytes[1] === 0x8b) bytes = new Uint8Array(gunzipSync(bytes));
       const { header, frames: real } = decodeRecording(bytes);
       expect(real).toHaveLength(header.frames);
       const { res } = replay(real);
       expect(res.walls.length).toBeGreaterThan(0);
+      // With the room mesh: no stacked copies of the same wall.
+      const vol = new TsdfVolume();
+      for (const f of real) vol.integrate(f);
+      const fit = refineStructure(res, surfaceFromMeshes(vol.meshDirty()));
+      for (let i = 0; i < fit.walls.length; i++) for (let j = i + 1; j < fit.walls.length; j++) expect(sameWall(fit.walls[i], fit.walls[j])).toBe(false);
+      expect(fit.walls.length).toBeLessThanOrEqual(12);
     });
   }
 });

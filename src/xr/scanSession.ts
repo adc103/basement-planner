@@ -28,7 +28,7 @@ import { FreeGrid } from '../core/freeSpace.js';
 import { idbGet, idbSet } from './idb.js';
 import { ingestFrame, type DepthFrame } from '../core/scanIngest.js';
 import { ScanRecorder } from './scanRecorder.js';
-import { refineStructure } from '../core/fit.js';
+import { planSegs, refineStructure } from '../core/fit.js';
 import { RoomMesh } from './roomMesh.js';
 import { ScanPhotos } from './scanPhotos.js';
 
@@ -290,7 +290,7 @@ export class ScanSession {
     const surf = fit ? this.mesh.surface() : null;
     if (!this.worker) {
       const r = findStructure(pts, plan, this.opts(plan, eye), this.free);
-      return Promise.resolve(surf ? refineStructure(r, surf) : r);
+      return Promise.resolve(refineStructure(r, surf ?? { pos: new Float32Array(0), nrm: new Float32Array(0) }, planSegs(plan)));
     }
     const flat = new Float32Array(pts.length * 3);
     pts.forEach((p, i) => {
@@ -347,6 +347,10 @@ export class ScanSession {
     this.live = null;
     this.proposals = res;
     this.excluded.clear();
+    // Walls the mesh barely supports start switched off: tap one to add it anyway.
+    res.walls.forEach((w, i) => {
+      if (w.evidence === 'inferred') this.excluded.add(`walls:${i}`);
+    });
     this.lastPlan = plan;
     this.showGhosts(res, plan);
     return res;

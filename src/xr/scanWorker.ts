@@ -2,7 +2,7 @@
 import { FreeGrid } from '../core/freeSpace.js';
 import type { Plan } from '../core/plan.js';
 import { findStructure, type StructureOptions } from '../core/structure.js';
-import { refineStructure } from '../core/fit.js';
+import { planSegs, refineStructure } from '../core/fit.js';
 import type { PP } from '../core/wallDetect.js';
 
 /** Runs structure detection off the render thread (it can take a few hundred ms). */
@@ -28,7 +28,7 @@ self.onmessage = (e: MessageEvent<ScanJob>) => {
     for (let i = 0; i + 2 < job.pts.length; i += 3) pts.push({ x: job.pts[i], y: job.pts[i + 1], z: job.pts[i + 2] });
     free.load({ keys: job.freeKeys, counts: job.freeCounts });
     let res = findStructure(pts, job.plan, job.opts, free);
-    if (job.surfPos && job.surfNrm) res = refineStructure(res, { pos: job.surfPos, nrm: job.surfNrm });
+    res = refineStructure(res, job.surfPos && job.surfNrm ? { pos: job.surfPos, nrm: job.surfNrm } : { pos: new Float32Array(0), nrm: new Float32Array(0) }, planSegs(job.plan));
     (self as unknown as Worker).postMessage({ id: job.id, res });
   } catch (err) {
     (self as unknown as Worker).postMessage({ id: job.id, error: String(err) });

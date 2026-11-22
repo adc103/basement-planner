@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkPlan, fitWall, SurfaceIndex, surfaceFromMeshes } from '../src/core/fit';
+import { checkPlan, dedupeWalls, fitWall, sameWall, SurfaceIndex, surfaceFromMeshes } from '../src/core/fit';
 import { CommandBus } from '../src/core/commands';
 import { createEmptyPlan } from '../src/core/plan';
 import { PlanStore } from '../src/core/store';
@@ -74,5 +74,32 @@ describe('fit and verify against the room mesh', () => {
     const s = checks.find((c) => c.wallId === south)!;
     expect(s.check.deviation).toBeLessThan(0.4);
     expect(s.check.evidence).toBe('measured');
+  });
+});
+
+describe('one proposal per real wall', () => {
+  const W = (ax: number, ay: number, bx: number, by: number, confidence = 0.8, evidence: 'measured' | 'partial' | 'inferred' = 'measured', thickness = 4.5) => ({ a: { x: ax, y: ay }, b: { x: bx, y: by }, thickness, confidence, evidence });
+
+  it('keeps the best of walls stacked in the same spot', () => {
+    const walls = [W(109, -62, 109, 88, 0.89, 'measured', 8), W(110, -62, 110, 104, 0.83, 'measured', 8), W(114, -62, 114, 108, 0.89, 'partial', 8), W(119, -62, 119, 144, 0.66, 'inferred')];
+    const kept = dedupeWalls(walls);
+    expect(kept).toHaveLength(1);
+    expect(kept[0].a.x).toBe(110); // measured and the longest of the measured ones
+  });
+
+  it('keeps real neighbours: back-to-back rooms and a hallway', () => {
+    // Two walls 36" apart (a hallway) and a perpendicular one: all different walls.
+    const kept = dedupeWalls([W(0, 0, 200, 0), W(0, 40.5, 200, 40.5), W(100, 0, 100, -120)]);
+    expect(kept).toHaveLength(3);
+  });
+
+  it('does not propose walls the plan already has', () => {
+    const known = [{ a: { x: 0, y: 0 }, b: { x: 240, y: 0 }, thickness: 8 }];
+    expect(dedupeWalls([W(10, 3, 200, 3, 1, 'measured', 8), W(0, 60, 240, 60)], known)).toHaveLength(1);
+  });
+
+  it('sees parallel walls that only touch end to end as different walls', () => {
+    expect(sameWall(W(0, 0, 100, 0), W(100, 0, 200, 0))).toBe(false);
+    expect(sameWall(W(0, 0, 100, 0), W(0, 3, 100, 3))).toBe(true);
   });
 });

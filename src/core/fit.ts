@@ -52,6 +52,8 @@ export interface WallFit {
   /** 0..1 */
   confidence: number;
   openings: OpeningFit[];
+  /** Stretch along the wall (from a, inches) where the mesh shows its face; null if none. */
+  support: [number, number] | null;
 }
 
 export interface OpeningFit {
@@ -199,6 +201,19 @@ export function fitWall(idx: SurfaceIndex, w: WallGeom, opts: { refine?: boolean
   // Openings: the mesh should be empty inside, with jambs at the edges.
   const facePts = [...(left ? side.left.filter((p) => Math.abs(p.u - left.offset) < INLIER) : []), ...(right ? side.right.filter((p) => Math.abs(p.u - right.offset) < INLIER) : [])];
   const openings = w.openings.map((o) => fitOpening(facePts, jambs, o, w.z0, refine));
+  // Supported stretch: 6" columns seen at two or more heights, first to last.
+  let support: [number, number] | null = null;
+  {
+    const colH = new Map<number, Set<number>>();
+    for (const p of facePts) {
+      const c = Math.floor(p.t / 6);
+      let set = colH.get(c);
+      if (!set) colH.set(c, (set = new Set()));
+      set.add(Math.floor(p.z / 12));
+    }
+    const cols = [...colH].filter(([, s]) => s.size >= 2).map(([c]) => c).sort((x, y) => x - y);
+    if (cols.length) support = [Math.max(0, cols[0] * 6), Math.min(L, (cols[cols.length - 1] + 1) * 6)];
+  }
   return {
     a: na,
     b: nb,
@@ -210,6 +225,7 @@ export function fitWall(idx: SurfaceIndex, w: WallGeom, opts: { refine?: boolean
     evidence,
     confidence: Math.min(1, coverage / 0.6),
     openings,
+    support,
   };
 }
 
@@ -305,8 +321,8 @@ function cross(p: Vec2, d: Vec2, q: Vec2, e: Vec2): Vec2 | null {
  * Fit every proposed wall and opening to the room mesh, label how well each is
  * supported, and keep corners and tees joined after walls move.
  */
-export function refineStructure(res: StructureResult, surf: Surface): StructureResult {
-  if (surf.pos.length < 300) return res;
+export function refineStructure(res: StructureResult, surf: Surface, known: Seg[] = []): StructureResult {
+  if (surf.pos.length < 300) return { ...res, walls: dedupeWalls(res.walls, known) };
   const idx = new SurfaceIndex(surf);
   const z0 = res.floorOffset ?? 0;
   const z1 = res.ceiling ?? z0 + 96;
@@ -332,19 +348,35 @@ export function refineStructure(res: StructureResult, surf: Surface): StructureR
     const d = dirOf(w);
     const ops = w.openings.map((o) => ({ offset: (o.center.x - w.a.x) * d.x + (o.center.y - w.a.y) * d.y, width: o.width, height: o.height, sill: o.sill }));
     const f = fitWall(idx, { a: w.a, b: w.b, thickness: w.thickness, z0, z1, openings: ops });
+    w.evidence = f.evidence;
+    w.deviation = f.deviation;
+    w.confidence = Math.max(w.confidence, f.confidence);
     if (f.evidence !== 'inferred') {
+      // The fit only moves the wall sideways, so offsets along it still count from a.
       w.a = f.a;
       w.b = f.b;
       w.thickness = Math.round(f.thickness * 4) / 4;
     }
-    w.evidence = f.evidence;
-    w.deviation = f.deviation;
-    w.confidence = Math.max(w.confidence, f.confidence);
     w.openings = w.openings.map((o, i) => {
       const of = f.openings[i];
       const center = { x: w.a.x + d.x * of.offset, y: w.a.y + d.y * of.offset };
       return { ...o, center, width: Math.round(of.width * 4) / 4, evidence: of.evidence };
     });
+    // Trim ends that run on past what the mesh shows (more than a foot of nothing),
+    // and drop openings left outside the trimmed wall.
+    if (f.evidence !== 'inferred' && f.support) {
+      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+      const [s0, s1] = f.support;
+      const a0 = { ...w.a };
+      if (s0 > 12) w.a = { x: a0.x + d.x * s0, y: a0.y + d.y * s0 };
+      if (L - s1 > 12) w.b = { x: a0.x + d.x * s1, y: a0.y + d.y * s1 };
+      const lo = s0 > 12 ? s0 : 0;
+      const hi = L - s1 > 12 ? s1 : L;
+      w.openings = w.openings.filter((o) => {
+        const t = (o.center.x - a0.x) * d.x + (o.center.y - a0.y) * d.y;
+        return t - o.width / 2 > lo - 1 && t + o.width / 2 < hi + 1;
+      });
+    }
   }
   // Re-seat joined ends on the (moved) walls they meet.
   for (const j of joins) {
@@ -353,7 +385,19 @@ export function refineStructure(res: StructureResult, surf: Surface): StructureR
     const p = cross(w.a, dirOf(w), o.a, dirOf(o));
     if (p && Math.hypot(p.x - w[j.end].x, p.y - w[j.end].y) < 8) w[j.end] = p;
   }
-  return { ...res, walls };
+  return { ...res, walls: dedupeWalls(walls, known) };
+}
+
+/** A plan's walls as segments (to keep proposals from repeating them). */
+export function planSegs(plan: Plan): Seg[] {
+  const node = new Map(plan.nodes.map((n) => [n.id, n]));
+  const out: Seg[] = [];
+  for (const w of plan.walls) {
+    const a = node.get(w.a);
+    const b = node.get(w.b);
+    if (a && b) out.push({ a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y }, thickness: w.thickness });
+  }
+  return out;
 }
 
 /** Check plan walls (real ones by default) against the mesh, worst first. */
@@ -378,4 +422,51 @@ export function checkPlan(plan: Plan, surf: Surface, opts: { includeNew?: boolea
   }
   const bad = (c: WallCheck) => (c.check.evidence === 'inferred' ? -1 : c.check.deviation);
   return out.sort((x, y) => bad(y) - bad(x));
+}
+
+/** A wall to compare against: centerline, thickness. */
+export interface Seg {
+  a: Vec2;
+  b: Vec2;
+  thickness: number;
+}
+
+/**
+ * Is `p` the same real wall as `q`? Parallel (within 6 degrees), centerlines
+ * closer than their half-thicknesses plus 8", and overlapping along their
+ * length by at least 40% of the shorter one.
+ */
+export function sameWall(p: Seg, q: Seg): boolean {
+  const Lp = Math.hypot(p.b.x - p.a.x, p.b.y - p.a.y);
+  const Lq = Math.hypot(q.b.x - q.a.x, q.b.y - q.a.y);
+  if (Lp < 1 || Lq < 1) return false;
+  const d = { x: (q.b.x - q.a.x) / Lq, y: (q.b.y - q.a.y) / Lq };
+  const dp = { x: (p.b.x - p.a.x) / Lp, y: (p.b.y - p.a.y) / Lp };
+  if (Math.abs(d.x * dp.y - d.y * dp.x) > 0.105) return false;
+  const mid = { x: (p.a.x + p.b.x) / 2, y: (p.a.y + p.b.y) / 2 };
+  const off = Math.abs(-(mid.x - q.a.x) * d.y + (mid.y - q.a.y) * d.x);
+  if (off > (p.thickness + q.thickness) / 2 + 8) return false;
+  const t0 = (p.a.x - q.a.x) * d.x + (p.a.y - q.a.y) * d.y;
+  const t1 = (p.b.x - q.a.x) * d.x + (p.b.y - q.a.y) * d.y;
+  const overlap = Math.min(Lq, Math.max(t0, t1)) - Math.max(0, Math.min(t0, t1));
+  return overlap >= 0.4 * Math.min(Lp, Lq);
+}
+
+const EVIDENCE_WEIGHT: Record<Evidence, number> = { measured: 1, partial: 0.6, manual: 0.6, inferred: 0.2 };
+
+/**
+ * One proposal per real wall: drop walls the plan already has, and among
+ * proposals that are the same wall keep the best supported one.
+ */
+export function dedupeWalls<W extends Seg & { confidence: number; evidence?: Evidence }>(walls: W[], known: Seg[] = []): W[] {
+  const score = (w: W) => EVIDENCE_WEIGHT[w.evidence ?? 'partial'] * (0.3 + w.confidence) * Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+  const order = [...walls].sort((x, y) => score(y) - score(x));
+  const kept: W[] = [];
+  for (const w of order) {
+    if (known.some((k) => sameWall(w, k))) continue;
+    if (kept.some((k) => sameWall(w, k))) continue;
+    kept.push(w);
+  }
+  // Keep the original order (stable ids in review).
+  return walls.filter((w) => kept.includes(w));
 }
