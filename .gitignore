@@ -50,3 +50,4 @@ artifacts/
 
 # Real scan recordings contain photos of the home: never commit them
 tests/scans/
+scripts/scratch/

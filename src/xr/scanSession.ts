@@ -209,12 +209,16 @@ export class ScanSession {
         if (time - this.lastPhoto >= 1 && this.photos.ready) {
           this.lastPhoto = time;
           const pose = { t: f.t, viewToRoot: f.viewToRoot, proj: f.proj };
+          const toScan = (ms: number) => ms / 1000 + this.clockOffset - this.scanT0;
+          // The head poses up to now, copied before the photo is encoded (which takes a while):
+          // the camera captured this frame a few tens of milliseconds ago.
+          const track = this.poseRing
+            .filter((e) => e.ms > 0 && toScan(e.ms) > pose.t - 0.6)
+            .map((e) => ({ t: toScan(e.ms), m: Float32Array.from(e.m) }))
+            .sort((x, y) => x.t - y.t);
           void this.photos.snap().then((r) => {
             if (!r) return;
-            const toScan = (ms: number) => ms / 1000 + this.clockOffset - this.scanT0;
             const captured = Number.isFinite(r.capturedMs) ? toScan(r.capturedMs) : NaN;
-            // Poses from 0.6 s before to now (the photo was taken a moment ago).
-            const track = this.poseRing.filter((e) => e.ms > 0 && toScan(e.ms) > pose.t - 0.6).map((e) => ({ t: toScan(e.ms), m: Float32Array.from(e.m) }));
             this.recorder.addPhoto({ ...pose, jpeg: r.jpeg, captured, track });
           });
         }
