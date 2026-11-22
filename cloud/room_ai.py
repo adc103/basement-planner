@@ -7,7 +7,7 @@ Endpoints (all need the X-Key header, or ?key=, matching the ROOM_AI_KEY secret)
   POST /layout    body: an ASCII or binary .ply (meters, z up). Returns JSON.
 
 SpatialLM (https://github.com/manycore-research/SpatialLM) is licensed for
-non-commercial use (its point encoder is CC-BY-NC-4.0).
+non-commercial use (its point encoder is CC-BY-NC-4.0). Runs on an A10G GPU.
 """
 
 import os
