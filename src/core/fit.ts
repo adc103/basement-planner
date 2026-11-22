@@ -1,0 +1,381 @@
+import type { Vec2 } from './geom2d.js';
+import type { Evidence, Plan } from './plan.js';
+import type { StructureResult } from './structure.js';
+
+/**
+ * Fit, then verify (the ScanRuler idea): a wall or opening is first proposed
+ * from the coarse point map, then its faces and edges are fitted to the fine
+ * room mesh, and finally it is scored on how much of it the mesh saw and how
+ * closely the two agree. The same scoring checks a plan you already have.
+ *
+ * Everything is plan inches; z is height.
+ */
+
+/** Room-mesh vertices with normals (pointing to free space), plan inches. */
+export interface Surface {
+  pos: Float32Array;
+  nrm: Float32Array;
+}
+
+export interface WallGeom {
+  a: Vec2;
+  b: Vec2;
+  thickness: number;
+  /** Floor and top of the wall, inches. */
+  z0: number;
+  z1: number;
+  openings: Array<{ offset: number; width: number; height: number; sill: number }>;
+}
+
+export interface FaceFit {
+  /** Signed offset of the face from the given centerline (+ = left normal side). */
+  offset: number;
+  /** RMS distance of supporting mesh points from the fitted face. */
+  rms: number;
+  /** Share of the face (outside openings) the mesh covers. */
+  coverage: number;
+  points: number;
+}
+
+export interface WallFit {
+  /** Fitted centerline and thickness (unchanged where the mesh can't tell). */
+  a: Vec2;
+  b: Vec2;
+  thickness: number;
+  faces: { left: FaceFit | null; right: FaceFit | null };
+  /** How far the centerline moved, inches (+ = toward the left normal). */
+  shift: number;
+  /** Mean distance of the model's faces from the mesh, inches. */
+  deviation: number;
+  coverage: number;
+  evidence: Evidence;
+  /** 0..1 */
+  confidence: number;
+  openings: OpeningFit[];
+}
+
+export interface OpeningFit {
+  offset: number;
+  width: number;
+  /** Share of the opening where the mesh shows wall (should be ~0). */
+  blocked: number;
+  /** Jambs found on each side. */
+  edges: number;
+  evidence: Evidence;
+}
+
+const CELL = 6; // coverage grid, inches
+const BAND = 4; // how far beyond a face to look for its points
+const INLIER = 1; // inches: points this close support a face
+
+/** A spatial index over surface points (2D buckets on the floor). */
+export class SurfaceIndex {
+  private cells = new Map<number, number[]>();
+  constructor(
+    readonly s: Surface,
+    private cell = 24,
+  ) {
+    for (let i = 0; i < s.pos.length / 3; i++) {
+      const k = this.key(Math.floor(s.pos[i * 3] / cell), Math.floor(s.pos[i * 3 + 1] / cell));
+      let a = this.cells.get(k);
+      if (!a) this.cells.set(k, (a = []));
+      a.push(i);
+    }
+  }
+  private key(i: number, j: number) {
+    return (i + 32768) * 65536 + (j + 32768);
+  }
+  /** Indices of points inside the floor rectangle around a segment, padded by r. */
+  near(a: Vec2, b: Vec2, r: number): number[] {
+    const out: number[] = [];
+    const c = this.cell;
+    const i0 = Math.floor((Math.min(a.x, b.x) - r) / c);
+    const i1 = Math.floor((Math.max(a.x, b.x) + r) / c);
+    const j0 = Math.floor((Math.min(a.y, b.y) - r) / c);
+    const j1 = Math.floor((Math.max(a.y, b.y) + r) / c);
+    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) for (const p of this.cells.get(this.key(i, j)) ?? []) out.push(p);
+    return out;
+  }
+  get size(): number {
+    return this.s.pos.length / 3;
+  }
+}
+
+function median(v: number[]): number {
+  const s = [...v].sort((x, y) => x - y);
+  return s[Math.floor(s.length / 2)];
+}
+
+/** Fit and score one wall against the mesh. */
+export function fitWall(idx: SurfaceIndex, w: WallGeom, opts: { refine?: boolean } = {}): WallFit {
+  const refine = opts.refine ?? true;
+  const { a, b } = w;
+  const L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  const d = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
+  const n = { x: -d.y, y: d.x }; // left normal
+  const half = w.thickness / 2;
+  const P = idx.s.pos;
+  const N = idx.s.nrm;
+  const inOpening = (t: number, z: number) => w.openings.some((o) => Math.abs(t - o.offset) < o.width / 2 && z > w.z0 + o.sill && z < w.z0 + o.sill + o.height);
+  // Points on vertical surfaces facing along the wall normal, near either face.
+  const side: Record<'left' | 'right', Array<{ t: number; z: number; u: number }>> = { left: [], right: [] };
+  // Jamb faces: inside the wall thickness, facing along the wall (+1 = toward b).
+  const jambs: Array<{ t: number; z: number; dir: number }> = [];
+  for (const i of idx.near(a, b, half + BAND)) {
+    const px = P[i * 3];
+    const py = P[i * 3 + 1];
+    const pz = P[i * 3 + 2];
+    if (pz < w.z0 + 3 || pz > w.z1 - 3) continue;
+    const t = (px - a.x) * d.x + (py - a.y) * d.y;
+    if (t < 1 || t > L - 1) continue;
+    const u = (px - a.x) * n.x + (py - a.y) * n.y;
+    const nd = N[i * 3] * n.x + N[i * 3 + 1] * n.y;
+    if (Math.abs(N[i * 3 + 2]) > 0.5) continue;
+    const na = N[i * 3] * d.x + N[i * 3 + 1] * d.y;
+    if (Math.abs(na) > 0.8 && Math.abs(u) < half + 1.5) {
+      jambs.push({ t, z: pz, dir: Math.sign(na) });
+      continue;
+    }
+    if (Math.abs(nd) < 0.8) continue;
+    // A left face looks left (normal +n) and sits on the + side; a right face the opposite.
+    if (nd > 0 && u > half - BAND && u < half + BAND) side.left.push({ t, z: pz, u });
+    else if (nd < 0 && u < -half + BAND && u > -half - BAND) side.right.push({ t, z: pz, u });
+  }
+  // Coverage cells of the face outside openings.
+  const cols = Math.max(1, Math.floor(L / CELL));
+  const rows = Math.max(1, Math.floor((w.z1 - w.z0 - 6) / CELL));
+  let faceCells = 0;
+  for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) if (!inOpening((i + 0.5) * CELL, w.z0 + 3 + (j + 0.5) * CELL)) faceCells++;
+  const fitFace = (pts: Array<{ t: number; z: number; u: number }>): FaceFit | null => {
+    if (pts.length < 12) return null;
+    let off = median(pts.map((p) => p.u));
+    // Two rounds of trimmed mean around the median.
+    for (let r = 0; r < 2; r++) {
+      const inl = pts.filter((p) => Math.abs(p.u - off) < INLIER * (r ? 1 : 2));
+      if (inl.length < 8) break;
+      off = inl.reduce((s, p) => s + p.u, 0) / inl.length;
+    }
+    const inl = pts.filter((p) => Math.abs(p.u - off) < INLIER);
+    const rms = Math.sqrt(inl.reduce((s, p) => s + (p.u - off) ** 2, 0) / Math.max(1, inl.length));
+    const seen = new Set<number>();
+    for (const p of inl) {
+      if (inOpening(p.t, p.z)) continue;
+      const i = Math.floor(p.t / CELL);
+      const j = Math.floor((p.z - w.z0 - 3) / CELL);
+      if (i >= 0 && i < cols && j >= 0 && j < rows) seen.add(i * rows + j);
+    }
+    return { offset: off, rms, coverage: faceCells ? seen.size / faceCells : 0, points: inl.length };
+  };
+  const left = fitFace(side.left);
+  const right = fitFace(side.right);
+  // New centerline and thickness.
+  let center = 0;
+  let thickness = w.thickness;
+  const good = (f: FaceFit | null) => !!f && f.coverage >= 0.1;
+  if (good(left) && good(right)) {
+    const t2 = left!.offset - right!.offset;
+    if (t2 > 2 && t2 < 16) {
+      thickness = t2;
+      center = (left!.offset + right!.offset) / 2;
+    }
+  } else if (good(left)) center = left!.offset - half;
+  else if (good(right)) center = right!.offset + half;
+  if (!refine) {
+    center = 0;
+    thickness = w.thickness;
+  }
+  const shift = center;
+  const na = { x: a.x + n.x * shift, y: a.y + n.y * shift };
+  const nb = { x: b.x + n.x * shift, y: b.y + n.y * shift };
+  // How far the (possibly refined) model faces sit from the mesh faces.
+  const devs: number[] = [];
+  if (left) devs.push(Math.abs(left.offset - (center + thickness / 2)));
+  if (right) devs.push(Math.abs(right.offset - (center - thickness / 2)));
+  const deviation = devs.length ? devs.reduce((s, x) => s + x, 0) / devs.length : Infinity;
+  const coverage = Math.max(left?.coverage ?? 0, right?.coverage ?? 0);
+  const rms = Math.min(left?.rms ?? Infinity, right?.rms ?? Infinity);
+  const evidence: Evidence = coverage >= 0.45 && rms <= 0.75 && deviation <= 1 ? 'measured' : coverage >= 0.12 && deviation <= 2 ? 'partial' : 'inferred';
+
+  // Openings: the mesh should be empty inside, with jambs at the edges.
+  const facePts = [...(left ? side.left.filter((p) => Math.abs(p.u - left.offset) < INLIER) : []), ...(right ? side.right.filter((p) => Math.abs(p.u - right.offset) < INLIER) : [])];
+  const openings = w.openings.map((o) => fitOpening(facePts, jambs, o, w.z0, refine));
+  return {
+    a: na,
+    b: nb,
+    thickness,
+    faces: { left, right },
+    shift,
+    deviation,
+    coverage,
+    evidence,
+    confidence: Math.min(1, coverage / 0.6),
+    openings,
+  };
+}
+
+function fitOpening(
+  facePts: Array<{ t: number; z: number }>,
+  jambPts: Array<{ t: number; z: number; dir: number }>,
+  o: WallGeom['openings'][number],
+  z0: number,
+  refine: boolean,
+): OpeningFit {
+  // Heights here are absolute; sill is above the floor (z0).
+  const bottom = z0 + o.sill;
+  const top = bottom + o.height;
+  const lo = bottom + 4;
+  const hi = top - 4;
+  // Jambs: walking out from the center in 1/2" steps, the first column with wall
+  // seen at several heights below the top.
+  const jamb = (dir: -1 | 1): number | null => {
+    const edge = o.offset + (dir * o.width) / 2;
+    // Best: the jamb's own face, which faces into the opening (-dir).
+    const face = jambPts.filter((p) => p.dir === -dir && Math.abs(p.t - edge) < 6 && p.z > bottom + 2 && p.z < top - 2);
+    if (face.length >= 6) return median(face.map((p) => p.t));
+    let best: number | null = null;
+    for (let s = -6; s <= 6; s += 0.5) {
+      const t = edge + dir * s;
+      const col = facePts.filter((p) => p.t > t - 0.5 && p.t < t + 0.5 && p.z > bottom + 2 && p.z < top - 2);
+      const heights = new Set(col.map((p) => Math.floor(p.z / 6)));
+      if (heights.size >= Math.max(3, Math.floor(o.height / 24))) {
+        best = t;
+        break;
+      }
+    }
+    return best;
+  };
+  const l = jamb(-1);
+  const r = jamb(1);
+  let offset = o.offset;
+  let width = o.width;
+  if (refine && l !== null && r !== null && r - l > 12) {
+    offset = (l + r) / 2;
+    width = r - l;
+  }
+  // Blocked share (after fitting): 3" cells inside the opening that hold mesh points.
+  const inside = facePts.filter((p) => p.z > lo && p.z < hi && Math.abs(p.t - offset) < width / 2 - 1.5);
+  const cells = new Set(inside.map((p) => `${Math.floor(p.t / 3)},${Math.floor(p.z / 3)}`));
+  const total = Math.max(1, Math.floor((width - 3) / 3) * Math.floor((hi - lo) / 3));
+  const blocked = Math.min(1, cells.size / total);
+  const edges = (l !== null ? 1 : 0) + (r !== null ? 1 : 0);
+  const evidence: Evidence = blocked < 0.08 && edges === 2 ? 'measured' : blocked < 0.25 ? 'partial' : 'inferred';
+  return { offset, width, blocked, edges, evidence };
+}
+
+/** A plan wall checked against the mesh: as drawn, and where the mesh says it is. */
+export interface WallCheck {
+  wallId: string;
+  /** The wall as it is in the plan, scored. */
+  check: WallFit;
+  /** The wall moved and resized to the mesh (what "Fit to scan" applies). */
+  fitted: WallFit;
+}
+
+/** Room-mesh pieces (plan-root meters, y up) to a plan-inch Surface. */
+export function surfaceFromMeshes(pieces: Iterable<{ positions: Float32Array; normals: Float32Array }>, stride = 1): Surface {
+  const INCH = 0.0254;
+  let n = 0;
+  const list = [...pieces];
+  for (const p of list) n += Math.ceil(p.positions.length / 3 / stride);
+  const pos = new Float32Array(n * 3);
+  const nrm = new Float32Array(n * 3);
+  let o = 0;
+  for (const p of list) {
+    for (let i = 0; i < p.positions.length / 3; i += stride, o += 3) {
+      pos[o] = p.positions[i * 3] / INCH;
+      pos[o + 1] = p.positions[i * 3 + 2] / INCH;
+      pos[o + 2] = p.positions[i * 3 + 1] / INCH;
+      nrm[o] = p.normals[i * 3];
+      nrm[o + 1] = p.normals[i * 3 + 2];
+      nrm[o + 2] = p.normals[i * 3 + 1];
+    }
+  }
+  return { pos: pos.subarray(0, o), nrm: nrm.subarray(0, o) };
+}
+
+/** Where two infinite lines (point + direction) cross, or null if parallel. */
+function cross(p: Vec2, d: Vec2, q: Vec2, e: Vec2): Vec2 | null {
+  const den = d.x * e.y - d.y * e.x;
+  if (Math.abs(den) < 1e-6) return null;
+  const t = ((q.x - p.x) * e.y - (q.y - p.y) * e.x) / den;
+  return { x: p.x + d.x * t, y: p.y + d.y * t };
+}
+
+/**
+ * Fit every proposed wall and opening to the room mesh, label how well each is
+ * supported, and keep corners and tees joined after walls move.
+ */
+export function refineStructure(res: StructureResult, surf: Surface): StructureResult {
+  if (surf.pos.length < 300) return res;
+  const idx = new SurfaceIndex(surf);
+  const z0 = res.floorOffset ?? 0;
+  const z1 = res.ceiling ?? z0 + 96;
+  const walls = res.walls.map((w) => ({ ...w, a: { ...w.a }, b: { ...w.b } }));
+  // Which wall ends sit on which other wall, before anything moves.
+  const dirOf = (w: { a: Vec2; b: Vec2 }) => {
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+    return { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
+  };
+  const offLine = (p: Vec2, w: { a: Vec2; b: Vec2 }) => {
+    const d = dirOf(w);
+    return Math.abs(-(p.x - w.a.x) * d.y + (p.y - w.a.y) * d.x);
+  };
+  const joins: Array<{ wi: number; end: 'a' | 'b'; on: number }> = [];
+  walls.forEach((w, wi) =>
+    (['a', 'b'] as const).forEach((end) => {
+      walls.forEach((o, oi) => {
+        if (oi !== wi && offLine(w[end], o) < 0.5) joins.push({ wi, end, on: oi });
+      });
+    }),
+  );
+  for (const w of walls) {
+    const d = dirOf(w);
+    const ops = w.openings.map((o) => ({ offset: (o.center.x - w.a.x) * d.x + (o.center.y - w.a.y) * d.y, width: o.width, height: o.height, sill: o.sill }));
+    const f = fitWall(idx, { a: w.a, b: w.b, thickness: w.thickness, z0, z1, openings: ops });
+    if (f.evidence !== 'inferred') {
+      w.a = f.a;
+      w.b = f.b;
+      w.thickness = Math.round(f.thickness * 4) / 4;
+    }
+    w.evidence = f.evidence;
+    w.deviation = f.deviation;
+    w.confidence = Math.max(w.confidence, f.confidence);
+    w.openings = w.openings.map((o, i) => {
+      const of = f.openings[i];
+      const center = { x: w.a.x + d.x * of.offset, y: w.a.y + d.y * of.offset };
+      return { ...o, center, width: Math.round(of.width * 4) / 4, evidence: of.evidence };
+    });
+  }
+  // Re-seat joined ends on the (moved) walls they meet.
+  for (const j of joins) {
+    const w = walls[j.wi];
+    const o = walls[j.on];
+    const p = cross(w.a, dirOf(w), o.a, dirOf(o));
+    if (p && Math.hypot(p.x - w[j.end].x, p.y - w[j.end].y) < 8) w[j.end] = p;
+  }
+  return { ...res, walls };
+}
+
+/** Check plan walls (real ones by default) against the mesh, worst first. */
+export function checkPlan(plan: Plan, surf: Surface, opts: { includeNew?: boolean; ids?: string[] } = {}): WallCheck[] {
+  const idx = new SurfaceIndex(surf);
+  const node = new Map(plan.nodes.map((n) => [n.id, n]));
+  const out: WallCheck[] = [];
+  for (const w of plan.walls) {
+    if (opts.ids ? !opts.ids.includes(w.id) : w.kind !== 'existing' && !opts.includeNew) continue;
+    const a = node.get(w.a);
+    const b = node.get(w.b);
+    if (!a || !b) continue;
+    const geom: WallGeom = {
+      a: { x: a.x, y: a.y },
+      b: { x: b.x, y: b.y },
+      thickness: w.thickness,
+      z0: 0,
+      z1: w.height,
+      openings: plan.openings.filter((o) => o.wallId === w.id).map((o) => ({ offset: o.offset, width: o.width, height: o.height, sill: o.sill })),
+    };
+    out.push({ wallId: w.id, check: fitWall(idx, geom, { refine: false }), fitted: fitWall(idx, geom) });
+  }
+  const bad = (c: WallCheck) => (c.check.evidence === 'inferred' ? -1 : c.check.deviation);
+  return out.sort((x, y) => bad(y) - bad(x));
+}

@@ -21,12 +21,12 @@ export function applyScan(d: Draft<Plan>, res: StructureResult): void {
     for (const w of d.walls) if (w.kind === 'new' && w.height === old) setWallHeight(d, w.id, H);
   }
   for (const w of res.walls) {
-    const id = addWallBetween(d, w.a, w.b, { height: H, thickness: w.thickness, kind: 'existing', source: 'capture', againstFoundation: false, evidence: 'measured', confidence: Math.max(0, Math.min(1, w.confidence)) });
+    const id = addWallBetween(d, w.a, w.b, { height: H, thickness: w.thickness, kind: 'existing', source: 'capture', againstFoundation: false, evidence: w.evidence ?? 'partial', confidence: Math.max(0, Math.min(1, w.confidence)) });
     if (!id) continue;
     const len = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
     for (const o of w.openings) {
       const offset = ((o.center.x - w.a.x) * (w.b.x - w.a.x) + (o.center.y - w.a.y) * (w.b.y - w.a.y)) / len;
-      addOpening(d, { wallId: id, type: o.type, offset, width: o.width, height: Math.min(o.height, H - o.sill), sill: o.sill, hinge: 'a', swing: 'left', kind: 'existing', evidence: 'measured' });
+      addOpening(d, { wallId: id, type: o.type, offset, width: o.width, height: Math.min(o.height, H - o.sill), sill: o.sill, hinge: 'a', swing: 'left', kind: 'existing', evidence: o.evidence ?? 'partial' });
     }
   }
   splitAtNodes(d);

@@ -17,8 +17,14 @@ const OFF = 1024; // brick index offset so keys stay positive
 export interface TsdfOptions {
   /** Voxel edge, meters. */
   voxel: number;
-  /** Truncation distance, meters. */
+  /** Truncation distance in front of a surface, meters. */
   trunc: number;
+  /**
+   * How far behind a surface a reading still counts, meters. Kept short (just
+   * over one voxel) so the two sides of a thin wall don't overwrite each
+   * other, which would make 2x4 walls come out fat.
+   */
+  behind: number;
   /** Weight cap: higher = steadier, slower to forget moved things. */
   maxWeight: number;
   /** Voxels need this much weight to be meshed. */
@@ -27,7 +33,7 @@ export interface TsdfOptions {
   maxBricks: number;
 }
 
-export const DEFAULT_TSDF: TsdfOptions = { voxel: 0.04, trunc: 0.12, maxWeight: 40, minWeight: 2, maxBricks: 60_000 };
+export const DEFAULT_TSDF: TsdfOptions = { voxel: 0.04, trunc: 0.12, behind: 0.045, maxWeight: 40, minWeight: 2, maxBricks: 60_000 };
 
 interface Brick {
   d: Float32Array; // signed distance / trunc, -1..1
@@ -105,7 +111,7 @@ export class TsdfVolume {
         const ndcY = ((j + 0.5) / H) * 2 - 1;
         const vx = (ndcX + P[8]) / P[0];
         const vy = (ndcY + P[9]) / P[5];
-        for (const s of [m - trunc, m, m + trunc]) {
+        for (const s of [m - trunc, m, m + this.o.behind]) {
           if (s <= 0) continue;
           const px = vx * s;
           const py = vy * s;
@@ -147,8 +153,13 @@ export class TsdfVolume {
             const m = depth[pj * W + pi];
             if (!m) continue;
             const sdf = m - dist;
-            if (sdf < -trunc) continue; // hidden behind the surface
-            const t = Math.min(1, sdf / trunc);
+            // Hidden behind the surface. Readings a little further back are
+            // clamped rather than dropped, so slanted views don't pull the
+            // surface into the wall; far enough back, the other side of a thin
+            // wall is left alone.
+            const back = this.o.behind;
+            if (sdf < -2 * back) continue;
+            const t = Math.min(1, Math.max(sdf, -back) / trunc);
             const vi = (z * BRICK + y) * BRICK + x;
             const w = b.w[vi];
             b.d[vi] = (b.d[vi] * w + t) / (w + 1);

@@ -28,6 +28,7 @@ import { SoffitTool } from './tools/soffitTool.js';
 import { RefAnchors } from './refAnchors.js';
 import { CameraProbe, PROBE_KEY } from './cameraProbe.js';
 import { registerWebMcp } from './webmcp.js';
+import { checkPlan, type WallCheck } from '../core/fit.js';
 import { CommandBus, type CommandName, type ParamsOf, type ResultOf } from '../core/commands.js';
 import { planToLocal } from './planView.js';
 import { solveTwoPoint } from '../core/alignment.js';
@@ -249,7 +250,7 @@ export class PlannerApp {
     };
 
     // Browser AI agents (WebMCP) get the same commands, tagged as an assistant.
-    registerWebMcp(this.cmd, () => this.refreshUi());
+    registerWebMcp(this.cmd, () => this.refreshUi(), () => this.verifyWalls());
 
     this.menu = new MainMenu(world, this.menuApi());
     this.menu.panel.feedback = (kind) => this.uiFeedback(kind);
@@ -330,6 +331,7 @@ export class PlannerApp {
         else if (action === 'flip') t.flipDoor();
         else if (action === 'lock') t.toggleLock();
         else if (action === 'demolish') t.toggleDemolish();
+        else if (action === 'fit') this.fitSelectedToScan();
       },
       selectedLocked: () => {
         const s = this.editTool.selection;
@@ -387,6 +389,8 @@ export class PlannerApp {
       },
       realWalls: () => this.store.plan.settings.realWalls,
       roomMesh: () => this.scan.mesh.shown,
+      checkWalls: () => this.checkWalls(),
+      hasRoomMesh: () => this.scan.mesh.triangles > 0,
       toggleRoomMesh: () => {
         const m = this.scan.mesh;
         m.setShown(!m.shown);
@@ -1246,7 +1250,9 @@ export class PlannerApp {
       this.toast(s.map.size < 500 ? 'Not enough was seen yet. Scan again and look around more.' : 'No new walls or ceiling features found', 5);
       return;
     }
-    const parts = [`${res.walls.length} walls`];
+    const measured = res.walls.filter((w) => w.evidence === 'measured').length;
+    const fitted = res.walls.some((w) => w.evidence);
+    const parts = [fitted ? `${res.walls.length} walls (${measured} measured to the mesh${measured < res.walls.length ? ', paler ones partly seen' : ''})` : `${res.walls.length} walls`];
     if (res.soffits.length) parts.push(`${res.soffits.length} low areas`);
     if (res.posts.length) parts.push(`${res.posts.length} possible posts (off)`);
     if (res.ceiling) parts.push(`ceiling ${formatLength(res.ceiling - (res.floorOffset ?? 0))}`);
@@ -1281,6 +1287,73 @@ export class PlannerApp {
     this.scan.hide();
     this.endReview();
     this.toast(`Added ${n} items from the scan`, 4);
+  }
+
+  /** Real walls checked against the room mesh, worst first (null: no mesh yet). */
+  verifyWalls(ids?: string[]): WallCheck[] | null {
+    const surf = this.scan.mesh.surface();
+    if (surf.pos.length < 300) return null;
+    return checkPlan(this.store.plan, surf, ids ? { ids } : {});
+  }
+
+  /** Room tab: score every real wall against the mesh and point at the worst one. */
+  private checkWalls(): void {
+    const checks = this.verifyWalls();
+    if (!checks) {
+      this.toast('Scan the room first: the check compares walls with the room mesh', 4);
+      return;
+    }
+    if (!checks.length) {
+      this.toast('No real walls to check yet', 3);
+      return;
+    }
+    const items = checks.flatMap((c) => [
+      { id: c.wallId, evidence: c.check.evidence, confidence: c.check.confidence },
+      ...this.store.plan.openings
+        .filter((o) => o.wallId === c.wallId)
+        .map((o, i) => ({ id: o.id, evidence: c.check.openings[i]?.evidence ?? 'inferred', confidence: null })),
+    ]);
+    this.cmd.run('scan.setEvidence', { items }, 'scan');
+    const seen = checks.filter((c) => c.check.evidence !== 'inferred');
+    const good = seen.filter((c) => c.check.deviation <= 0.5);
+    const worst = seen[0];
+    const unseen = checks.length - seen.length;
+    let msg = `${checks.length} real walls: ${good.length} match the scan within 1/2"`;
+    if (worst && worst.check.deviation > 0.5) {
+      msg += `, worst is ${formatLength(Math.round(worst.check.deviation * 4) / 4)} off (selected: Edit > Fit to scan moves it)`;
+      this.setTool('edit');
+      this.editTool.select({ kind: 'wall', id: worst.wallId });
+    }
+    if (unseen) msg += `. ${unseen} not seen by the scan yet`;
+    this.toast(msg, 8);
+  }
+
+  /** Edit tab: move and resize the selected real wall (and its openings) onto the mesh. */
+  private fitSelectedToScan(): void {
+    const w = this.editTool.selectedWall();
+    if (!w) return;
+    const c = this.verifyWalls([w.id])?.[0];
+    if (!c) {
+      this.toast('Scan the room first: Fit to scan uses the room mesh', 4);
+      return;
+    }
+    const f = c.fitted;
+    if (f.evidence === 'inferred') {
+      this.toast('The scan barely saw this wall. Scan it again from closer, then try.', 4);
+      return;
+    }
+    const ops = this.store.plan.openings.filter((o) => o.wallId === w.id);
+    this.cmd.group('Fit to scan', () => {
+      this.act('wall.place', { id: w.id, a: f.a, b: f.b });
+      this.act('wall.setThickness', { id: w.id, thickness: Math.round(f.thickness * 4) / 4 });
+      ops.forEach((o, i) => {
+        const of = f.openings[i];
+        if (of && of.edges === 2) this.cmd.run('opening.update', { id: o.id, offset: of.offset, width: Math.round(of.width * 4) / 4 });
+      });
+      this.cmd.run('scan.setEvidence', { items: [{ id: w.id, evidence: f.evidence, confidence: f.confidence }] }, 'scan');
+    });
+    const moved = Math.abs(f.shift);
+    this.toast(moved < 0.125 && Math.abs(f.thickness - w.thickness) < 0.25 ? 'Already matches the scan' : `Fitted: moved ${formatLength(Math.round(moved * 8) / 8)}, ${Math.round(f.thickness * 4) / 4}" thick`, 4);
   }
 
   private scanStatus(): string {

@@ -39,7 +39,9 @@ export interface MenuApi {
   editStud(s: '2x4' | '2x6'): void;
   editWidth(): void;
   deleteSelection(): void;
-  edit(action: 'thickness' | 'split' | 'kind' | 'openingHeight' | 'openingType' | 'flip' | 'lock' | 'demolish'): void;
+  edit(action: 'thickness' | 'split' | 'kind' | 'openingHeight' | 'openingType' | 'flip' | 'lock' | 'demolish' | 'fit'): void;
+  checkWalls(): void;
+  hasRoomMesh(): boolean;
   selectedLocked(): boolean;
   selectedDemolish(): boolean;
   openingType(): string;
@@ -383,6 +385,9 @@ export class MainMenu {
             { id: 'e-kind', label: () => (a.selectedIsReal() ? 'Make planned' : 'Make real'), span: 2, col: 2, onClick: () => a.edit('kind'), visible: sel('wall') },
           ],
           [
+            { id: 'e-fit', label: () => 'Fit to scan', icon: 'scan', span: 4, col: 0, onClick: () => a.edit('fit'), enabled: () => a.hasRoomMesh(), visible: () => a.selectionKind() === 'wall' && a.selectedIsReal() },
+          ],
+          [
             {
               id: 'e-demo',
               label: () => (a.selectedDemolish() ? 'Keep wall' : 'Demolish'),
@@ -475,6 +480,9 @@ export class MainMenu {
               enabled: () => !a.cameraTestRunning(),
               visible: () => !a.scanReviewing(),
             },
+          ],
+          [
+            { id: 'scan-check', label: () => 'Check walls against scan', icon: 'scan', span: 4, col: 0, onClick: () => a.checkWalls(), enabled: () => a.hasRoomMesh() && !a.scanning(), visible: () => !a.scanReviewing() },
           ],
         ],
       },

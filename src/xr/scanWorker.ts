@@ -2,6 +2,7 @@
 import { FreeGrid } from '../core/freeSpace.js';
 import type { Plan } from '../core/plan.js';
 import { findStructure, type StructureOptions } from '../core/structure.js';
+import { refineStructure } from '../core/fit.js';
 import type { PP } from '../core/wallDetect.js';
 
 /** Runs structure detection off the render thread (it can take a few hundred ms). */
@@ -13,6 +14,9 @@ export interface ScanJob {
   freeVoxel: number;
   plan: Plan;
   opts: StructureOptions;
+  /** Room-mesh vertices and normals (plan inches): fit the walls to them. */
+  surfPos?: Float32Array;
+  surfNrm?: Float32Array;
 }
 
 const free = new FreeGrid(4);
@@ -23,7 +27,8 @@ self.onmessage = (e: MessageEvent<ScanJob>) => {
     const pts: PP[] = [];
     for (let i = 0; i + 2 < job.pts.length; i += 3) pts.push({ x: job.pts[i], y: job.pts[i + 1], z: job.pts[i + 2] });
     free.load({ keys: job.freeKeys, counts: job.freeCounts });
-    const res = findStructure(pts, job.plan, job.opts, free);
+    let res = findStructure(pts, job.plan, job.opts, free);
+    if (job.surfPos && job.surfNrm) res = refineStructure(res, { pos: job.surfPos, nrm: job.surfNrm });
     (self as unknown as Worker).postMessage({ id: job.id, res });
   } catch (err) {
     (self as unknown as Worker).postMessage({ id: job.id, error: String(err) });

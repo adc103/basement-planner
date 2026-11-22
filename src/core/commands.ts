@@ -438,6 +438,20 @@ export const COMMANDS = {
       applyScan(d, p.result);
     },
   }),
+  'scan.setEvidence': def({
+    title: 'Check against scan',
+    description: 'Record how well walls and openings match the room mesh.',
+    params: z.object({ items: z.array(z.object({ id: Id, evidence: z.enum(['measured', 'partial', 'inferred', 'manual']), confidence: z.number().min(0).max(1).nullable() })) }),
+    internal: true,
+    run(d, p) {
+      for (const it of p.items) {
+        const el = d.walls.find((w) => w.id === it.id) ?? d.openings.find((o) => o.id === it.id);
+        if (!el || el.locked) continue;
+        el.evidence = it.evidence;
+        el.confidence = it.confidence;
+      }
+    },
+  }),
   'scan.importRoom': def({
     title: 'Import room scan',
     description: 'Replace scanned real walls and objects with a fresh Quest Space Setup import.',

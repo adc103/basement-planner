@@ -28,6 +28,7 @@ import { FreeGrid } from '../core/freeSpace.js';
 import { idbGet, idbSet } from './idb.js';
 import { ingestFrame, type DepthFrame } from '../core/scanIngest.js';
 import { ScanRecorder } from './scanRecorder.js';
+import { refineStructure } from '../core/fit.js';
 import { RoomMesh } from './roomMesh.js';
 
 const STORE_KEY = 'scan-map:v1';
@@ -239,9 +240,13 @@ export class ScanSession {
   }
 
   /** Run detection, in the worker when available. */
-  detect(plan: Plan, eye: Vec2): Promise<StructureResult | null> {
+  detect(plan: Plan, eye: Vec2, fit = false): Promise<StructureResult | null> {
     const pts = this.points();
-    if (!this.worker) return Promise.resolve(findStructure(pts, plan, this.opts(plan, eye), this.free));
+    const surf = fit ? this.mesh.surface() : null;
+    if (!this.worker) {
+      const r = findStructure(pts, plan, this.opts(plan, eye), this.free);
+      return Promise.resolve(surf ? refineStructure(r, surf) : r);
+    }
     const flat = new Float32Array(pts.length * 3);
     pts.forEach((p, i) => {
       flat[i * 3] = p.x;
@@ -253,8 +258,17 @@ export class ScanSession {
     return new Promise((resolve) => {
       this.pending.set(id, resolve);
       this.worker!.postMessage(
-        { id, pts: flat, freeKeys: fr.keys, freeCounts: fr.counts, freeVoxel: this.free.voxel, plan: JSON.parse(JSON.stringify(plan)), opts: this.opts(plan, eye) },
-        [flat.buffer, fr.keys.buffer, fr.counts.buffer],
+        {
+          id,
+          pts: flat,
+          freeKeys: fr.keys,
+          freeCounts: fr.counts,
+          freeVoxel: this.free.voxel,
+          plan: JSON.parse(JSON.stringify(plan)),
+          opts: this.opts(plan, eye),
+          ...(surf ? { surfPos: surf.pos, surfNrm: surf.nrm } : {}),
+        },
+        [flat.buffer, fr.keys.buffer, fr.counts.buffer, ...(surf ? [surf.pos.buffer, surf.nrm.buffer] : [])],
       );
     });
   }
@@ -284,7 +298,7 @@ export class ScanSession {
 
   /** Find structure in the map and show it as ghosts to review. */
   async analyze(plan: Plan, eye: Vec2): Promise<StructureResult> {
-    const res = (await this.detect(plan, eye)) ?? findStructure(this.points(), plan, this.opts(plan, eye), this.free);
+    const res = (await this.detect(plan, eye, true)) ?? findStructure(this.points(), plan, this.opts(plan, eye), this.free);
     this.live = null;
     this.proposals = res;
     this.excluded.clear();
@@ -425,6 +439,9 @@ export class ScanSession {
   }
 
   private wallMat = new MeshBasicMaterial({ color: 0x4ade80, transparent: true, opacity: 0.35, depthWrite: false, side: DoubleSide });
+  /** Partly seen walls: paler; guessed ones: grey. */
+  private wallPartMat = new MeshBasicMaterial({ color: 0xbef264, transparent: true, opacity: 0.3, depthWrite: false, side: DoubleSide });
+  private wallGuessMat = new MeshBasicMaterial({ color: 0xcbd5e1, transparent: true, opacity: 0.25, depthWrite: false, side: DoubleSide });
   private soffitMat = new MeshBasicMaterial({ color: 0xfb923c, transparent: true, opacity: 0.4, depthWrite: false, side: DoubleSide });
   private postMat = new MeshBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.5, depthWrite: false });
   private doorMat = new MeshBasicMaterial({ color: 0x60a5fa, transparent: true, opacity: 0.55, depthWrite: false });
@@ -443,10 +460,11 @@ export class ScanSession {
     };
     res.walls.forEach((w, i) => {
       const len = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
-      const m = new Mesh(new BoxGeometry(len * INCH_M, H * INCH_M, w.thickness * INCH_M), this.wallMat);
+      const mat = w.evidence === 'inferred' ? this.wallGuessMat : w.evidence === 'partial' ? this.wallPartMat : this.wallMat;
+      const m = new Mesh(new BoxGeometry(len * INCH_M, H * INCH_M, w.thickness * INCH_M), mat);
       m.position.set(((w.a.x + w.b.x) / 2) * INCH_M, (H / 2) * INCH_M, ((w.a.y + w.b.y) / 2) * INCH_M);
       m.rotation.y = -Math.atan2(w.b.y - w.a.y, w.b.x - w.a.x);
-      tag(m, `walls:${i}`, this.wallMat);
+      tag(m, `walls:${i}`, mat);
       this.ghosts.add(m);
       // Doorways: a blue box in the opening, part of the wall's ghost.
       for (const o of w.openings) {

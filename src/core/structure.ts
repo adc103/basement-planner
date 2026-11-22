@@ -1,6 +1,6 @@
 import { add, dist, rotate, scale, sub, type Vec2 } from './geom2d.js';
 import { wallEnds } from './ops.js';
-import type { Plan } from './plan.js';
+import type { Evidence, Plan } from './plan.js';
 import { convexHull } from './poly.js';
 import type { DetectedFace, PP } from './wallDetect.js';
 import { findWalls, type FoundOpening, type FreeLookup } from './wallFinder.js';
@@ -29,9 +29,13 @@ export interface WallProposal {
   confidence: number;
   /** Doorways found in it: center point (plan), width and height, inches. */
   openings: OpeningProposal[];
+  /** Set once fitted to the room mesh. */
+  evidence?: Evidence;
+  /** Mean distance between the wall's faces and the mesh, inches. */
+  deviation?: number;
 }
 
-export type OpeningProposal = FoundOpening;
+export type OpeningProposal = FoundOpening & { evidence?: Evidence };
 
 const NO_FREE: FreeLookup = { count: () => 0 };
 

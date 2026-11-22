@@ -591,6 +591,26 @@ try {
       .then((h) => h.jsonValue())
       .catch(() => 0);
     check(tris > 1000, `depth frames build a live room mesh (${tris} triangles)`);
+    // A real wall drawn 1.5" off that mesh wall: Check finds it, Fit to scan moves it onto it.
+    {
+      const r = await page.evaluate(() => {
+        const app = window.basementPlanner;
+        const face = 28 / 0.0254; // the flat wall's face, plan inches (it faces +y, so the wall sits on the -y side)
+        const id = app.cmd.run('wall.add', { a: { x: 1110, y: face - 2.25 + 1.5 }, b: { x: 1250, y: face - 2.25 + 1.5 }, kind: 'existing', thickness: 4.5, height: 96 });
+        const before = app.verifyWalls([id])?.[0]?.check.deviation ?? null;
+        app.editTool.select({ kind: 'wall', id });
+        app.fitSelectedToScan();
+        const after = app.verifyWalls([id])?.[0]?.check.deviation ?? null;
+        const w = app.store.plan.walls.find((x) => x.id === id);
+        const undo = app.store.undoLabel;
+        app.cmd.run('element.delete', { id });
+        app.editTool.select(null);
+        return { before, after, evidence: w?.evidence, undo };
+      });
+      check(r.before !== null && Math.abs(r.before - 1.5) < 0.5, `wall check measures the 1.5" error (${r.before?.toFixed(2)}")`);
+      check(r.after !== null && r.after < 0.3 && r.evidence === 'measured', `Fit to scan puts it on the mesh (${r.after?.toFixed(2)}" off, ${r.evidence})`);
+      check(r.undo === 'Fit to scan', `fit is one undo step (${r.undo})`);
+    }
     const before = await page.evaluate(() => window.basementPlanner.store.plan.walls.length);
     // Paint a 20' x 14' box room 30 ft away from the drawn walls, so detection has real structure.
     await page.evaluate(() => {

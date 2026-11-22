@@ -1,4 +1,5 @@
 import { describePlan, toolSpecs, type CommandBus, type CommandName } from '../core/commands.js';
+import type { WallCheck } from '../core/fit.js';
 
 /**
  * Offer the plan's commands to a browser AI agent through WebMCP
@@ -13,7 +14,7 @@ interface ModelContext {
 
 const text = (v: unknown) => ({ content: [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v) }] });
 
-export function registerWebMcp(cmd: CommandBus, onChange: () => void): () => void {
+export function registerWebMcp(cmd: CommandBus, onChange: () => void, verify?: () => WallCheck[] | null): () => void {
   const mc = ((document as unknown as { modelContext?: ModelContext }).modelContext ??
     (navigator as unknown as { modelContext?: ModelContext }).modelContext) as ModelContext | undefined;
   if (!mc?.registerTool) return () => {};
@@ -31,6 +32,28 @@ export function registerWebMcp(cmd: CommandBus, onChange: () => void): () => voi
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true },
     execute: async () => text(describePlan(cmd.store.plan)),
+  });
+  reg({
+    name: 'plan_verify',
+    description:
+      'Check real walls against the scanned room mesh. For each wall: evidence (measured/partial/inferred), deviation in inches between the drawn faces and the mesh, coverage, and where the mesh says the wall is. Use after edits to confirm they match reality.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true },
+    execute: async () => {
+      const r = verify?.();
+      if (!r) return text('No room mesh yet: scan the room first.');
+      const q = (n: number) => (Number.isFinite(n) ? Math.round(n * 100) / 100 : null);
+      return text(
+        r.map((c) => ({
+          wallId: c.wallId,
+          evidence: c.check.evidence,
+          deviation: q(c.check.deviation),
+          coverage: q(c.check.coverage),
+          meshSays: { a: c.fitted.a, b: c.fitted.b, thickness: q(c.fitted.thickness) },
+          openings: c.check.openings.map((o) => ({ evidence: o.evidence, blocked: q(o.blocked), meshWidth: q(o.width) })),
+        })),
+      );
+    },
   });
   reg({
     name: 'plan_undo',

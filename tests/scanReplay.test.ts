@@ -6,6 +6,8 @@ import { createEmptyPlan } from '../src/core/plan';
 import { ScanMap } from '../src/core/scanMap';
 import { decodeRecording, encodeRecording, ingestFrame, type DepthFrame } from '../src/core/scanIngest';
 import { findStructure } from '../src/core/structure';
+import { TsdfVolume } from '../src/core/tsdf';
+import { refineStructure, surfaceFromMeshes } from '../src/core/fit';
 import { basementScene, depthFramesFor } from './synthScan';
 
 function replay(frames: DepthFrame[]) {
@@ -31,6 +33,34 @@ describe('scan recording and replay', () => {
     expect(doors.some((wd) => Math.abs(wd - 48) <= 3)).toBe(true);
     expect(res.walls.length).toBeGreaterThanOrEqual(5);
   });
+
+  it('fits the found walls to the room mesh and labels them measured', () => {
+    const { res } = replay(frames);
+    const vol = new TsdfVolume();
+    for (const f of frames) vol.integrate(f);
+    const fit = refineStructure(res, surfaceFromMeshes(vol.meshDirty()));
+    const part = fit.walls.find((w) => Math.abs(w.a.x - w.b.x) < 2 && Math.abs(w.a.x - 202) < 4)!;
+    expect(Math.abs(part.a.x - 202.25)).toBeLessThan(0.5);
+    expect(Math.abs(part.thickness - 4.5)).toBeLessThan(0.75);
+    expect(part.evidence).toBe('measured');
+    const door = part.openings.find((o) => Math.abs(o.width - 32) < 4)!;
+    expect(Math.abs(door.width - 32)).toBeLessThan(1);
+    expect(door.evidence).toBe('measured');
+    const outer = fit.walls.filter((w) => w.foundation);
+    expect(outer.filter((w) => w.evidence === 'measured').length).toBeGreaterThanOrEqual(3);
+    // Corners stay joined: every end still lies on another wall.
+    for (const w of fit.walls) {
+      for (const p of [w.a, w.b]) {
+        const on = fit.walls.some((o) => {
+          if (o === w) return false;
+          const L = Math.hypot(o.b.x - o.a.x, o.b.y - o.a.y);
+          return Math.abs(-(p.x - o.a.x) * (o.b.y - o.a.y) + (p.y - o.a.y) * (o.b.x - o.a.x)) / L < 0.05;
+        });
+        if (w.b.y < 260) expect(on, `end ${p.x.toFixed(1)},${p.y.toFixed(1)}`).toBe(true);
+      }
+    }
+    console.log(fit.walls.map((w) => `${w.evidence} t${w.thickness} ${w.a.x.toFixed(2)},${w.a.y.toFixed(2)} [${w.openings.map((o) => `${o.type}${o.width} ${o.evidence}`).join(', ')}]`).join('\n'));
+  }, 60_000);
 
   it('round-trips through the file format exactly', () => {
     const some = frames.slice(0, 20);

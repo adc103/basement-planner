@@ -9,6 +9,7 @@ import {
 } from '@iwsdk/core';
 import type { DepthFrame } from '../core/scanIngest.js';
 import { brickCoords, type BrickMesh } from '../core/tsdf.js';
+import { surfaceFromMeshes, type Surface } from '../core/fit.js';
 import type { FusionIn, FusionOut } from './fusionWorker.js';
 
 const PREF = 'basement-planner:room-mesh:v1';
@@ -77,6 +78,11 @@ export class RoomMesh {
     this.send({ type: 'mesh' });
     // The worker answers only when something changed.
     setTimeout(() => (this.pending = false), 1500);
+  }
+
+  /** Mesh vertices and normals in plan inches, for fitting and checking walls. */
+  surface(): Surface {
+    return surfaceFromMeshes(this.bricksMesh.values());
   }
 
   save(): void {
