@@ -58,6 +58,29 @@ export class CameraProbe {
       add('Session features', feats.length > 0, feats.join(', ') || 'none reported');
       add('Depth sensing', feats.includes('depth-sensing'), feats.includes('depth-sensing') ? `usage ${(session as unknown as { depthUsage?: string }).depthUsage ?? '?'}, format ${(session as unknown as { depthDataFormat?: string }).depthDataFormat ?? '?'}` : 'not granted');
 
+      // The standard WebXR camera feature: lens details and pose with every frame, if the browser has it.
+      const camAccess = feats.includes('camera-access');
+      let viewCam = 'no frame';
+      if (session) {
+        viewCam = await new Promise<string>((resolve) => {
+          const timer = setTimeout(() => resolve('no frame in 2 s'), 2000);
+          session.requestAnimationFrame((_t, frame) => {
+            clearTimeout(timer);
+            const ref = this.world.renderer.xr.getReferenceSpace();
+            const pose = ref ? frame.getViewerPose(ref) : null;
+            const cams = (pose?.views ?? []).map((v) => (v as unknown as { camera?: { width: number; height: number } }).camera).filter(Boolean);
+            resolve(cams.length ? `${cams.length} camera image(s) attached to views, ${cams[0]!.width}x${cams[0]!.height}` : `${pose?.views.length ?? 0} views, no camera attached`);
+          });
+        });
+      }
+      add('WebXR camera-access (lens + pose)', camAccess && viewCam.includes('attached to views'), `${camAccess ? 'granted' : 'not granted'}; ${viewCam}`);
+      const gpuBinding = (globalThis as unknown as { XRGPUBinding?: { prototype: Record<string, unknown> } }).XRGPUBinding;
+      add(
+        'WebGPU in WebXR',
+        gpuBinding ? true : false,
+        gpuBinding ? `XRGPUBinding present; depth for WebGPU: ${'getDepthInformation' in gpuBinding.prototype ? 'getDepthInformation available' : 'no getDepthInformation'}` : 'XRGPUBinding not exposed',
+      );
+
       // Room mesh / planes.
       let meshVerts = 0;
       let meshes = 0;

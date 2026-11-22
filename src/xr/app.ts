@@ -1816,6 +1816,7 @@ export class PlannerApp {
   }
 
   enterAR(): void {
+    offerCameraAccess();
     this.world.launchXR(
       this.largeSpace ? undefined : { referenceSpace: { type: 'local-floor' as never, required: false, fallbackOrder: ['local' as never, 'viewer' as never] } },
     );
@@ -1844,4 +1845,23 @@ export class PlannerApp {
     this.editTool.select(null);
     this.store.load(plan);
   }
+}
+
+/**
+ * Ask for the standard WebXR camera feature (lens details and pose with each frame)
+ * as optional. Browsers without it just leave it out; the camera test reports which.
+ */
+function offerCameraAccess(): void {
+  const xr = navigator.xr as (XRSystem & { __bpWrapped?: boolean }) | undefined;
+  if (!xr || xr.__bpWrapped) return;
+  const orig = xr.requestSession.bind(xr);
+  xr.requestSession = (mode: XRSessionMode, init?: XRSessionInit) => {
+    if (mode === 'immersive-ar') {
+      const opt = new Set(init?.optionalFeatures ?? []);
+      opt.add('camera-access');
+      init = { ...init, optionalFeatures: [...opt] };
+    }
+    return orig(mode, init);
+  };
+  xr.__bpWrapped = true;
 }

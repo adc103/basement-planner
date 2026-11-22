@@ -716,7 +716,7 @@ try {
   // Camera test (Chrome's fake camera stands in for the passthrough camera).
   {
     check(await clickButton(menu, 'btn:tab-scan'), 'Room tab opens');
-    check(await page.evaluate(() => { window.basementPlanner.runCameraTest(); return true; }), 'Camera test starts (moved off the menu)');
+    check(await clickButton(menu, 'btn:camtest'), 'Camera test button');
     const r = await page
       .waitForFunction(() => JSON.parse(localStorage.getItem('basement-planner:camera-probe:v1') || 'null'), null, { timeout: 25000 })
       .then((h) => h.jsonValue())
@@ -725,6 +725,7 @@ try {
     check(!!row('Camera stream during AR')?.ok, `camera stream opens during the AR session (${row('Camera stream during AR')?.detail})`);
     check(!!row('Frame capture')?.ok && !!r?.thumb, `a frame is captured (${row('Frame capture')?.detail})`);
     check(!!row('Frame rate')?.ok, `frame rate measured (${row('Frame rate')?.detail})`);
+    check(!!row('WebXR camera-access (lens + pose)') && !!row('WebGPU in WebXR'), `camera test reports camera-access and WebGPU-in-XR (${row('WebXR camera-access (lens + pose)')?.detail} / ${row('WebGPU in WebXR')?.detail})`);
     await clickButton(menu, 'btn:tab-build');
   }
 
