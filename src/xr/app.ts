@@ -45,6 +45,7 @@ import { EditTool } from './tools/editTool.js';
 import { MeasureTool } from './tools/measureTool.js';
 import { OpeningTool } from './tools/openingTool.js';
 import type { AimHit, Tool, ToolContext } from './tools/tool.js';
+import { TraceTool } from './tools/traceTool.js';
 import { WallTool } from './tools/wallTool.js';
 import { MainMenu, MENU_H, type MenuApi, type ToolName } from './ui/mainMenu.js';
 import { setPokeEnabled } from './ui/poke.js';
@@ -59,9 +60,10 @@ interface SavedTransform extends PlanTransform {
 }
 
 /** Thumbstick-flick order for controllers. */
-const TOOL_CYCLE: ToolName[] = ['edit', 'walls', 'doors', 'measure', 'delete'];
+const TOOL_CYCLE: ToolName[] = ['edit', 'trace', 'walls', 'doors', 'measure'];
 const TOOL_LABEL: Record<ToolName, string> = {
-  walls: 'Wall',
+  walls: 'New wall',
+  trace: 'Real wall',
   doors: 'Door',
   edit: 'Select',
   delete: 'Delete',
@@ -219,6 +221,10 @@ export class PlannerApp {
     this.tools = {
       walls: this.wallTool,
       doors: new OpeningTool(ctx),
+      trace: new TraceTool(ctx, (id) => {
+        const r = this.fitWallToScan(id);
+        return r?.ok ? `Real wall added. ${r.note}` : r ? `Real wall added where you tapped. ${r.note}` : 'Real wall added where you tapped (scan the room to snap it exactly)';
+      }),
       edit: this.editTool,
       delete: new DeleteTool(ctx),
       measure: this.measureTool,
@@ -985,32 +991,38 @@ export class PlannerApp {
     if (unseen) msg += `. ${unseen} not seen by the scan yet`;
     this.toast(msg, 8);
   }
-  /** Edit tab: move and resize the selected real wall (and its openings) onto the mesh. */
+  /**
+   * Move and resize a real wall (and its openings) onto the room mesh. Runs inside the
+   * caller's undo group. Returns what happened in words, or null when there is no mesh.
+   */
+  private fitWallToScan(id: string): { ok: boolean; note: string } | null {
+    const w = this.store.plan.walls.find((x) => x.id === id);
+    if (!w) return null;
+    const c = this.verifyWalls([id])?.[0];
+    if (!c) return null;
+    const f = c.fitted;
+    if (f.evidence === 'inferred') return { ok: false, note: 'The scan barely saw this wall. Scan it again from closer, then try.' };
+    const ops = this.store.plan.openings.filter((o) => o.wallId === id);
+    this.act('wall.place', { id, a: f.a, b: f.b });
+    this.act('wall.setThickness', { id, thickness: Math.round(f.thickness * 4) / 4 });
+    ops.forEach((o, i) => {
+      const of = f.openings[i];
+      if (of && of.edges === 2) this.cmd.run('opening.update', { id: o.id, offset: of.offset, width: Math.round(of.width * 4) / 4 });
+    });
+    this.cmd.run('scan.setEvidence', { items: [{ id, evidence: f.evidence, confidence: f.confidence }] }, 'scan');
+    const moved = Math.abs(f.shift);
+    return {
+      ok: true,
+      note: moved < 0.125 && Math.abs(f.thickness - w.thickness) < 0.25 ? 'Already matches the scan' : `Snapped to the scan: moved ${formatLength(Math.round(moved * 8) / 8)}, ${Math.round(f.thickness * 4) / 4}" thick`,
+    };
+  }
+
+  /** Edit tab: Snap to scan for the selected wall. */
   private fitSelectedToScan(): void {
     const w = this.editTool.selectedWall();
     if (!w) return;
-    const c = this.verifyWalls([w.id])?.[0];
-    if (!c) {
-      this.toast('Scan the room first: Fit to scan uses the room mesh', 4);
-      return;
-    }
-    const f = c.fitted;
-    if (f.evidence === 'inferred') {
-      this.toast('The scan barely saw this wall. Scan it again from closer, then try.', 4);
-      return;
-    }
-    const ops = this.store.plan.openings.filter((o) => o.wallId === w.id);
-    this.cmd.group('Fit to scan', () => {
-      this.act('wall.place', { id: w.id, a: f.a, b: f.b });
-      this.act('wall.setThickness', { id: w.id, thickness: Math.round(f.thickness * 4) / 4 });
-      ops.forEach((o, i) => {
-        const of = f.openings[i];
-        if (of && of.edges === 2) this.cmd.run('opening.update', { id: o.id, offset: of.offset, width: Math.round(of.width * 4) / 4 });
-      });
-      this.cmd.run('scan.setEvidence', { items: [{ id: w.id, evidence: f.evidence, confidence: f.confidence }] }, 'scan');
-    });
-    const moved = Math.abs(f.shift);
-    this.toast(moved < 0.125 && Math.abs(f.thickness - w.thickness) < 0.25 ? 'Already matches the scan' : `Fitted: moved ${formatLength(Math.round(moved * 8) / 8)}, ${Math.round(f.thickness * 4) / 4}" thick`, 4);
+    const r = this.cmd.group('Fit to scan', () => this.fitWallToScan(w.id));
+    this.toast(r?.note ?? 'Scan the room first: Snap to scan uses the room mesh', 4);
   }
   private roomStatus(): string {
     if (this.scan?.scanning) {

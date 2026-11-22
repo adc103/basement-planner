@@ -3,7 +3,7 @@ import type { IconName } from './icons.js';
 import { chipRenderer, roundRenderer, SpatialPanel, tabRenderer, textRenderer, tileRenderer, THEME } from './spatialPanel.js';
 
 export type TabName = 'room' | 'edit' | 'measure' | 'view';
-export type ToolName = 'walls' | 'doors' | 'edit' | 'delete' | 'measure' | 'align';
+export type ToolName = 'walls' | 'trace' | 'doors' | 'edit' | 'delete' | 'measure' | 'align';
 
 /** Everything the menu needs from the app. */
 export interface MenuApi {
@@ -298,9 +298,9 @@ export class MainMenu {
         defaultTool: 'edit',
         tiles: [
           { id: 'edit', icon: 'edit', label: () => 'Select', tool: 'edit' },
-          { id: 'walls', icon: 'walls', label: () => 'Wall', tool: 'walls' },
+          { id: 'trace', icon: 'capture', label: () => 'Real wall', tool: 'trace' },
+          { id: 'walls', icon: 'walls', label: () => 'New wall', tool: 'walls' },
           { id: 'doors', icon: 'door', label: () => 'Door', tool: 'doors' },
-          { id: 'delete', icon: 'trash', label: () => 'Delete', tool: 'delete' },
         ],
         rows: [
           [
