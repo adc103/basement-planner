@@ -57,6 +57,7 @@ export function mountDom(app: PlannerApp): void {
     <p class="sub">Lay out walls and doors in your real basement with Meta Quest.</p>
     <div class="row"><button class="primary" id="bp-enter">Enter AR</button>
       <label class="check"><input type="checkbox" id="bp-large" /> Large space (no Quest boundary, walk the whole basement)</label></div>
+    <div class="row"><a href="./gpu-test.html" style="color:#8ab4ff">Run the WebGPU scanner check</a></div>
     <p class="msg" id="bp-msg"></p>
     <div class="card">
       <h2>This plan</h2>

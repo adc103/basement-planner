@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WebGPU XR check</title>
+    <style>
+      body { font: 18px/1.45 system-ui, sans-serif; background: #111418; color: #e8edf2; margin: 0; padding: 24px; }
+      h1 { font-size: 26px; margin: 0 0 8px; }
+      p { color: #aab4bf; max-width: 760px; }
+      button { font: inherit; font-weight: 600; padding: 14px 22px; border-radius: 12px; border: 0; background: #3d8bff; color: #fff; margin: 8px 8px 8px 0; }
+      button.secondary { background: #2a323c; }
+      table { border-collapse: collapse; margin-top: 16px; width: 100%; max-width: 900px; }
+      td { padding: 8px 10px; border-bottom: 1px solid #2a323c; vertical-align: top; }
+      td:first-child { color: #aab4bf; width: 34%; }
+      .ok { color: #4ade80; } .bad { color: #f87171; } .warn { color: #facc15; }
+      pre { white-space: pre-wrap; background: #1a1f26; padding: 12px; border-radius: 8px; max-width: 900px; }
+    </style>
+  </head>
+  <body>
+    <h1>WebGPU + WebXR check</h1>
+    <p>Tests whether this headset can run the planner's scanner on WebGPU: a WebGPU AR session, the headset's depth inside it, and GPU compute at frame rate. Tap Start, look around your basement for about 20 seconds (a results panel floats in front of you), then press the Meta button and exit to come back here.</p>
+    <button id="start">Start test</button>
+    <button id="copy" class="secondary">Copy results</button>
+    <table id="results"></table>
+    <pre id="log"></pre>
+    <script type="module" src="./src/gpuTest/main.ts"></script>
+  </body>
+</html>
