@@ -57,7 +57,6 @@ export function mountDom(app: PlannerApp): void {
     <p class="sub">Lay out walls and doors in your real basement with Meta Quest.</p>
     <div class="row"><button class="primary" id="bp-enter">Enter AR</button>
       <label class="check"><input type="checkbox" id="bp-large" /> Large space (no Quest boundary, walk the whole basement)</label></div>
-    <div class="row"><a href="./gpu-test.html" style="color:#8ab4ff">Run the WebGPU scanner check</a></div>
     <p class="msg" id="bp-msg"></p>
     <div class="card">
       <h2>This plan</h2>
@@ -164,10 +163,20 @@ export function mountDom(app: PlannerApp): void {
     if (r.thumb) img.src = r.thumb;
     $('bp-probe-copy').onclick = () => {
       const text = [`Camera test ${r!.at}`, r!.userAgent, ...r!.rows.map((x) => `${mark(x.ok)} ${x.name}: ${x.detail}`)].join('\n');
-      navigator.clipboard?.writeText(text).then(
-        () => msg('Results copied'),
-        () => msg('Copy failed: select the table text instead'),
-      );
+      const fallback = () => {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;left:0;top:0;width:90vw;height:40vh;z-index:99';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        msg(ok ? 'Results copied' : 'Copy blocked: select the text in the box and copy it');
+        if (ok) ta.remove();
+        else ta.onblur = () => ta.remove();
+      };
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => msg('Results copied'), fallback);
+      else fallback();
     };
   };
   renderProbe();
