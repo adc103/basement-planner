@@ -1,5 +1,3 @@
-import type { FreeGrid } from './freeSpace.js';
-import { unprojectDepth, type ScanMap } from './scanMap.js';
 
 /**
  * One depth reading, in the plan root's frame (meters, y up), with everything
@@ -25,7 +23,6 @@ export interface DepthFrame {
 
 export const DEPTH_MIN_M = 0.35;
 export const DEPTH_MAX_M = 4.5;
-const INCH_M = 0.0254;
 
 /** Your arm: segment from just below the head to the hand, ~9" around it. */
 function nearArm(x: number, y: number, z: number, hd: readonly number[], h: readonly number[]): boolean {
@@ -41,6 +38,13 @@ function nearArm(x: number, y: number, z: number, hd: readonly number[], h: read
   const ey = y - (sy + dy * t);
   const ez = z - (sz + dz * t);
   return ex * ex + ey * ey + ez * ez < 0.22 * 0.22;
+}
+
+/** A depth pixel (u, v in 0..1, d meters) to view space (meters, -z forward). */
+export function unprojectDepth(u: number, v: number, d: number, proj: ArrayLike<number>): { x: number; y: number; z: number } {
+  const ndcX = u * 2 - 1;
+  const ndcY = v * 2 - 1;
+  return { x: (d * (ndcX + proj[8])) / proj[0], y: (d * (ndcY + proj[9])) / proj[5], z: -d };
 }
 
 /**
@@ -67,40 +71,6 @@ export function bodyMask(f: DepthFrame): Uint8Array {
   return mask;
 }
 
-/**
- * Add one depth frame to the point map and free-space grid (plan inches).
- * Drops points on your own body and arms. Returns points added.
- */
-export function ingestFrame(f: DepthFrame, map: ScanMap, free: FreeGrid | null, stride = 1): number {
-  const M = f.viewToRoot;
-  const hd = f.head;
-  const ex = hd[0] / INCH_M;
-  const ey = hd[2] / INCH_M;
-  const ez = hd[1] / INCH_M;
-  let n = 0;
-  let k = 0;
-  for (let j = 0; j < f.h; j += stride) {
-    for (let i = 0; i < f.w; i += stride) {
-      const m = f.depthMM[j * f.w + i] / 1000;
-      if (m < DEPTH_MIN_M || m > DEPTH_MAX_M) continue;
-      const p = unprojectDepth((i + 0.5) / f.w, (j + 0.5) / f.h, m, f.proj);
-      const x = M[0] * p.x + M[4] * p.y + M[8] * p.z + M[12];
-      const y = M[1] * p.x + M[5] * p.y + M[9] * p.z + M[13];
-      const z = M[2] * p.x + M[6] * p.y + M[10] * p.z + M[14];
-      const bx = x - hd[0];
-      const bz = z - hd[2];
-      if (bx * bx + bz * bz < 0.45 * 0.45 && y < hd[1] + 0.2) continue; // torso and legs
-      if (nearArm(x, y, z, hd, f.handL) || nearArm(x, y, z, hd, f.handR)) continue;
-      const px = x / INCH_M;
-      const py = z / INCH_M;
-      const pz = y / INCH_M;
-      map.add(px, py, pz);
-      if (free && (k++ & 1) === 0) free.carve(ex, ey, ez, px, py, pz);
-      n++;
-    }
-  }
-  return n;
-}
 
 // --- Recording file format ---------------------------------------------------
 // [u32 header length][header JSON][pad to 4][frames], each frame:

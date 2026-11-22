@@ -5,7 +5,7 @@ import type { CeilingType, Finish, MarkerType, Plan, Room } from './plan.js';
 import { centroid } from './poly.js';
 import { findRoomFaces, resolveRooms } from './rooms.js';
 import { formatLength } from './units.js';
-import { computeFootprints, footprintPoly, wallPrisms } from './wallGeometry.js';
+import { computeFootprints, wallPrisms } from './wallGeometry.js';
 
 /**
  * Top-down plan drawing as an SVG string (no DOM needed): walls with door gaps and

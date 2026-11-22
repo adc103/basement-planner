@@ -1,6 +1,4 @@
 import type { DepthFrame } from '../src/core/scanIngest';
-import { FreeGrid } from '../src/core/freeSpace';
-import { ScanMap } from '../src/core/scanMap';
 
 /** Axis-aligned box, plan inches (z = height). */
 export interface Box {
@@ -66,34 +64,6 @@ export function basementScene(): { boxes: Box[]; eyes: Array<[number, number]> }
     [250, 60], [330, 90], [250, 210], [330, 210], [240, 130],
   ];
   return { boxes, eyes };
-}
-
-/** Scan the scene like the headset would: depth rays from each eye position. */
-export function scanScene(scene: { boxes: Box[]; eyes: Array<[number, number]> }, maxRange = 177) {
-  const map = new ScanMap(3, 1_200_000);
-  const free = new FreeGrid(4);
-  let seed = 1;
-  const noise = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 0.6;
-  for (const [ex, ey] of scene.eyes) {
-    const o = [ex, ey, 64];
-    for (let az = 0; az < 360; az += 2.5) {
-      for (let el = -62; el <= 62; el += 3) {
-        const a = (az * Math.PI) / 180;
-        const e = (el * Math.PI) / 180;
-        const d = [Math.cos(e) * Math.cos(a), Math.cos(e) * Math.sin(a), Math.sin(e)];
-        let t = Infinity;
-        for (const b of scene.boxes) t = Math.min(t, hit(o, d, b));
-        if (!(t < maxRange)) continue;
-        const p = [o[0] + d[0] * t + noise(), o[1] + d[1] * t + noise(), o[2] + d[2] * t + noise()];
-        // Each look is sampled a few times while walking.
-        map.add(p[0], p[1], p[2]);
-        map.add(p[0] + noise(), p[1] + noise(), p[2] + noise());
-        free.carve(o[0], o[1], o[2], p[0], p[1], p[2]);
-        free.carve(o[0], o[1], o[2], p[0], p[1], p[2]);
-      }
-    }
-  }
-  return { map, free };
 }
 
 /**

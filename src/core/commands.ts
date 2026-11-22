@@ -30,8 +30,7 @@ import {
 import { CEILING_TYPES, CONSTRAINT_TYPES, FINISHES, MARKER_TYPES, newId, SettingsSchema, type Constraint, type Plan, type Wall } from './plan.js';
 import { solveConstraints, wallGap } from './solver.js';
 import { formatLength } from './units.js';
-import { applyRoomScan, applyScan, type RoomScanImport } from './scanApply.js';
-import type { StructureResult } from './structure.js';
+import { applyRoomScan, type RoomScanImport } from './scanApply.js';
 import type { PlanStore } from './store.js';
 
 /**
@@ -555,15 +554,6 @@ export const COMMANDS = {
   }),
 
   // Scanner ----------------------------------------------------------------------
-  'scan.applyStructure': def({
-    title: 'Add scanned structure',
-    description: 'Add walls, openings, soffits, posts and floor area found by the depth scanner.',
-    params: z.object({ result: z.custom<StructureResult>((v) => !!v && typeof v === 'object') }),
-    internal: true,
-    run(d, p) {
-      applyScan(d, p.result);
-    },
-  }),
   'scan.setEvidence': def({
     title: 'Check against scan',
     description: 'Record how well walls and openings match the room mesh.',

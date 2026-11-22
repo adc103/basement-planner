@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { refineStructure } from '../src/core/fit';
 import { checkPlan, dedupeWalls, fitWall, sameWall, SurfaceIndex, surfaceFromMeshes } from '../src/core/fit';
 import { CommandBus } from '../src/core/commands';
 import { createEmptyPlan } from '../src/core/plan';
@@ -102,21 +101,5 @@ describe('one proposal per real wall', () => {
   it('sees parallel walls that only touch end to end as different walls', () => {
     expect(sameWall(W(0, 0, 100, 0), W(100, 0, 200, 0))).toBe(false);
     expect(sameWall(W(0, 0, 100, 0), W(0, 3, 100, 3))).toBe(true);
-  });
-});
-
-describe('walls the mesh never saw', () => {
-  it('keep their point-map evidence instead of being called guessed', () => {
-    const vol = new TsdfVolume();
-    for (const f of depthFramesFor(basementScene()).slice(0, 12)) vol.integrate(f);
-    const surf = surfaceFromMeshes(vol.meshDirty());
-    // A wall 50 ft away from anything meshed.
-    const res = refineStructure(
-      { floorOffset: 0, ceiling: 92, axis: 0, walls: [{ face: { a: { x: 0, y: 0 }, b: { x: 0, y: 0 }, n: { x: 0, y: 1 }, rms: 0, support: 80 }, a: { x: 600, y: 600 }, b: { x: 800, y: 600 }, thickness: 4.5, foundation: false, confidence: 0.8, openings: [] }], soffits: [], posts: [], footprint: null },
-      surf,
-    );
-    expect(res.walls).toHaveLength(1);
-    expect(res.walls[0].evidence).toBe('partial');
-    expect(res.walls[0].a).toEqual({ x: 600, y: 600 });
   });
 });

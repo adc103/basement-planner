@@ -1,6 +1,5 @@
 import type { Vec2 } from './geom2d.js';
 import type { Evidence, Plan } from './plan.js';
-import type { StructureResult } from './structure.js';
 
 /**
  * Fit, then verify (the ScanRuler idea): a wall or opening is first proposed
@@ -307,112 +306,6 @@ export function surfaceFromMeshes(pieces: Iterable<{ positions: Float32Array; no
     }
   }
   return { pos: pos.subarray(0, o), nrm: nrm.subarray(0, o) };
-}
-
-/** Where two infinite lines (point + direction) cross, or null if parallel. */
-function cross(p: Vec2, d: Vec2, q: Vec2, e: Vec2): Vec2 | null {
-  const den = d.x * e.y - d.y * e.x;
-  if (Math.abs(den) < 1e-6) return null;
-  const t = ((q.x - p.x) * e.y - (q.y - p.y) * e.x) / den;
-  return { x: p.x + d.x * t, y: p.y + d.y * t };
-}
-
-/**
- * Fit every proposed wall and opening to the room mesh, label how well each is
- * supported, and keep corners and tees joined after walls move.
- */
-export function refineStructure(res: StructureResult, surf: Surface, known: Seg[] = []): StructureResult {
-  if (surf.pos.length < 300) return { ...res, walls: pruneStubs(dedupeWalls(res.walls, known), known) };
-  const idx = new SurfaceIndex(surf);
-  const z0 = res.floorOffset ?? 0;
-  const z1 = res.ceiling ?? z0 + 96;
-  const walls = res.walls.map((w) => ({ ...w, a: { ...w.a }, b: { ...w.b } }));
-  // Which wall ends sit on which other wall, before anything moves.
-  const dirOf = (w: { a: Vec2; b: Vec2 }) => {
-    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
-    return { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
-  };
-  const offLine = (p: Vec2, w: { a: Vec2; b: Vec2 }) => {
-    const d = dirOf(w);
-    return Math.abs(-(p.x - w.a.x) * d.y + (p.y - w.a.y) * d.x);
-  };
-  const joins: Array<{ wi: number; end: 'a' | 'b'; on: number }> = [];
-  walls.forEach((w, wi) =>
-    (['a', 'b'] as const).forEach((end) => {
-      walls.forEach((o, oi) => {
-        if (oi !== wi && offLine(w[end], o) < 0.5) joins.push({ wi, end, on: oi });
-      });
-    }),
-  );
-  for (const w of walls) {
-    const d = dirOf(w);
-    // Only judge a wall where the mesh actually looked: older scans (or spots the
-    // mesh hasn't reached) keep their point-map evidence instead of reading as "guessed".
-    if (idx.near(w.a, w.b, w.thickness / 2 + 12).length < 60) {
-      w.evidence = w.evidence ?? 'partial';
-      continue;
-    }
-    const ops = w.openings.map((o) => ({ offset: (o.center.x - w.a.x) * d.x + (o.center.y - w.a.y) * d.y, width: o.width, height: o.height, sill: o.sill }));
-    const f = fitWall(idx, { a: w.a, b: w.b, thickness: w.thickness, z0, z1, openings: ops });
-    w.evidence = f.evidence;
-    w.deviation = f.deviation;
-    w.confidence = Math.max(w.confidence, f.confidence);
-    if (f.evidence !== 'inferred') {
-      // The fit only moves the wall sideways, so offsets along it still count from a.
-      w.a = f.a;
-      w.b = f.b;
-      w.thickness = Math.round(f.thickness * 4) / 4;
-    }
-    w.openings = w.openings.map((o, i) => {
-      const of = f.openings[i];
-      const center = { x: w.a.x + d.x * of.offset, y: w.a.y + d.y * of.offset };
-      return { ...o, center, width: Math.round(of.width * 4) / 4, evidence: of.evidence };
-    });
-    // Trim ends that run on past what the mesh shows (more than a foot of nothing),
-    // and drop openings left outside the trimmed wall.
-    if (f.evidence !== 'inferred' && f.support) {
-      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
-      const [s0, s1] = f.support;
-      const a0 = { ...w.a };
-      if (s0 > 12) w.a = { x: a0.x + d.x * s0, y: a0.y + d.y * s0 };
-      if (L - s1 > 12) w.b = { x: a0.x + d.x * s1, y: a0.y + d.y * s1 };
-      const lo = s0 > 12 ? s0 : 0;
-      const hi = L - s1 > 12 ? s1 : L;
-      w.openings = w.openings.filter((o) => {
-        const t = (o.center.x - a0.x) * d.x + (o.center.y - a0.y) * d.y;
-        return t - o.width / 2 > lo - 1 && t + o.width / 2 < hi + 1;
-      });
-    }
-  }
-  // Re-seat joined ends on the (moved) walls they meet.
-  for (const j of joins) {
-    const w = walls[j.wi];
-    const o = walls[j.on];
-    const p = cross(w.a, dirOf(w), o.a, dirOf(o));
-    if (p && Math.hypot(p.x - w[j.end].x, p.y - w[j.end].y) < 8) w[j.end] = p;
-  }
-  return { ...res, walls: pruneStubs(dedupeWalls(walls, known), known) };
-}
-
-/**
- * Drop short wall stubs that aren't part of anything: under 3 ft, a piece must
- * join walls at both ends (a jog or a closet return) to stay; under 18" it goes.
- * Stray stubs come from door casings, furniture sides and scan noise.
- */
-export function pruneStubs<W extends Seg>(walls: W[], known: Seg[] = []): W[] {
-  const segDist = (p: Vec2, s: Seg) => {
-    const L = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) || 1;
-    const t = Math.max(0, Math.min(L, ((p.x - s.a.x) * (s.b.x - s.a.x) + (p.y - s.a.y) * (s.b.y - s.a.y)) / L));
-    return Math.hypot(s.a.x + ((s.b.x - s.a.x) * t) / L - p.x, s.a.y + ((s.b.y - s.a.y) * t) / L - p.y);
-  };
-  return walls.filter((w) => {
-    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
-    if (L >= 36) return true;
-    if (L < 18) return false;
-    const others = [...walls.filter((o) => o !== w), ...known];
-    const joined = (p: Vec2) => others.some((o) => segDist(p, o) < (o.thickness ?? 4) / 2 + 3);
-    return joined(w.a) && joined(w.b);
-  });
 }
 
 /** A plan's walls as segments (to keep proposals from repeating them). */

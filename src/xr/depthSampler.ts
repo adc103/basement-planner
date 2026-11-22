@@ -11,7 +11,7 @@ import {
   WebGLRenderTarget,
   type World,
 } from '@iwsdk/core';
-import { unprojectDepth } from '../core/scanMap.js';
+import { unprojectDepth } from '../core/scanIngest.js';
 
 /** Depth readback grid (per sample). Low resolution is plenty for walls and ceilings. */
 const W0 = 80;

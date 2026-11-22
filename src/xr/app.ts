@@ -17,65 +17,38 @@ import {
   XRPlane,
   type Entity,
   type World,
-  Plane,
-  MeshBasicMaterial,
 } from '@iwsdk/core';
-import { IDENTITY, type PlanTransform } from '../core/alignment.js';
+import { IDENTITY, solveTwoPoint, type PlanTransform } from '../core/alignment.js';
+import { checkPlan, type WallCheck } from '../core/fit.js';
+import { CommandBus, type CommandName, type ParamsOf, type ResultOf } from '../core/commands.js';
+import type { Vec2 } from '../core/geom2d.js';
 import { loadSavedPlan, savePlan } from '../core/persistence.js';
 import { createEmptyPlan, type Plan } from '../core/plan.js';
 import { obstaclesFromScan, scanSignature, wallsFromScan, type P3, type ScanBox, type ScanPlane } from '../core/roomScan.js';
 import { defaultSnapOptions, primaryAxis, type SnapOptions } from '../core/snapping.js';
 import { PlanStore } from '../core/store.js';
 import { formatLength, INCH_M } from '../core/units.js';
-import type { Vec2 } from '../core/geom2d.js';
+import { Acquired } from './acquired.js';
+import { FloorFinder } from './floorFinder.js';
 import { HandAim, type Side } from './input.js';
 import { Keypad } from './keypad.js';
 import { TextLabel } from './labels.js';
 import { WristMenu } from './menu.js';
-import { PlanView, type WallViewMode } from './planView.js';
+import { PlanView, planToLocal } from './planView.js';
 import { Preview } from './preview.js';
+import { RefAnchors } from './refAnchors.js';
+import { ScanSession } from './scanSession.js';
+import { setSurfaceOcclusion, updateSurfaceOcclusion } from './surfaceOcclusion.js';
 import { AlignTool } from './tools/alignTool.js';
-import { CaptureTool, type CaptureContext } from './tools/captureTool.js';
-import type { PP } from '../core/wallDetect.js';
 import { DeleteTool } from './tools/deleteTool.js';
 import { EditTool } from './tools/editTool.js';
 import { MeasureTool } from './tools/measureTool.js';
 import { OpeningTool } from './tools/openingTool.js';
-import type { AimHit, Tool } from './tools/tool.js';
+import type { AimHit, Tool, ToolContext } from './tools/tool.js';
 import { WallTool } from './tools/wallTool.js';
-import { RoomsTool } from './tools/roomsTool.js';
-import { PinsTool } from './tools/pinsTool.js';
-import { SoffitTool } from './tools/soffitTool.js';
-import { RefAnchors } from './refAnchors.js';
-import { CameraProbe, PROBE_KEY } from './cameraProbe.js';
-import { registerWebMcp } from './webmcp.js';
-import { DimensionTool } from './tools/dimensionTool.js';
-import { Dollhouse } from './dollhouse.js';
-import { WallPortals } from './wallPortal.js';
-import { BoxTool, BOX_PRESETS, type BoxPreset } from './tools/boxTool.js';
-import { SectionTool, type SectionCut } from './tools/sectionTool.js';
-import { checkPlan, type WallCheck } from '../core/fit.js';
-import { CommandBus, type CommandName, type ParamsOf, type ResultOf } from '../core/commands.js';
-import { planToLocal } from './planView.js';
-import { solveTwoPoint } from '../core/alignment.js';
-import { roomCeiling } from '../core/ops.js';
-import { CEILING_NAMES } from '../core/plan2d.js';
-import type { CeilingType } from '../core/plan.js';
-import { FINISH_NAMES, MARKER_INFO } from '../core/plan2d.js';
-import { MARKER_TYPES } from '../core/plan.js';
-import { generateFraming, summarizeFraming } from '../core/framing.js';
-import type { Finish } from '../core/plan.js';
 import { MainMenu, MENU_H, type MenuApi, type ToolName } from './ui/mainMenu.js';
-import { Sfx } from './ui/sfx.js';
-import { ScanSession } from './scanSession.js';
-import { HybridProbe } from './hybridProbe.js';
-import type { StructureResult } from '../core/structure.js';
-import { ScanReviewTool } from './tools/scanReviewTool.js';
-import { findRoomFaces } from '../core/rooms.js';
-import { Acquired } from './acquired.js';
-import { FloorFinder } from './floorFinder.js';
 import { setPokeEnabled } from './ui/poke.js';
-import { setSurfaceOcclusion, updateSurfaceOcclusion } from './surfaceOcclusion.js';
+import { Sfx } from './ui/sfx.js';
 
 const TRANSFORM_KEY = 'basement-planner:transform:v1';
 const IWSDK_ANCHOR_KEY = 'iwsdk_scene_anchor_uuid';
@@ -86,22 +59,14 @@ interface SavedTransform extends PlanTransform {
 }
 
 /** Thumbstick-flick order for controllers. */
-const TOOL_CYCLE: ToolName[] = ['walls', 'doors', 'edit', 'dimension', 'measure', 'rooms', 'pins', 'capture', 'delete'];
+const TOOL_CYCLE: ToolName[] = ['edit', 'walls', 'doors', 'measure', 'delete'];
 const TOOL_LABEL: Record<ToolName, string> = {
-  walls: 'Walls',
-  doors: 'Doors',
-  capture: 'Capture wall',
+  walls: 'Wall',
+  doors: 'Door',
   edit: 'Select',
   delete: 'Delete',
   measure: 'Tape',
   align: 'Align',
-  rooms: 'Rooms',
-  pins: 'Pins',
-  soffit: 'Soffit',
-  review: 'Review scan',
-  section: 'Section',
-  box: 'Box',
-  dimension: 'Dimension',
 };
 
 export interface AppStatus {
@@ -114,27 +79,26 @@ export interface AppStatus {
 }
 
 /**
- * The planner: owns the plan store, the 3D view, the tools and the in-headset UI.
+ * The planner, fresh start: Quest Space Setup is the draft of the existing
+ * room; you correct it in the headset (drag, snap to the scanned surface,
+ * draw what's missing), measure, and plan changes on top. The depth scan only
+ * builds the room mesh: evidence for snapping and checking, never new walls.
  * Driven once per frame by PlannerSystem.
  */
 export class PlannerApp {
   readonly store: PlanStore;
-  /** Every change to the plan goes through a command (you, the scanner, an assistant). */
+  /** Every change to the plan goes through a command. */
   readonly cmd: CommandBus;
   readonly view = new PlanView();
   readonly preview = new Preview();
   private planEntity!: Entity;
   readonly hands: Record<Side, HandAim> = { left: new HandAim('left'), right: new HandAim('right') };
   private activeSide: Side = 'right';
-  private tools!: Record<string, Tool>;
-  toolName: ToolName = 'walls';
+  private tools!: Record<ToolName, Tool>;
+  toolName: ToolName = 'edit';
   wallTool!: WallTool;
   editTool!: EditTool;
   measureTool!: MeasureTool;
-  dimTool!: DimensionTool;
-  roomsTool!: RoomsTool;
-  pinsTool!: PinsTool;
-  captureTool!: CaptureTool;
   menu!: MainMenu;
   keypad!: Keypad;
   private wrist!: WristMenu;
@@ -152,7 +116,6 @@ export class PlannerApp {
   private savedAt: string | null = null;
   private restored: boolean;
   private needsAlignWarned = false;
-  private heightRepeatAt = 0;
   private flickArmed = true;
   private autoImportTimer: ReturnType<typeof setTimeout> | null = null;
   private listeners = new Set<() => void>();
@@ -163,11 +126,8 @@ export class PlannerApp {
     left: { ok: false, t: -1, p: new Vector3(), n: new Vector3() },
     right: { ok: false, t: -1, p: new Vector3(), n: new Vector3() },
   };
-  private meshCache: { key: unknown; pts: PP[] } | null = null;
   private refAnchors!: RefAnchors;
-  private probe!: CameraProbe;
   scan!: ScanSession;
-  private hybrid!: HybridProbe;
   private anchorLockToasted = false;
   private depthWarned = false;
   /** Corners and midpoints the user hovered, for inference guides (shared by tools). */
@@ -218,10 +178,8 @@ export class PlannerApp {
     this.planEntity.addComponent(XRAnchor);
     this.refAnchors = new RefAnchors(world);
     this.scan = new ScanSession(world, this.view.root);
-    this.hybrid = new HybridProbe(this.scan.sampler);
-    this.probe = new CameraProbe(world, () => this.meshQuery?.() ?? [], () => this.planeQuery?.() ?? []);
 
-    // Real-world hit testing for point-and-capture, one target per hand.
+    // Real-world hit testing (snapping, drawing on real surfaces), one target per hand.
     for (const side of ['left', 'right'] as Side[]) {
       const obj = this.surfaceTargets[side];
       obj.visible = false;
@@ -242,8 +200,7 @@ export class PlannerApp {
     this.occluder = world.createTransformEntity(carrier, { parent: world.sceneEntity, persistent: true });
     this.occluder.addComponent(DepthOccludable, { mode: OcclusionShadersMode.MinMaxSoftOcclusion });
 
-    const ctx: CaptureContext = {
-      roomMeshPoints: (c, r) => this.roomMeshPoints(c, r),
+    const ctx: ToolContext = {
       store: this.store,
       cmd: this.cmd,
       act: (name, params) => this.act(name, params),
@@ -259,36 +216,18 @@ export class PlannerApp {
     this.wallTool = new WallTool(ctx);
     this.editTool = new EditTool(ctx);
     this.measureTool = new MeasureTool(ctx);
-    this.dimTool = new DimensionTool(ctx);
-    world.renderer.localClippingEnabled = true;
-    this.portals = new WallPortals(this.view.root, this.scan.mesh);
-    this.dollhouse = new Dollhouse(world, this.view.root);
-    world.createTransformEntity(this.dollhouse.group, { parent: world.sceneEntity, persistent: true });
-    this.roomsTool = new RoomsTool(ctx);
-    this.pinsTool = new PinsTool(ctx);
     this.tools = {
-      pins: this.pinsTool,
-      rooms: this.roomsTool,
       walls: this.wallTool,
       doors: new OpeningTool(ctx),
-      capture: (this.captureTool = new CaptureTool(ctx)),
       edit: this.editTool,
       delete: new DeleteTool(ctx),
       measure: this.measureTool,
-      dimension: this.dimTool,
-      section: new SectionTool(ctx, { get: () => this.section, set: (c) => this.setSection(c) }),
       align: new AlignTool(ctx, {
         getTransform: () => this.transform,
         setTransform: (t) => this.setTransform(t),
         anchorReferences: () => this.anchorReferences(),
       }),
-      soffit: new SoffitTool(ctx, () => this.axisAngle),
-      box: new BoxTool(ctx, () => this.axisAngle, () => this.boxPreset),
-      review: new ScanReviewTool(ctx, this.scan),
     };
-
-    // Browser AI agents (WebMCP) get the same commands, tagged as an assistant.
-    registerWebMcp(this.cmd, () => this.refreshUi(), () => this.verifyWalls());
 
     this.menu = new MainMenu(world, this.menuApi());
     this.menu.panel.feedback = (kind) => this.uiFeedback(kind);
@@ -319,6 +258,7 @@ export class PlannerApp {
   // ------------------------------------------------------------- menu api ----
 
   private menuApi(): MenuApi {
+    const ed = () => this.editTool;
     return {
       tool: () => this.toolName,
       setTool: (t) => this.setTool(t),
@@ -330,86 +270,55 @@ export class PlannerApp {
       },
       canUndo: () => this.store.canUndo || this.wallTool.drawing,
       canRedo: () => this.store.canRedo,
+      // room
+      roomStatus: () => this.roomStatus(),
+      importSpaceSetup: () => this.importScan(false),
+      scanning: () => this.scan.scanning,
+      toggleScan: () => this.toggleScan(),
+      checkWalls: () => this.checkWalls(),
+      hasRoomMesh: () => this.scan.mesh.triangles > 0,
+      clearScan: () => {
+        this.scan.clear();
+        this.toast('Scan cleared');
+      },
+      startOver: () => this.startOver(),
+      startOverArmed: () => this.time - this.startOverAt < 4,
+      // draw and edit
       drawing: () => this.wallTool.drawing,
       finishChain: () => this.wallTool.endChain(),
       typeLength: () => this.wallTool.typeLength(),
       hasLastWall: () => !!this.wallTool.lastWall(),
-      typeHeight: () => this.wallTool.typeHeight(),
-      wallHeight: () => this.store.plan.settings.wallHeight,
       preset: () => this.preset,
       setPreset: (type, width) => {
         this.preset = { type, width, height: 80 };
         this.setTool('doors');
       },
       customWidth: () => this.customWidth(),
-      captureProposal: () => !!this.captureTool.proposal,
-      acceptCapture: () => this.captureTool.acceptProposal(),
-      cancelCapture: () => this.captureTool.cancelProposal(),
-      captureThickness: () => this.store.plan.settings.captureThickness,
-      setCaptureThickness: (t) =>
-        this.act('settings.set', { values: { captureThickness: t } }),
-      selectionText: () => this.editTool.describe(),
       selectionKind: () => {
-        const k = this.editTool.selection?.kind;
-        return k === 'wall' || k === 'opening' || k === 'marker' || k === 'box' ? k : null;
+        const k = ed().selection?.kind;
+        return k === 'wall' || k === 'opening' ? k : null;
       },
-      selectedStud: () => this.editTool.selectedWall()?.framing.studSize ?? null,
-      editLength: () => this.editTool.typeLength(),
-      editHeight: () => this.editTool.typeHeight(),
-      editStud: (s) => this.editTool.setStud(s),
-      editWidth: () => this.editTool.typeWidth(),
-      deleteSelection: () => this.editTool.deleteSelection(),
-      edit: (action) => {
-        const t = this.editTool;
-        if (action === 'thickness') t.typeThickness();
-        else if (action === 'split') t.split();
-        else if (action === 'kind') t.toggleKind();
-        else if (action === 'openingHeight') t.typeOpeningHeight();
-        else if (action === 'openingType') t.cycleOpeningType();
-        else if (action === 'flip') t.flipDoor();
-        else if (action === 'lock') t.toggleLock();
-        else if (action === 'demolish') t.toggleDemolish();
-        else if (action === 'fit') this.fitSelectedToScan();
-        else if (action === 'keepLength') t.toggleKeepLength();
-        else if (action === 'seeThrough') this.toggleSeeThrough();
-      },
-      selectedLocked: () => {
-        const s = this.editTool.selection;
-        return !!s && s.kind !== 'node' && this.editTool.isLocked(s);
-      },
-      selectedDemolish: () => !!this.editTool.selectedWall()?.demolish,
-      selectedSeeThrough: () => {
-        const w = this.editTool.selectedWall();
-        return !!w && this.portals.has(w.id);
-      },
-      selectedKeptLength: () => {
-        const w = this.editTool.selectedWall();
-        return !!w && this.store.plan.constraints.some((c) => c.type === 'length' && c.a === w.id);
-      },
-      dimText: () => this.dimTool.hint(),
-      dimState: () => {
-        const d = this.dimTool;
-        if (!d.a) return 'none';
-        const g = d.gap();
-        return !g ? 'one' : g.parallel ? 'parallel' : 'angle';
-      },
-      dimKept: (type) => !!this.dimTool.lock(type),
-      dimMode: () => this.dimTool.mode,
-      dim: (action) => {
-        const d = this.dimTool;
-        if (action === 'type') d.typeDistance();
-        else if (action === 'keep') d.toggleKeep();
-        else if (action === 'mode') d.toggleMode();
-        else if (action === 'square') d.toggleAngle('perpendicular');
-        else if (action === 'parallel') d.toggleAngle('parallel');
-        else d.reset();
-      },
+      selectedIsReal: () => ed().selectedWall()?.kind === 'existing',
+      snapSelected: () => this.fitSelectedToScan(),
+      editLength: () => ed().typeLength(),
+      editThickness: () => ed().typeThickness(),
+      editWidth: () => ed().typeWidth(),
+      editOpeningHeight: () => ed().typeOpeningHeight(),
       openingType: () => {
-        const o = this.editTool.selectedOpening();
+        const o = ed().selectedOpening();
         return o?.type === 'door' ? 'Door' : o?.type === 'window' ? 'Window' : 'Opening';
       },
-      selectedIsReal: () => this.editTool.selectedWall()?.kind === 'existing',
-      deselect: () => this.editTool.select(null),
+      cycleOpeningType: () => ed().cycleOpeningType(),
+      flipDoor: () => ed().flipDoor(),
+      toggleKind: () => ed().toggleKind(),
+      selectedLocked: () => {
+        const s = ed().selection;
+        return !!s && s.kind !== 'node' && ed().isLocked(s);
+      },
+      toggleLock: () => ed().toggleLock(),
+      deleteSelection: () => ed().deleteSelection(),
+      deselect: () => ed().select(null),
+      // measure
       lastMeasure: () => (this.measureTool.last ? `Last: ${this.measureTool.last}` : ''),
       measureCount: () => this.store.plan.measures.length,
       measureTruth: () => {
@@ -422,86 +331,22 @@ export class PlannerApp {
           this.toast(`Headset ${formatLength(Math.round(app * 8) / 8)}, tape ${formatLength(v)}: ${Math.abs(err) < 0.0625 ? 'spot on' : `${formatLength(Math.round(Math.abs(err) * 8) / 8)} ${err > 0 ? 'long' : 'short'}`}`, 5);
         });
       },
-      clearMeasures: () =>
-        this.act('measure.clear', {}),
-      scanStatus: () => this.scanStatus(),
-      importScan: () => this.importScan(false),
-      scanning: () => this.scan.scanning,
-      toggleScan: () => this.toggleDepthScan(),
-      scanProposals: () => this.scan.count(),
-      scanReviewing: () => this.scan.reviewing,
-      scanKind: (k) => ({ on: this.scan.kinds[k], n: this.scan.total(k) }),
-      toggleScanKind: (k) => this.scan.toggleKind(k),
-      acceptScan: () => this.acceptDepthScan(),
-      discardScan: () => {
-        this.scan.discard();
-        this.scan.hide();
-        this.endReview();
-        this.toast('Discarded what the scan found');
-      },
-      clearScan: () => {
-        this.scan.clear();
-        this.toast('Scan cleared');
-      },
-      hasScanMap: () => this.scan.hasMap || this.scan.mesh.triangles > 0 || this.scan.recorder.count > 0,
-      startOver: () => this.startOver(),
-      startOverArmed: () => this.time - this.startOverAt < 4,
-      autoImport: () => this.store.plan.settings.autoImportScan,
-      toggleAutoImport: () =>
-        this.act('settings.set', { values: { autoImportScan: !this.store.plan.settings.autoImportScan } }),
-      cameraTest: () => this.runCameraTest(),
-      cameraTestRunning: () => this.probe.running || this.hybrid.running,
-      hasRefs: () => !!this.store.plan.reference,
-      resetRefs: () => this.resetReference(),
-      viewMode: () => this.view.mode,
-      setViewMode: (m) => this.view.setMode(m as WallViewMode),
-      viewModes: () => [
-        { id: 'ghost', label: 'Ghost' },
-        { id: 'solid', label: 'Solid' },
-        { id: 'xray', label: 'X-ray' },
-      ],
-      viewText: () => {
-        if (this.view.mode !== 'xray') return 'Display';
-        const f = summarizeFraming(generateFraming(this.store.plan));
-        return `Framing: ${f.studs} studs, ${f.plateFeet.toFixed(0)} ft of plate, ${f.headers} headers`;
-      },
+      clearMeasures: () => this.act('measure.clear', {}),
+      // view
       realWalls: () => this.store.plan.settings.realWalls,
-      roomMesh: () => this.scan.mesh.shown,
-      hasSection: () => !!this.section,
-      dollhouse: () => this.dollhouse.shown,
-      boxPresets: () => BOX_PRESETS.map((p) => p.label),
-      boxPreset: () => this.boxPreset.label,
-      setBoxPreset: (label) => {
-        this.boxPreset = BOX_PRESETS.find((p) => p.label === label) ?? this.boxPreset;
-        this.refreshUi();
+      cycleRealWalls: () => {
+        const order = ['shown', 'outline', 'hidden'] as const;
+        const next = order[(order.indexOf(this.store.plan.settings.realWalls) + 1) % 3];
+        this.act('settings.set', { values: { realWalls: next } });
+        this.toast(next === 'shown' ? 'Real walls shown' : next === 'outline' ? 'Real walls as outlines' : 'Real walls hidden (still used for snapping)', 3);
       },
-      editBoxHeight: () => this.editTool.typeBoxHeight(),
-      selectedBoxKind: () => {
-        const s = this.editTool.selection;
-        return s?.kind === 'box' ? s.boxKind : null;
-      },
-      dollAction: (a) => {
-        const d = this.dollhouse;
-        if (a === 'toggle') this.toast(d.toggle(this.store.plan) ? 'Dollhouse: the whole plan, small. The red marker is you.' : 'Dollhouse hidden', 4);
-        else if (a === 'left') d.rotate(-30);
-        else if (a === 'right') d.rotate(30);
-        else if (a === 'bigger') d.resize(1.5);
-        else if (a === 'smaller') d.resize(1 / 1.5);
-        else d.bringHere();
-        this.refreshUi();
-      },
-      cutHeight: () => this.cutHeight !== null,
-      sectionAction: (a) => (a === 'flip' ? this.flipSection() : a === 'clear' ? this.setSection(null) : this.toggleCutHeight()),
-      checkWalls: () => this.checkWalls(),
-      hasRoomMesh: () => this.scan.mesh.triangles > 0,
-      detailedCapture: () => this.detailedCapture,
-      toggleDetailedCapture: () => this.toggleDetailedCapture(),
+      roomMeshMode: () => (!this.scan.mesh.shown ? 'off' : this.scan.mesh.colored ? 'color' : 'mesh'),
       // Mesh button cycles: see-through blue -> photo colors -> hidden.
-      toggleRoomMesh: () => {
+      cycleRoomMesh: () => {
         const m = this.scan.mesh;
         if (m.shown && !m.colored) {
           m.setColored(true);
-          this.toast(this.scan.photos.lens ? 'Room mesh in color (painted from camera photos while you scan)' : 'Room mesh in color: needs the browser\'s experimental WebXR flags for the camera calibration', 5);
+          this.toast(this.scan.photos.lens ? 'Room mesh in color, painted from camera photos while you scan' : 'Color needs the browser\'s experimental WebXR flags for the camera calibration', 5);
         } else if (m.shown) {
           m.setColored(false);
           m.setShown(false);
@@ -511,197 +356,16 @@ export class PlannerApp {
           this.toast(m.triangles ? 'Room mesh shown' : 'Room mesh shown (scan the room to build it)', 3);
         }
       },
-      roomMeshColored: () => this.scan.mesh.colored,
-      cycleRealWalls: () => {
-        const order = ['shown', 'outline', 'hidden'] as const;
-        const next = order[(order.indexOf(this.store.plan.settings.realWalls) + 1) % 3];
-        this.act('settings.set', { values: { realWalls: next } });
-        this.toast(next === 'shown' ? 'Real walls shown' : next === 'outline' ? 'Real walls as outlines' : 'Real walls hidden (still used for snapping and rooms)', 3);
-      },
-      occlusion: () => this.occlusionOn,
-      toggleOcclusion: () => this.toggleOcclusion(),
       labels: () => this.view.showLabels,
       toggleLabels: () => (this.view.showLabels = !this.view.showLabels),
+      occlusion: () => this.occlusionOn,
+      toggleOcclusion: () => this.toggleOcclusion(),
       snap: () => this.snapEnabled,
       toggleSnap: () => this.toggleSnap(),
-      pinned: () => !!this.wrist?.pinned,
-      togglePin: () => this.wrist.togglePin(),
       menuMode: () => this.wrist?.mode ?? 'wrist',
       cycleMenuMode: () => this.cycleMenuMode(),
       exit: () => this.world.exitXR(),
-      extraTabs: [this.roomsTab(), this.pinsTab(), this.ceilingTab()],
     };
-  }
-
-  private ceilingTab(): NonNullable<MenuApi['extraTabs']>[number] {
-    const room = () => this.roomsTool.selectedRoom() ?? null;
-    const type = (t: CeilingType, label: string) => ({
-      id: `ceil-${t}`,
-      label: () => label,
-      onClick: () => {
-        this.setCeiling({ type: t }, true);
-        if (!this.hasFloorArea()) this.toast('Scan the basement (Room tab) or draw a few walls so the ceiling knows where it goes', 5);
-      },
-      active: () => roomCeiling(this.store.plan, room()).type === t,
-    });
-    return {
-      name: 'ceiling',
-      label: 'Ceiling',
-      icon: 'height',
-      tiles: [{ id: 'soffit', icon: 'walls', label: () => 'Soffit', tool: 'soffit' }],
-      text: () => {
-        const r = room();
-        const c = roomCeiling(this.store.plan, r);
-        return `${r ? r.name : 'Whole basement'}: ${CEILING_NAMES[c.type]}, ${formatLength(c.height)}`;
-      },
-      rows: [
-        [type('drywall', 'Drywall'), type('drop', 'Drop'), type('open', 'Open joists'), {
-          id: 'ceil-show',
-          label: () => (this.store.plan.settings.showCeiling ? 'Shown' : 'Hidden'),
-          icon: 'eye',
-          onClick: () =>
-            this.act('settings.set', { values: { showCeiling: !this.store.plan.settings.showCeiling } }),
-          active: () => this.store.plan.settings.showCeiling,
-        }],
-        [
-          { id: 'ceil-h', label: () => 'Height', icon: 'height', onClick: () => this.typeCeilingHeight() },
-          {
-            id: 'ceil-default',
-            label: () => 'Use default',
-            span: 2,
-            onClick: () => this.setCeiling({ type: null, height: null }),
-            visible: () => !!room() && (room()!.ceilingType !== null || room()!.ceilingHeight !== null),
-          },
-          { id: 'ceil-whole', col: 3, label: () => 'Whole', onClick: () => this.roomsTool.select(null), active: () => !room() },
-        ],
-        [
-          {
-            id: 'soffit-h',
-            label: () => `Soffit bottom ${formatLength(this.store.plan.settings.soffitBottom)}`,
-            icon: 'keypad',
-            span: 3,
-            onClick: () =>
-              this.openKeypad('Soffit bottom height', this.store.plan.settings.soffitBottom, (h) =>
-                this.act('settings.set', { values: { soffitBottom: h } }),
-              ),
-          },
-        ],
-      ],
-    };
-  }
-
-  // --------------------------------------------------------------- section ---
-  boxPreset: BoxPreset = BOX_PRESETS[0];
-  portals!: WallPortals;
-  private portalEye = new Vector3();
-
-  /** Edit tab: open or close the selected real wall as a window onto the scanned room behind it. */
-  private toggleSeeThrough(): void {
-    const w = this.editTool.selectedWall();
-    if (!w) return;
-    if (w.kind !== 'existing') {
-      this.toast('See-through is for real walls. A planned wall can be hidden with Ghost or X-ray on the View tab.', 4);
-      return;
-    }
-    if (!this.portals.has(w.id)) {
-      const behind = this.meshBehind(w.id);
-      if (behind === 0) {
-        this.toast('Nothing scanned behind this wall yet. Scan the room on the other side, then try again.', 5);
-        return;
-      }
-    }
-    const open = this.portals.toggle(w.id);
-    if (!open && !this.portals.has(w.id) && this.portals.ids.length >= 4) this.toast('Up to 4 walls can be see-through at once', 3);
-    this.view.setOpenWalls(this.portals.ids);
-    if (open) this.toast(`See-through: the room behind, from the scan${w.demolish ? ' (as it will look opened up)' : ''}. Your hands still show in front.`, 5);
-    this.refreshUi();
-  }
-
-  /** Mesh vertices on the far side of a wall (either side counts: you may be standing on one). */
-  private meshBehind(wallId: string): number {
-    const plan = this.store.plan;
-    const w = plan.walls.find((x) => x.id === wallId);
-    const a = w && plan.nodes.find((n) => n.id === w.a);
-    const b = w && plan.nodes.find((n) => n.id === w.b);
-    if (!w || !a || !b) return 0;
-    const surf = this.scan.mesh.surface();
-    const L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-    const d = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
-    const eye = this.view.root.worldToLocal(this.world.player.head.getWorldPosition(this.portalEye));
-    const se = (eye.x / INCH_M - a.x) * -d.y + (eye.z / INCH_M - a.y) * d.x;
-    let n = 0;
-    for (let i = 0; i < surf.pos.length; i += 3) {
-      const t = (surf.pos[i] - a.x) * d.x + (surf.pos[i + 1] - a.y) * d.y;
-      const u = (surf.pos[i] - a.x) * -d.y + (surf.pos[i + 1] - a.y) * d.x;
-      if (t < 0 || t > L) continue;
-      // Beyond the far face, on the side away from you, within ~12 ft.
-      if (Math.sign(u) !== Math.sign(se) && Math.abs(u) > w.thickness / 2 + 3 && Math.abs(u) < 144) n++;
-    }
-    return n;
-  }
-  dollhouse!: Dollhouse;
-  private dollTimer: ReturnType<typeof setTimeout> | null = null;
-
-  section: SectionCut | null = null;
-  /** Horizontal cut (inches above the floor), like a printed floor plan's cut. */
-  cutHeight: number | null = null;
-  private secPlanes = [new Plane(), new Plane()];
-  private secV = new Vector3();
-  private secN = new Vector3();
-  private secLine: Mesh | null = null;
-
-  setSection(cut: SectionCut | null): void {
-    this.section = cut;
-    if (this.secLine) {
-      this.secLine.geometry.dispose();
-      this.view.root.remove(this.secLine);
-      this.secLine = null;
-    }
-    if (cut) {
-      // A red strip on the floor along the cut.
-      const L = Math.hypot(cut.b.x - cut.a.x, cut.b.y - cut.a.y) * INCH_M;
-      const strip = new Mesh(new PlaneGeometry(L, 0.012).rotateX(-Math.PI / 2), new MeshBasicMaterial({ color: 0xff5a5a, transparent: true, opacity: 0.9, depthWrite: false }));
-      strip.position.set(((cut.a.x + cut.b.x) / 2) * INCH_M, 0.004, ((cut.a.y + cut.b.y) / 2) * INCH_M);
-      strip.rotation.y = -Math.atan2(cut.b.y - cut.a.y, cut.b.x - cut.a.x);
-      strip.raycast = () => {};
-      this.view.root.add(strip);
-      this.secLine = strip;
-    }
-    this.updateSection();
-    this.refreshUi();
-  }
-
-  flipSection(): void {
-    if (this.section) this.setSection({ ...this.section, keep: this.section.keep === 1 ? -1 : 1 });
-  }
-
-  toggleCutHeight(): void {
-    this.cutHeight = this.cutHeight === null ? 48 : null;
-    this.updateSection();
-    this.toast(this.cutHeight === null ? 'Full height' : 'Cut at 4 ft: see the layout from above', 3);
-    this.refreshUi();
-  }
-
-  /** World-space cut planes from the plan-space section (the plan root can move). */
-  private updateSection(): void {
-    const clip = this.view.clip;
-    clip.length = 0;
-    const root = this.view.root;
-    root.updateWorldMatrix(true, false);
-    const c = this.section;
-    if (c) {
-      const L = Math.hypot(c.b.x - c.a.x, c.b.y - c.a.y) || 1;
-      const n = { x: (-(c.b.y - c.a.y) / L) * c.keep, y: ((c.b.x - c.a.x) / L) * c.keep };
-      this.secN.set(n.x, 0, n.y).transformDirection(root.matrixWorld);
-      root.localToWorld(this.secV.set(c.a.x * INCH_M, 0, c.a.y * INCH_M));
-      clip.push(this.secPlanes[0].setFromNormalAndCoplanarPoint(this.secN, this.secV));
-    }
-    if (this.cutHeight !== null) {
-      this.secN.set(0, -1, 0).transformDirection(root.matrixWorld);
-      root.localToWorld(this.secV.set(0, this.cutHeight * INCH_M, 0));
-      clip.push(this.secPlanes[1].setFromNormalAndCoplanarPoint(this.secN, this.secV));
-    }
-    this.view.clipChanged();
   }
 
   /** Run a command; if it's refused, say why. */
@@ -711,97 +375,6 @@ export class PlannerApp {
     this.toast(r.error, 3);
     return null;
   }
-
-  /** Change the ceiling of the selected room, or the plan default when no room is selected. */
-  private setCeiling(patch: { type?: CeilingType | null; height?: number | null }, _show = false): void {
-    const r = this.roomsTool.selectedRoom();
-    this.act('ceiling.set', { roomId: r?.id ?? null, ...patch });
-  }
-
-  private typeCeilingHeight(): void {
-    const c = roomCeiling(this.store.plan, this.roomsTool.selectedRoom());
-    this.openKeypad(this.roomsTool.selectedRoom() ? 'Room ceiling height' : 'Ceiling height', c.height, (h) => {
-      if (h < 60 || h > 180) {
-        this.toast('Ceiling height should be between 5 and 15 ft');
-        return;
-      }
-      this.setCeiling({ height: h });
-    });
-  }
-
-  private pinsTab(): NonNullable<MenuApi['extraTabs']>[number] {
-    const short: Record<string, string> = { 'water-heater': 'Water htr' };
-    const chip = (t: (typeof MARKER_TYPES)[number]) => ({
-      id: `pin-${t}`,
-      label: () => short[t] ?? MARKER_INFO[t].name.replace('Electrical panel', 'Panel').replace('Floor drain', 'Drain'),
-      onClick: () => {
-        this.pinsTool.type = t;
-        this.setTool('pins');
-      },
-      active: () => this.pinsTool.type === t,
-    });
-    const T = MARKER_TYPES;
-    return {
-      name: 'pins',
-      label: 'Pins',
-      icon: 'pin',
-      defaultTool: 'pins',
-      tiles: [],
-      text: () => `${this.store.plan.markers.length} pins placed`,
-      rows: [
-        [chip(T[0]), chip(T[1]), chip(T[2]), chip(T[3])],
-        [chip(T[4]), chip(T[5]), chip(T[6]), chip(T[7])],
-        [chip(T[8])],
-      ],
-    };
-  }
-
-  private roomsTab(): NonNullable<MenuApi['extraTabs']>[number] {
-    const rt = () => this.roomsTool;
-    const has = () => !!rt().selectedRoom();
-    const name = (n: string) => ({
-      id: `room-${n.toLowerCase()}`,
-      label: () => n,
-      onClick: () => rt().setName(n),
-      active: () => rt().selectedRoom()?.name === n,
-      visible: has,
-    });
-    const finish = (f: Finish, label: string) => ({
-      id: `finish-${f}`,
-      label: () => (f === 'none' && has() ? 'Same' : label),
-      onClick: () => {
-        if (has()) {
-          rt().setFinish(f);
-          this.toast(`${rt().selectedRoom()?.name ?? 'Room'}: ${FINISH_NAMES[f]}`, 2);
-        } else {
-          this.toast(`Whole floor: ${FINISH_NAMES[f]}`, 2);
-          this.act('settings.set', { values: { floorFinish: f } });
-          if (!this.hasFloorArea()) this.toast('Scan the basement (Room tab) or draw a few walls so the floor knows where it goes', 5);
-        }
-      },
-      active: () => (has() ? rt().selectedRoom()?.finish === f : this.store.plan.settings.floorFinish === f),
-    });
-    return {
-      name: 'rooms',
-      label: 'Rooms',
-      icon: 'rooms',
-      defaultTool: 'rooms',
-      tiles: [],
-      text: () => (has() ? rt().describe() : `Whole floor: ${FINISH_NAMES[this.store.plan.settings.floorFinish]} (tap a room to set just it)`),
-      rows: [
-        [name('Bedroom'), name('Office'), name('Family'), name('Bath')],
-        [name('Gym'), name('Storage'), name('Utility'), name('Laundry')],
-        [finish('carpet', 'Carpet'), finish('lvp', 'LVP'), finish('tile', 'Tile'), finish('concrete', 'Concrete')],
-        [
-          finish('epoxy', 'Epoxy'),
-          finish('none', 'None'),
-          { id: 'room-whole', label: () => 'Whole floor', onClick: () => rt().select(null), active: () => !has() },
-          { id: 'room-remove', label: () => 'Remove', icon: 'trash', tone: 'danger', onClick: () => rt().remove(), visible: has },
-        ],
-      ],
-    };
-  }
-
   private uiFeedback(kind: 'hover' | 'click'): void {
     // Rumble whichever controller is pointing at the menu.
     for (const side of ['left', 'right'] as Side[]) {
@@ -810,14 +383,10 @@ export class PlannerApp {
     if (kind === 'click') this.sfx.click();
     else this.sfx.tick();
   }
-
-  // ---------------------------------------------------------------- UI ----
-
   private refreshUi(): void {
     this.menu?.panel.refresh();
     for (const l of this.listeners) l();
   }
-
   setTool(name: ToolName): void {
     if (!this.tools[name]) return;
     if (name !== this.toolName) {
@@ -831,7 +400,6 @@ export class PlannerApp {
     this.showToolChip();
     this.refreshUi();
   }
-
   /** Wrist -> Float (follows your view) -> Pinned (stays in the room). */
   private cycleMenuMode(): void {
     const order = ['wrist', 'float', 'pinned'] as const;
@@ -851,37 +419,6 @@ export class PlannerApp {
     this.wrist.mode = next;
     this.toast(next === 'wrist' ? 'Menu on your left wrist' : next === 'float' ? 'Menu floats in front of you' : 'Menu pinned here');
   }
-
-  private runCameraTest(): void {
-    if (this.probe.running || this.hybrid.running) return;
-    this.toast('Camera test: allow the camera if asked', 4);
-    this.probe
-      .run((m) => this.toast(m, 4))
-      .then(async (r) => {
-        // Then: WebGPU fusion beside this WebGL session (~20 s).
-        this.toast('GPU scanning test: look around for 20 seconds', 6);
-        const extra = await this.hybrid.start();
-        r.rows.push(...extra);
-        try {
-          localStorage.setItem(PROBE_KEY, JSON.stringify({ ...r, thumb: null }));
-          localStorage.setItem(PROBE_KEY, JSON.stringify(r));
-        } catch {
-          /* thumbnail too large: the copy without it stays */
-        }
-        const v = extra.find((x) => x.name === 'Verdict');
-        if (v) this.toast(`GPU scanning: ${v.detail}`, 6);
-        const fails = r.rows.filter((x) => x.ok === false).length;
-        const cam = r.rows.find((x) => x.name === 'Camera stream during AR');
-        this.toast(
-          cam?.ok
-            ? `Camera works in AR (${r.rows.find((x) => x.name === 'Frame rate')?.detail ?? ''}). Full results on the flat page.`
-            : `Camera test: ${fails} checks failed. Exit AR to see the results.`,
-          8,
-        );
-        this.refreshUi();
-      });
-  }
-
   private toggleOcclusion(): void {
     this.occlusionOn = !this.occlusionOn;
     if (this.occlusionOn) this.occluder.addComponent(DepthOccludable, { mode: OcclusionShadersMode.MinMaxSoftOcclusion });
@@ -889,12 +426,10 @@ export class PlannerApp {
     setSurfaceOcclusion(this.occlusionOn);
     this.toast(this.occlusionOn ? 'Real objects hide planned walls' : 'Planned walls always on top');
   }
-
   private toggleSnap(): void {
     this.snapEnabled = !this.snapEnabled;
     this.toast(this.snapEnabled ? 'Snapping on' : 'Snapping off');
   }
-
   private customWidth(): void {
     this.openKeypad('Opening width', this.preset.width, (w) => {
       if (w < 12 || w > 120) {
@@ -905,7 +440,6 @@ export class PlannerApp {
       this.setTool('doors');
     });
   }
-
   private openKeypad(title: string, initial: number | null, onOk: (inches: number) => void): void {
     this.keypad.show(title, initial, onOk);
     // Float the keypad in front of the user, at chest height.
@@ -931,17 +465,14 @@ export class PlannerApp {
     }
     this.refreshUi();
   }
-
   toast(msg: string, seconds = 3): void {
     this.toastLabel.setText(msg);
     this.toastLabel.sprite.visible = true;
     this.toastUntil = this.time + seconds;
   }
-
   private showToolChip(): void {
     this.toolChip.setText(TOOL_LABEL[this.toolName]);
   }
-
   private undo(): void {
     if (this.tools[this.toolName].undo?.()) {
       this.refreshUi();
@@ -950,27 +481,12 @@ export class PlannerApp {
     const label = this.store.undo();
     this.toast(label ? `Undid: ${label}` : 'Nothing to undo');
   }
-
-  private resetReference(): void {
-    this.refAnchors.forget();
-    this.act('reference.set', { reference: null });
-    this.setTool('align');
-    this.toast('Click two real floor corners to set new references');
-  }
-
   // ------------------------------------------------------- plan + frame ----
 
   private onPlanChanged(plan: Plan, _reason: string): void {
     this.view.rebuild(plan);
-    if (this.dollhouse?.shown) {
-      // The small copy rebuilds a moment after edits settle (drags rebuild every frame).
-      if (this.dollTimer) clearTimeout(this.dollTimer);
-      this.dollTimer = setTimeout(() => this.dollhouse.rebuild(this.store.plan), 150);
-    }
     this.axisAngle = primaryAxis(plan);
     this.editTool?.validate();
-    this.dimTool?.validate();
-    this.roomsTool?.validate();
     this.scheduleSave();
     this.refreshUi();
   }
@@ -979,14 +495,12 @@ export class PlannerApp {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => this.saveNow(), 400);
   }
-
   saveNow(): void {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = null;
     if (savePlan(this.store.plan)) this.savedAt = new Date().toLocaleTimeString();
     for (const l of this.listeners) l();
   }
-
   private loadTransform(): SavedTransform {
     try {
       const raw = localStorage.getItem(TRANSFORM_KEY);
@@ -999,7 +513,6 @@ export class PlannerApp {
     }
     return { ...IDENTITY, floorY: 0, anchorUuid: null };
   }
-
   private storeTransform(): void {
     try {
       localStorage.setItem(TRANSFORM_KEY, JSON.stringify(this.transform));
@@ -1007,7 +520,6 @@ export class PlannerApp {
       /* ignore */
     }
   }
-
   private currentAnchorUuid(): string | null {
     try {
       return localStorage.getItem(IWSDK_ANCHOR_KEY);
@@ -1015,19 +527,16 @@ export class PlannerApp {
       return null;
     }
   }
-
   setTransform(t: PlanTransform): void {
     this.transform = { ...this.transform, ...t, anchorUuid: this.currentAnchorUuid() };
     this.applyTransform();
     this.storeTransform();
   }
-
   private applyTransform(): void {
     const r = this.view.root;
     r.position.set(this.transform.tx, this.transform.floorY, this.transform.tz);
     r.rotation.set(0, -this.transform.theta, 0);
   }
-
   // ----------------------------------------------------------- per frame ----
 
   update(delta: number, time: number): void {
@@ -1038,7 +547,6 @@ export class PlannerApp {
     // The anchor system may re-parent the plan root; keep our transform as its local pose.
     this.applyTransform();
     this.checkAnchor();
-    this.updateSection();
 
     // Keep a copy of Space Setup while in a session, for review captures saved after it ends.
     // Re-read only when the set of planes and meshes changes, since meshes are large.
@@ -1062,14 +570,13 @@ export class PlannerApp {
       this.hands.right.update(world, time);
       this.updateSurfaces(time);
       this.scan.tick(time);
-      this.hybrid.tick(time);
       this.updateFloor(time);
       if (this.scan.scanning && this.scan.depthOk === false && !this.depthWarned) {
         this.depthWarned = true;
         this.toast('Depth is not available on this device, so scanning cannot work here', 6);
       }
       this.updateRefAnchors();
-      this.handleButtons(time);
+      this.handleButtons();
       if (!this.keypad.open && this.keypad.panel.entity.hasComponent(Follower)) this.keypad.panel.entity.removeComponent(Follower);
       this.wrist.update();
       this.updatePokeMode(time);
@@ -1081,8 +588,6 @@ export class PlannerApp {
     if (!inXR) this.sessionT0 = -1;
     updateSurfaceOcclusion(world);
     this.view.updateLabels(world.camera);
-    this.dollhouse?.update();
-    this.portals?.update(this.store.plan, this.world.camera.getWorldPosition(this.portalEye));
     this.updateToast();
   }
 
@@ -1126,7 +631,6 @@ export class PlannerApp {
       }
     }
   }
-
   setLargeSpace(on: boolean): void {
     this.largeSpace = on;
     try {
@@ -1135,9 +639,8 @@ export class PlannerApp {
       /* ignore */
     }
   }
-
   private pokeCheckT = 0;
-  /** Finger poking on the menu only with tracked hands (see ui/poke.ts). */
+
   private updatePokeMode(time: number): void {
     if (time - this.pokeCheckT < 0.5) return;
     this.pokeCheckT = time;
@@ -1147,7 +650,6 @@ export class PlannerApp {
     for (const s of srcs) if (s.hand) hands = true;
     setPokeEnabled(hands);
   }
-
   /** Two persistent anchors on the reference corners keep the plan locked to the room. */
   private anchorReferences(): void {
     const ref = this.store.plan.reference;
@@ -1158,7 +660,6 @@ export class PlannerApp {
     const w2 = root.localToWorld(planToLocal(ref.r2));
     this.refAnchors.place(w1, w2);
   }
-
   private updateRefAnchors(): void {
     const ref = this.store.plan.reference;
     if (!ref || !this.refAnchors.update()) return;
@@ -1180,7 +681,6 @@ export class PlannerApp {
     }
     this.needsAlignWarned = true; // the corners are tracked; no need to warn about the scene anchor
   }
-
   private checkAnchor(): void {
     if (!this.world.session || this.needsAlignWarned) return;
     const uuid = this.currentAnchorUuid();
@@ -1200,8 +700,7 @@ export class PlannerApp {
       this.storeTransform();
     }
   }
-
-  private handleButtons(time: number): void {
+  private handleButtons(): void {
     const R = this.hands.right;
     const L = this.hands.left;
     const w = this.world;
@@ -1209,9 +708,8 @@ export class PlannerApp {
     if (R.buttonDown(InputComponent.A_Button, w)) this.wallTool.endChain();
     if (L.buttonDown(InputComponent.X_Button, w)) this.wrist.hiddenByUser = !this.wrist.hiddenByUser;
     if (R.isHand) return;
-    // Right thumbstick: up/down = wall height (Walls tool), left/right flick = next tool.
-    const pad = w.input.xr.gamepads.right;
-    const axes = pad?.getAxesValues(InputComponent.Thumbstick);
+    // Right thumbstick: left/right flick = next tool.
+    const axes = w.input.xr.gamepads.right?.getAxesValues(InputComponent.Thumbstick);
     const x = axes?.x ?? 0;
     const y = axes?.y ?? 0;
     if (Math.abs(x) > 0.75 && Math.abs(x) > Math.abs(y)) {
@@ -1226,18 +724,12 @@ export class PlannerApp {
     } else if (Math.abs(x) < 0.3) {
       this.flickArmed = true;
     }
-    if (this.toolName === 'walls' && Math.abs(y) > 0.6 && Math.abs(y) > Math.abs(x) && time >= this.heightRepeatAt) {
-      const h = Math.max(24, this.store.plan.settings.wallHeight + (y < 0 ? 1 : -1));
-      this.wallTool.applyHeight(h);
-      this.heightRepeatAt = time + 0.12;
-    }
   }
 
   private isShown(o: Object3D): boolean {
     for (let p: Object3D | null = o; p; p = p.parent) if (!p.visible) return false;
     return true;
   }
-
   private rayHitsUI(h: HandAim): boolean {
     this.raycaster.set(h.origin, h.dir);
     this.raycaster.far = 5;
@@ -1247,7 +739,6 @@ export class PlannerApp {
     }
     return false;
   }
-
   private handleTool(): void {
     const tool = this.tools[this.toolName];
     const modal = this.keypad.open;
@@ -1291,7 +782,6 @@ export class PlannerApp {
       h.finishPress();
     }
   }
-
   /**
    * Hit-test results flicker: some frames have no hit, and the normal is noisy.
    * Keep the last hit for a moment and low-pass the point and normal.
@@ -1317,47 +807,6 @@ export class PlannerApp {
       }
     }
   }
-
-  /** Room-mesh vertices (plan inches) within `radius` of a point, or null when there's no room mesh. */
-  private roomMeshPoints(center: Vec2, radius: number): PP[] | null {
-    let mesh: Entity | null = null;
-    let best = 0;
-    for (const e of this.meshQuery?.() ?? []) {
-      if (e.getValue(XRMesh, 'isBounded3D')) continue;
-      const raw = e.getValue(XRMesh, '_mesh') as unknown as { vertices?: Float32Array } | undefined;
-      const n = raw?.vertices?.length ?? 0;
-      if (n > best) {
-        best = n;
-        mesh = e;
-      }
-    }
-    if (!mesh || best < 30) {
-      if (!this.scan?.hasMap) return null;
-      const pts = this.scan.points().filter((p) => Math.hypot(p.x - center.x, p.y - center.y) <= radius);
-      return pts.length >= 30 ? pts : null;
-    }
-    const raw = mesh.getValue(XRMesh, '_mesh') as unknown as { vertices: Float32Array };
-    const root = this.view.root;
-    const key = `${best}|${this.transform.theta}|${this.transform.tx}|${this.transform.tz}|${this.transform.floorY}`;
-    if (!this.meshCache || this.meshCache.key !== raw.vertices || (this.meshCache as { k2?: string }).k2 !== key) {
-      const obj = mesh.object3D!;
-      obj.updateWorldMatrix(true, false);
-      root.updateWorldMatrix(true, false);
-      const v = raw.vertices;
-      const pts: PP[] = [];
-      const w = new Vector3();
-      for (let i = 0; i < v.length; i += 3) {
-        w.set(v[i], v[i + 1], v[i + 2]);
-        obj.localToWorld(w);
-        root.worldToLocal(w);
-        pts.push({ x: w.x / INCH_M, y: w.z / INCH_M, z: w.y / INCH_M });
-      }
-      this.meshCache = { key: raw.vertices, pts };
-      (this.meshCache as { k2?: string }).k2 = key;
-    }
-    return this.meshCache.pts.filter((p) => Math.hypot(p.x - center.x, p.y - center.y) <= radius);
-  }
-
   private aimHit: AimHit = {
     floor: null,
     floorDistM: 0,
@@ -1466,7 +915,6 @@ export class PlannerApp {
       disabled: !this.snapEnabled,
     };
   }
-
   private updateToast(): void {
     const s = this.toastLabel.sprite;
     if (!s.visible) return;
@@ -1475,7 +923,6 @@ export class PlannerApp {
       return;
     }
   }
-
   /** Small tool name floating above the drawing hand. */
   private updateToolChip(): void {
     const h = this.hands[this.activeSide];
@@ -1485,101 +932,20 @@ export class PlannerApp {
     s.position.copy(h.origin);
     s.position.y += 0.08;
   }
-
   // ------------------------------------------------------------- scan ----
 
-  private toggleDepthScan(): void {
+  /** Room tab: build the room mesh (evidence for snapping and checking). */
+  private toggleScan(): void {
     const s = this.scan;
     if (!s.scanning) {
       this.depthWarned = false;
-      s.livePlan = this.store.plan;
       void s.start();
-      this.toast('Scanning: walk slowly and look at every wall, the ceiling and the floor', 6);
-      return;
+      this.toast('Scanning: look slowly at the walls you want to check. The mesh builds as you look.', 6);
+    } else {
+      s.stop();
+      this.toast(`Scan saved: room mesh ${(s.mesh.triangles / 1000).toFixed(0)}k triangles. Select a wall and Snap to scan, or Check walls.`, 6);
     }
-    s.stop();
-    const root = this.view.root;
-    root.updateWorldMatrix(true, false);
-    const e = root.worldToLocal(this.world.camera.getWorldPosition(this.eyeV));
-    this.toast('Finding walls...', 2);
-    void s.analyze(this.store.plan, { x: e.x / INCH_M, y: e.z / INCH_M }).then((res) => this.showScanResult(res));
-  }
-
-  /** Remove earlier scanned walls the new scan saw straight through. Returns how many. */
-  private removeDisproved(): number {
-    const ids = this.scan.disproved.filter((id) => this.store.plan.walls.some((w) => w.id === id));
-    this.scan.disproved = [];
-    if (!ids.length) return 0;
-    this.cmd.group('Remove walls the scan saw through', () => {
-      for (const id of ids) this.cmd.run('element.delete', { id }, 'scan');
-    });
-    return ids.length;
-  }
-
-  private showScanResult(res: StructureResult): void {
-    const s = this.scan;
-    const n = s.count();
-    const gone = s.disproved.length;
-    if (!s.reviewing && res.footprint) {
-      // Nothing new to review, but the floor area is still worth keeping.
-      this.cmd.run('scan.applyStructure', { result: { ...res, walls: [], soffits: [], posts: [] } }, 'scan');
-      const removed = this.removeDisproved();
-      s.discard();
-      s.hide();
-      this.toast(`No new walls found.${removed ? ` Removed ${removed} earlier scanned wall${removed > 1 ? 's' : ''} this scan saw straight through (Undo keeps them).` : ''} Saved the scanned floor area.`, 6);
-      return;
-    }
-    if (!s.reviewing) {
-      const removed = this.removeDisproved();
-      this.toast(
-        removed
-          ? `Removed ${removed} earlier scanned wall${removed > 1 ? 's' : ''} this scan saw straight through (Undo keeps them).`
-          : s.map.size < 500
-            ? 'Not enough was seen yet. Scan again and look around more.'
-            : 'No new walls or ceiling features found',
-        6,
-      );
-      return;
-    }
-    const measured = res.walls.filter((w) => w.evidence === 'measured').length;
-    const fitted = res.walls.some((w) => w.evidence);
-    const parts = [fitted ? `${res.walls.length} walls (${measured} measured to the mesh${measured < res.walls.length ? ', paler ones partly seen' : ''})` : `${res.walls.length} walls`];
-    if (res.soffits.length) parts.push(`${res.soffits.length} low areas`);
-    if (res.posts.length) parts.push(`${res.posts.length} possible posts (off)`);
-    if (res.ceiling) parts.push(`ceiling ${formatLength(res.ceiling - (res.floorOffset ?? 0))}`);
-    if (gone) parts.push(`${gone} earlier wall${gone > 1 ? 's' : ''} seen through (removed on Add)`);
-    this.toast(`Found ${parts.join(', ')}. Click items to skip them, then Add.`, 7);
-    this.reviewReturn = this.toolName === 'review' ? 'walls' : this.toolName;
-    this.setTool('review');
-  }
-
-  private hasFloorArea(): boolean {
-    const p = this.store.plan;
-    return !!p.footprint?.rows.length || p.nodes.length >= 3 || findRoomFaces(p).length > 0;
-  }
-
-  private reviewReturn: ToolName = 'walls';
-
-  private endReview(): void {
-    if (this.toolName === 'review') this.setTool(this.reviewReturn);
-  }
-
-  private acceptDepthScan(): void {
-    const res = this.scan.chosen();
-    if (!res) return;
-    // Settle the floor first so heights match.
-    if (res.floorOffset && Math.abs(res.floorOffset) <= 8) {
-      this.transform.floorY += res.floorOffset * INCH_M;
-      this.applyTransform();
-      this.storeTransform();
-    }
-    const removed = this.removeDisproved();
-    this.cmd.run('scan.applyStructure', { result: res }, 'scan');
-    const n = this.scan.count();
-    this.scan.discard();
-    this.scan.hide();
-    this.endReview();
-    this.toast(`Added ${n} items from the scan${removed ? `, removed ${removed} wall${removed > 1 ? 's' : ''} it saw through` : ''}`, 5);
+    this.refreshUi();
   }
 
   /** Real walls checked against the room mesh, worst first (null: no mesh yet). */
@@ -1588,7 +954,6 @@ export class PlannerApp {
     if (surf.pos.length < 300) return null;
     return checkPlan(this.store.plan, surf, ids ? { ids } : {});
   }
-
   /** Room tab: score every real wall against the mesh and point at the worst one. */
   private checkWalls(): void {
     const checks = this.verifyWalls();
@@ -1620,7 +985,6 @@ export class PlannerApp {
     if (unseen) msg += `. ${unseen} not seen by the scan yet`;
     this.toast(msg, 8);
   }
-
   /** Edit tab: move and resize the selected real wall (and its openings) onto the mesh. */
   private fitSelectedToScan(): void {
     const w = this.editTool.selectedWall();
@@ -1648,22 +1012,16 @@ export class PlannerApp {
     const moved = Math.abs(f.shift);
     this.toast(moved < 0.125 && Math.abs(f.thickness - w.thickness) < 0.25 ? 'Already matches the scan' : `Fitted: moved ${formatLength(Math.round(moved * 8) / 8)}, ${Math.round(f.thickness * 4) / 4}" thick`, 4);
   }
-
-  private scanStatus(): string {
+  private roomStatus(): string {
     if (this.scan?.scanning) {
-      const k = this.scan.map.size;
       if (this.scan.depthOk === false) return 'Scanning... no depth yet (check camera permission)';
-      if (k < 200) return 'Scanning... look around';
-      const m = this.scan.mesh;
-      return `Scanning: ${(k / 1000).toFixed(1)}k points, room mesh ${(m.triangles / 1000).toFixed(0)}k triangles`;
+      return `Scanning: room mesh ${(this.scan.mesh.triangles / 1000).toFixed(0)}k triangles`;
     }
-    if (this.scan?.reviewing) return 'Click an item to skip it. Green walls, orange low areas, yellow posts';
     const p = this.store.plan;
-    const scanned = p.walls.filter((w) => w.kind === 'existing' && w.source !== 'capture').length;
-    const captured = p.walls.filter((w) => w.source === 'capture').length;
-    const objs = p.obstacles.length;
-    if (!scanned && !captured && !objs) return 'No room scan yet';
-    return `${scanned} scanned walls, ${captured} captured, ${objs} objects`;
+    const fromSetup = p.walls.filter((w) => w.kind === 'existing' && w.source === 'scan').length;
+    const drawn = p.walls.filter((w) => w.kind === 'existing' && w.source !== 'scan').length;
+    if (!fromSetup && !drawn) return 'Start with Space Setup: it brings in your walls and doors';
+    return `${fromSetup} walls from Space Setup, ${drawn} drawn or corrected`;
   }
 
   /** Called by the system when room planes/meshes appear or change. */
@@ -1672,26 +1030,6 @@ export class PlannerApp {
     if (this.autoImportTimer) clearTimeout(this.autoImportTimer);
     this.autoImportTimer = setTimeout(() => this.importScan(true), 1500);
   }
-
-  /** Read Space Setup walls, floor, ceiling and objects. `auto` skips unchanged scans. */
-  // -------------------------------------------------------- review capture ---
-  /** Detailed capture: 160x120 depth and photos, for reviewing the scanner off the headset. */
-  detailedCapture = false;
-
-  toggleDetailedCapture(): void {
-    this.detailedCapture = !this.detailedCapture;
-    const s = this.scan.sampler;
-    if (this.detailedCapture) s.setResolution(160, 120);
-    else s.setResolution(80, 60);
-    this.toast(this.detailedCapture ? 'Detailed capture on: scans record 4x the depth detail plus photos. Save the recording from the flat page.' : 'Detailed capture off', 5);
-    this.refreshUi();
-  }
-
-  /**
-   * Everything about the app's side of a scan, saved into the recording so it
-   * can be reviewed off the headset: the plan, what the scanner last proposed,
-   * the headset's own Space Setup planes and meshes, and the app version.
-   */
   /** Space Setup as last seen in a session; the planes are gone once the session ends. */
   private spaceSetupSeen: { planes: unknown[]; meshes: unknown[]; seenAt: string } | null = null;
   private spaceSetupAt = -1e9;
@@ -1738,9 +1076,8 @@ export class PlannerApp {
     const sc = this.scan;
     return {
       app: { version: __APP_VERSION__, builtAt: __BUILD_TIME__ },
-      device: { userAgent: navigator.userAgent, depth: `${sc.sampler.width}x${sc.sampler.height}`, camera: sc.photos.label, cameraSettings: sc.photos.settings, detailed: this.detailedCapture },
+      device: { userAgent: navigator.userAgent, depth: `${sc.sampler.width}x${sc.sampler.height}`, camera: sc.photos.label, cameraSettings: sc.photos.settings },
       plan: JSON.parse(JSON.stringify(this.store.plan)),
-      proposals: sc.proposals ?? sc.live ?? null,
       roomMesh: { bricks: sc.mesh.bricks, triangles: sc.mesh.triangles },
       spaceSetup,
       transform: this.transform,
@@ -1810,7 +1147,6 @@ export class PlannerApp {
       5,
     );
   }
-
   // ------------------------------------------------------------ DOM api ----
 
   onSession(fn: (active: boolean) => void): () => void {
@@ -1824,12 +1160,10 @@ export class PlannerApp {
       xr.removeEventListener('sessionend', off);
     };
   }
-
   onChange(fn: () => void): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
   }
-
   status(): AppStatus {
     const p = this.store.plan;
     let lin = 0;
@@ -1848,14 +1182,12 @@ export class PlannerApp {
       savedAt: this.savedAt,
     };
   }
-
   enterAR(): void {
     offerCameraAccess();
     this.world.launchXR(
       this.largeSpace ? undefined : { referenceSpace: { type: 'local-floor' as never, required: false, fallbackOrder: ['local' as never, 'viewer' as never] } },
     );
   }
-
   private startOverAt = -1e9;
 
   /** Erase the plan, the scan, the room mesh and the recording. Takes two taps in the headset. */
@@ -1867,8 +1199,6 @@ export class PlannerApp {
       return;
     }
     this.startOverAt = -1e9;
-    this.endReview();
-    this.scan.hide();
     this.scan.clear();
     this.loadPlan(createEmptyPlan());
     this.toast('Started over: plan and scan erased');

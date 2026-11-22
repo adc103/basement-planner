@@ -1,10 +1,7 @@
 import { planFromJson, planToJson } from './core/persistence.js';
-import { createEmptyPlan } from './core/plan.js';
-import { exportPly } from './core/exportPly';
 import { exportDxf } from './core/exportDxf.js';
 import { exportIfc } from './core/exportIfc.js';
 import { FINISH_NAMES, renderPlanSvg, roomSummaries } from './core/plan2d.js';
-import { PROBE_KEY, type ProbeResult } from './xr/cameraProbe.js';
 import type { PlannerApp } from './xr/app.js';
 
 /**
@@ -68,7 +65,7 @@ export function mountDom(app: PlannerApp): void {
     <div class="card" id="bp-rec-card" style="display:none">
       <div class="head">
         <h2>Scan recording</h2>
-        <div class="row"><button class="small" id="bp-rec">Save scan recording</button><button class="small" id="bp-ply">Point cloud (.ply)</button></div>
+        <div class="row"><button class="small" id="bp-rec">Save scan recording</button></div>
       </div>
       <p class="sub" id="bp-rec-info"></p>
     </div>
@@ -91,29 +88,17 @@ export function mountDom(app: PlannerApp): void {
       <button class="danger" id="bp-new">Start over</button>
       <input type="file" id="bp-file" accept="application/json,.json" hidden />
     </div>
-    <div class="card" id="bp-probe-card" style="display:none">
-      <div class="head"><h2>Camera test results</h2><div class="row"><button class="small" id="bp-probe-copy">Copy results</button></div></div>
-      <table id="bp-probe"></table>
-      <img id="bp-probe-img" style="max-width:100%;border-radius:8px;margin-top:10px;display:none" alt="Captured camera frame"/>
-    </div>
     <div class="card">
       <h2>Controls</h2>
       <table>
-        <tr><td>Place a corner</td><td>Pinch (hands) or trigger (controllers), aimed at the floor. The point is placed when you let go.</td></tr>
+        <tr><td>Start</td><td>Run Space Setup in Quest settings first. In the app, Room &gt; Space Setup brings in its walls, doors and windows as your existing walls.</td></tr>
+        <tr><td>Menu</td><td>Turn your left palm toward you (hands), or it sits above the left controller. Tabs: Room, Edit, Measure, View. Poke with your right index finger or point and pinch. X hides it.</td></tr>
+        <tr><td>Correct a wall</td><td>Edit &gt; Select: pinch a corner and drag it. Tap a wall, then Snap to scan to slide it onto the real wall the room mesh shows (scan first: Room &gt; Scan).</td></tr>
+        <tr><td>Add a missing wall</td><td>Edit &gt; Wall: pinch at each corner. Finish with A or Finish.</td></tr>
+        <tr><td>Doors</td><td>Edit &gt; Door: pick a width, then point at a wall.</td></tr>
+        <tr><td>Measure</td><td>Measure &gt; Tape: pinch two spots. Then Tape says... to enter what a real tape measure reads.</td></tr>
         <tr><td>Precise placement</td><td>Hold the pinch or trigger for half a second: fine mode moves the point at 1/4 speed.</td></tr>
-        <tr><td>Finish a chain</td><td>Place the same spot twice, close the loop, press A, or tap Finish.</td></tr>
-        <tr><td>Menu</td><td>Turn your left palm toward you (hands), or it sits above the left controller. Tabs on the left: Build, Edit, Measure, Rooms, Room scan, View. Poke with your right index finger or point and pinch. X hides it.</td></tr>
         <tr><td>Switch tools fast</td><td>Controllers: flick the right thumbstick left or right.</td></tr>
-        <tr><td>Move things</td><td>Edit &gt; Select: pinch a corner and drag. Drag a door along its wall. Tap a wall to change its length, height or 2x4/2x6.</td></tr>
-        <tr><td>Measure</td><td>Measure &gt; Tape: pinch two spots on the floor or on walls.</td></tr>
-        <tr><td>Rooms</td><td>Rooms tab: tap inside a closed area, then pick a name and floor finish.</td></tr>
-        <tr><td>Walls the scan missed</td><td>Build &gt; Capture: tap a real wall and the app finds its full length from the room mesh (tap again to add). Or hold the pinch and sweep along the wall, then let go.</td></tr>
-        <tr><td>Undo</td><td>Menu Undo, or B / Y on controllers.</td></tr>
-        <tr><td>Exact length</td><td>Menu Length... then type, e.g. <code>10'4 1/2</code>. A bare number is inches.</td></tr>
-        <tr><td>Wall height</td><td>Menu H..., or the right thumbstick up/down (1" steps).</td></tr>
-        <tr><td>Room scan</td><td>Your Quest Space Setup (walls, ceiling height, furniture boxes) loads automatically. New walls snap 1" off foundation walls and to object corners.</td></tr>
-        <tr><td>Coming back later</td><td>Set two reference corners once (Room &gt; Align). They're saved as headset anchors, so the plan relocks itself every session. If the headset ever loses them: Align, then click Ref 1 and Ref 2 again.</td></tr>
-        <tr><td>Ceiling</td><td>Ceiling tab: drywall, drop or open joists, and height, for all rooms or the room selected in the Rooms tab. Soffit: drag a rectangle on the floor under a duct or beam.</td></tr>
       </table>
     </div>
   </main>`;
@@ -157,45 +142,6 @@ export function mountDom(app: PlannerApp): void {
   render();
   renderPlan();
 
-  const renderProbe = () => {
-    let r: ProbeResult | null = null;
-    try {
-      r = JSON.parse(localStorage.getItem(PROBE_KEY) || 'null');
-    } catch {
-      r = null;
-    }
-    $('bp-probe-card').style.display = r ? '' : 'none';
-    if (!r) return;
-    const mark = (ok: boolean | null) => (ok === true ? '✅' : ok === false ? '❌' : '➖');
-    $('bp-probe').innerHTML =
-      `<tr><td>Run at</td><td>${esc(new Date(r.at).toLocaleString())}</td></tr>` +
-      r.rows.map((x) => `<tr><td>${mark(x.ok)} ${esc(x.name)}</td><td>${esc(x.detail)}</td></tr>`).join('');
-    const img = $<HTMLImageElement>('bp-probe-img');
-    img.style.display = r.thumb ? '' : 'none';
-    if (r.thumb) img.src = r.thumb;
-    $('bp-probe-copy').onclick = () => {
-      const text = [`Camera test ${r!.at} (app ${__APP_VERSION__})`, r!.userAgent, ...r!.rows.map((x) => `${mark(x.ok)} ${x.name}: ${x.detail}`)].join('\n');
-      const fallback = () => {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.cssText = 'position:fixed;left:0;top:0;width:90vw;height:40vh;z-index:99';
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        const ok = document.execCommand('copy');
-        msg(ok ? 'Results copied' : 'Copy blocked: select the text in the box and copy it');
-        if (ok) ta.remove();
-        else ta.onblur = () => ta.remove();
-      };
-      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => msg('Results copied'), fallback);
-      else fallback();
-    };
-  };
-  renderProbe();
-  app.onSession((active) => {
-    if (!active) renderProbe();
-  });
-
   // The depth frames of your scan, as a file that replays through the scanner.
   const renderRec = () => {
     const rec = app.scan?.recorder;
@@ -228,11 +174,6 @@ export function mountDom(app: PlannerApp): void {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  };
-  $('bp-ply').onclick = () => {
-    const sc = app.scan;
-    if (!sc?.map.size) return msg('Nothing scanned yet');
-    download(exportPly(sc.map.points(2)), 'application/octet-stream', 'ply');
   };
   $('bp-dxf').onclick = () => download(exportDxf(app.store.plan), 'application/dxf', 'dxf');
   $('bp-ifc').onclick = () => download(exportIfc(app.store.plan, { now: new Date() }), 'application/x-step', 'ifc');

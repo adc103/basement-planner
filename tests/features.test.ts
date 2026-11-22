@@ -18,7 +18,6 @@ import { convexHull, pointInPolygon, segmentHitsPolygon } from '../src/core/poly
 import { faceAt, findRoomFaces, resolveRooms } from '../src/core/rooms';
 import { frameWall, generateFraming, summarizeFraming } from '../src/core/framing';
 import { computeFootprints } from '../src/core/wallGeometry';
-import { captureWall } from '../src/core/capture';
 import { obstaclesFromScan, scanSignature, type P3 } from '../src/core/roomScan';
 import { defaultSnapOptions, snap } from '../src/core/snapping';
 
@@ -292,23 +291,6 @@ describe('editing', () => {
     const r = snap(s.plan, { x: 81, y: 49.5 }, { ...defaultSnapOptions });
     expect(r.kind).toBe('endpoint');
     expect(r.point).toEqual({ x: 80, y: 50 });
-  });
-});
-
-describe('point-and-capture', () => {
-  it('turns two hits on a wall into an existing wall behind the surface', () => {
-    // Wall surface along y = 100, facing -y (toward the viewer at y < 100).
-    const w = captureWall({ x: 10, y: 100 }, { x: 0, y: -1 }, { x: 90, y: 101.5 }, { x: 0.02, y: -1 }, 4.5)!;
-    expect(w.faceA.y).toBeCloseTo(100);
-    expect(Math.abs(w.faceB.y - 100)).toBeLessThan(1);
-    expect(Math.abs(w.b.x - w.a.x)).toBeCloseTo(80, 0);
-    // Centerline sits half the thickness behind the face.
-    expect(w.a.y).toBeCloseTo(102.25, 1);
-  });
-
-  it('rejects floor hits and points too close together', () => {
-    expect(captureWall({ x: 0, y: 0 }, { x: 0, y: 0.05 }, { x: 50, y: 0 }, null, 4.5)).toBeNull();
-    expect(captureWall({ x: 0, y: 0 }, { x: 0, y: -1 }, { x: 3, y: 0 }, null, 4.5)).toBeNull();
   });
 });
 
