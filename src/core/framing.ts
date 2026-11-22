@@ -126,7 +126,9 @@ export function wallFramingEnds(plan: Plan, w: Wall, fp: WallFootprint, framed: 
  * Stud framing for every new wall; with `includeExisting`, also for existing
  * framed partitions (for the x-ray view; they aren't part of the materials list).
  */
-export function generateFraming(plan: Plan, includeExisting = false): Member[] {
+export function generateFraming(full: Plan, includeExisting = false): Member[] {
+  // Walls marked for demolition are gone as far as new framing is concerned.
+  const plan = full.walls.some((w) => w.demolish) ? { ...full, walls: full.walls.filter((w) => !w.demolish) } : full;
   const fps = computeFootprints(plan);
   const framed = (x: Wall) => x.kind === 'new' || (includeExisting && !isConcreteWall(x));
   const out: Member[] = [];

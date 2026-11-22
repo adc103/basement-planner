@@ -328,7 +328,14 @@ export class PlannerApp {
         else if (action === 'openingHeight') t.typeOpeningHeight();
         else if (action === 'openingType') t.cycleOpeningType();
         else if (action === 'flip') t.flipDoor();
+        else if (action === 'lock') t.toggleLock();
+        else if (action === 'demolish') t.toggleDemolish();
       },
+      selectedLocked: () => {
+        const s = this.editTool.selection;
+        return !!s && s.kind !== 'node' && this.editTool.isLocked(s);
+      },
+      selectedDemolish: () => !!this.editTool.selectedWall()?.demolish,
       openingType: () => {
         const o = this.editTool.selectedOpening();
         return o?.type === 'door' ? 'Door' : o?.type === 'window' ? 'Window' : 'Opening';

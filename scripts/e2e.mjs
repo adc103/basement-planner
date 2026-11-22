@@ -340,6 +340,31 @@ try {
       check(slid > 8 && slid < 16 && p4.walls.length === p3.walls.length, `dragging a wall slides it sideways (${slid.toFixed(1)}")`);
       const und = await page.evaluate(() => window.basementPlanner.store.undoLabel);
       check(und === 'Slide wall', `wall slide is one undo step (${und})`);
+
+      // Lock it from the Edit tab: the same drag now does nothing.
+      check(await clickButton(menu, 'btn:e-lock'), 'Lock chip on the selected wall');
+      let p5 = await plan();
+      check(p5.walls.find((x) => x.id === sel)?.locked === true, 'wall is locked');
+      await pose(0);
+      await frames(6);
+      await page.evaluate(() => window.__dev.controllers.right.updateButtonValue('trigger', 1));
+      await frames(4);
+      for (let i = 1; i <= 6; i++) {
+        await pose(-0.05 * i);
+        await frames(2);
+      }
+      await page.evaluate(() => window.__dev.controllers.right.updateButtonValue('trigger', 0));
+      await frames(4);
+      p5 = await plan();
+      const n2 = p5.nodes.find((n) => n.id === sw.a);
+      check(!!n2 && Math.hypot(n2.x - n1.x, n2.y - n1.y) < 1e-6, 'a locked wall can\'t be dragged');
+      const viaCmd = await page.evaluate((id) => window.basementPlanner.cmd.exec('wall.setHeight', { id, height: 80 }, 'assistant'), sel);
+      check(viaCmd.ok === false && /locked/.test(viaCmd.error), `commands refuse locked walls (${viaCmd.error})`);
+      check(await clickButton(menu, 'btn:e-lock'), 'Unlock chip');
+      p5 = await plan();
+      check(p5.walls.find((x) => x.id === sel)?.locked === false, 'wall is unlocked');
+      const j = await page.evaluate(() => window.basementPlanner.cmd.journal.map((e) => e.name));
+      check(j.includes('wall.place') && j.includes('element.setLocked') && j.includes('wall.add'), `edits are journaled as commands (${[...new Set(j)].join(', ')})`);
     }
   }
 

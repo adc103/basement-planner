@@ -272,18 +272,19 @@ export class EditTool implements Tool {
     if (s.kind === 'wall') {
       const w = wallById(plan, s.id);
       if (!w) return '';
-      const kind = w.kind === 'existing' ? (w.source === 'capture' ? 'Captured wall' : 'Scanned wall') : 'Wall';
-      return `${kind}: ${formatLength(wallLength(plan, w))} long, ${formatLength(w.height)} high, ${w.thickness}" thick`;
+      const kind = w.kind === 'existing' ? (w.demolish ? 'Wall to demolish' : 'Real wall') : 'Planned wall';
+      const tags = [w.locked ? 'locked' : '', w.kind === 'existing' && w.evidence === 'inferred' ? 'guessed' : ''].filter(Boolean);
+      return `${kind}${tags.length ? ` (${tags.join(', ')})` : ''}: ${formatLength(wallLength(plan, w))} long, ${formatLength(w.height)} high, ${w.thickness}" thick`;
     }
     if (s.kind === 'opening') {
       const o = plan.openings.find((x) => x.id === s.id);
       return o
-        ? `${o.type === 'door' ? 'Door' : o.type === 'window' ? 'Window' : 'Opening'}: ${widthText(o.width)} x ${formatLength(o.height)}${o.sill > 0 ? `, sill ${formatLength(o.sill)}` : ''}`
+        ? `${o.type === 'door' ? 'Door' : o.type === 'window' ? 'Window' : 'Opening'}${o.locked ? ' (locked)' : ''}: ${widthText(o.width)} x ${formatLength(o.height)}${o.sill > 0 ? `, sill ${formatLength(o.sill)}` : ''}`
         : '';
     }
     if (s.kind === 'marker') {
       const m = plan.markers.find((x) => x.id === s.id);
-      return m ? `Pin: ${m.type.replace('-', ' ')} at ${formatLength(m.z)}` : '';
+      return m ? `Pin${m.locked ? ' (locked)' : ''}: ${m.type.replace('-', ' ')} at ${formatLength(m.z)}` : '';
     }
     return '';
   }

@@ -95,6 +95,9 @@ export class PlanView {
     depthWrite: false,
     side: DoubleSide,
   });
+  /** Real walls marked for demolition: see-through red in every mode. */
+  private matDemolish = new MeshStandardMaterial({ color: 0xd9534f, roughness: 1, transparent: true, opacity: 0.28, depthWrite: false, side: DoubleSide });
+  private edgeMatDemolish = new LineBasicMaterial({ color: 0xff7a6e, transparent: true, opacity: 0.9 });
   /** Real walls in outline style: bright thin edges. */
   private matOutline = new MeshBasicMaterial({ color: 0xcfe3ff, transparent: true, opacity: 0.9 });
   private matHighlight = new MeshStandardMaterial({
@@ -142,6 +145,7 @@ export class PlanView {
   constructor() {
     surfaceOccludable(this.matExisting, 0.1);
     surfaceOccludable(this.matOutline, 0.1);
+    surfaceOccludable(this.matDemolish, 0.1);
     this.root.add(this.content);
     this.root.name = 'plan-root';
     this.applyMode();
@@ -548,19 +552,21 @@ export class PlanView {
 
   private buildWall(plan: Plan, wall: Wall, fp: WallFootprint): void {
     const existing = wall.kind === 'existing';
+    const demolish = existing && wall.demolish;
     const prisms = wallPrisms(fp, wall, plan.openings);
     const pos: number[] = [];
     for (const p of prisms) appendPrism(pos, p.poly, p.z0, p.z1);
     const geo = new BufferGeometry();
     geo.setAttribute('position', new Float32BufferAttribute(pos, 3));
     geo.computeVertexNormals();
-    const mesh = new Mesh(geo, existing ? this.matExisting : this.matNew);
+    const mesh = new Mesh(geo, demolish ? this.matDemolish : existing ? this.matExisting : this.matNew);
     mesh.userData.wallId = wall.id;
-    mesh.userData.kind = wall.kind;
+    mesh.userData.kind = demolish ? 'demolish' : wall.kind;
     mesh.renderOrder = existing ? 1 : 2;
     this.content.add(mesh);
     this.wallMeshes.push(mesh);
-    const style = existing ? plan.settings.realWalls : 'shown';
+    // Demolition is a decision you made, so it always shows.
+    const style = existing && !demolish ? plan.settings.realWalls : 'shown';
     // Outline / hidden real walls stay pointable (for editing, doors, snapping) but aren't drawn.
     mesh.userData.drawn = style === 'shown';
     if (style !== 'shown') mesh.visible = false;
@@ -575,7 +581,7 @@ export class PlanView {
       this.content.add(outline);
     }
     if (style !== 'hidden' && !(existing && style === 'outline')) {
-      const edges = new LineSegments(new EdgesGeometry(geo, 25), existing ? this.edgeMatExisting : this.edgeMat);
+      const edges = new LineSegments(new EdgesGeometry(geo, 25), demolish ? this.edgeMatDemolish : existing ? this.edgeMatExisting : this.edgeMat);
       edges.renderOrder = 3;
       edges.raycast = () => {};
       this.content.add(edges);
@@ -583,7 +589,8 @@ export class PlanView {
 
     {
       const { a, b } = wallEnds(plan, wall);
-      const label = new TextLabel(formatLength(fp.length), existing ? { height: 0.045, bg: 'rgba(60,72,88,0.85)' } : { height: 0.055 });
+      const text = `${demolish ? 'Demolish ' : ''}${formatLength(fp.length)}${wall.locked ? ' (locked)' : ''}`;
+      const label = new TextLabel(text, demolish ? { height: 0.045, bg: 'rgba(150,40,30,0.9)' } : existing ? { height: 0.045, bg: 'rgba(60,72,88,0.85)' } : { height: 0.055 });
       this.content.add(label.sprite);
       this.labels.push({
         label,
@@ -648,7 +655,7 @@ export class PlanView {
       const id = m.userData.wallId as string;
       // Outline/hidden real walls still show while pointed at or selected.
       m.visible = m.userData.drawn !== false || id === this.highlighted || id === this.selected;
-      const base = m.userData.kind === 'existing' ? this.matExisting : this.matNew;
+      const base = m.userData.kind === 'demolish' ? this.matDemolish : m.userData.kind === 'existing' ? this.matExisting : this.matNew;
       m.material =
         id === this.highlighted
           ? this.highlightKind === 'danger'

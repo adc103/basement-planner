@@ -39,7 +39,9 @@ export interface MenuApi {
   editStud(s: '2x4' | '2x6'): void;
   editWidth(): void;
   deleteSelection(): void;
-  edit(action: 'thickness' | 'split' | 'kind' | 'openingHeight' | 'openingType' | 'flip'): void;
+  edit(action: 'thickness' | 'split' | 'kind' | 'openingHeight' | 'openingType' | 'flip' | 'lock' | 'demolish'): void;
+  selectedLocked(): boolean;
+  selectedDemolish(): boolean;
   openingType(): string;
   selectedIsReal(): boolean;
   deselect(): void;
@@ -377,6 +379,27 @@ export class MainMenu {
             { id: 'e-thick', label: () => 'Thickness', icon: 'keypad', col: 0, onClick: () => a.edit('thickness'), visible: sel('wall') },
             { id: 'e-split', label: () => 'Split', col: 1, onClick: () => a.edit('split'), visible: sel('wall') },
             { id: 'e-kind', label: () => (a.selectedIsReal() ? 'Make planned' : 'Make real'), span: 2, col: 2, onClick: () => a.edit('kind'), visible: sel('wall') },
+          ],
+          [
+            {
+              id: 'e-demo',
+              label: () => (a.selectedDemolish() ? 'Keep wall' : 'Demolish'),
+              span: 2,
+              col: 0,
+              tone: 'danger',
+              onClick: () => a.edit('demolish'),
+              active: () => a.selectedDemolish(),
+              visible: () => a.selectionKind() === 'wall' && a.selectedIsReal(),
+            },
+            {
+              id: 'e-lock',
+              label: () => (a.selectedLocked() ? 'Unlock' : 'Lock'),
+              span: 2,
+              col: 2,
+              onClick: () => a.edit('lock'),
+              active: () => a.selectedLocked(),
+              visible: () => a.selectionKind() !== null,
+            },
           ],
           [
             {

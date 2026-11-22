@@ -124,9 +124,14 @@ export function renderPlanSvg(plan: Plan, opts: PlanSvgOptions = {}): string {
     const fp = fps.get(w.id);
     if (!fp) continue;
     if (w.kind === 'existing') {
+      // Standard demolition plan convention: dashed outline, no fill.
       for (const p of wallPrisms(fp, w, plan.openings)) {
         if (p.z0 > 0.01) continue;
-        out.push(`<polygon points="${pts(p.poly)}" fill="url(#hatch)" stroke="#6b7480" stroke-width="0.6"/>`);
+        out.push(
+          w.demolish
+            ? `<polygon points="${pts(p.poly)}" fill="none" stroke="#c0392b" stroke-width="0.8" stroke-dasharray="4 3"/>`
+            : `<polygon points="${pts(p.poly)}" fill="url(#hatch)" stroke="#6b7480" stroke-width="0.6"/>`,
+        );
       }
       continue;
     }

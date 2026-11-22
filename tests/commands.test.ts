@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { COMMANDS, CommandBus, describePlan, toolSpecs } from '../src/core/commands';
 import { createEmptyPlan, parsePlan } from '../src/core/plan';
 import { PlanStore } from '../src/core/store';
+import { generateFraming } from '../src/core/framing';
+import { renderPlanSvg } from '../src/core/plan2d';
 
 function bus() {
   return new CommandBus(new PlanStore(createEmptyPlan()));
@@ -73,6 +75,18 @@ describe('command layer', () => {
     // Turning it into a planned wall clears the demolition mark.
     b.run('wall.setKind', { id: real, kind: 'new' });
     expect(b.store.plan.walls[0].demolish).toBe(false);
+  });
+
+  it('drops demolished walls from framing and dashes them on the plan', () => {
+    const b = bus();
+    const real = b.run('wall.add', { a: { x: 0, y: 0 }, b: { x: 120, y: 0 }, kind: 'existing', thickness: 4.5 })!;
+    b.run('wall.add', { a: { x: 60, y: 0 }, b: { x: 60, y: 96 } });
+    const before = generateFraming(b.store.plan, true).filter((m) => m.wallId === real).length;
+    expect(before).toBeGreaterThan(0);
+    b.run('wall.setDemolish', { id: real, demolish: true });
+    const plan = b.store.plan;
+    expect(generateFraming(plan, true).some((m) => plan.walls.find((w) => w.id === m.wallId)?.demolish)).toBe(false);
+    expect(renderPlanSvg(plan)).toContain('stroke-dasharray="4 3"');
   });
 
   it('checks openings still fit when changed', () => {
