@@ -228,6 +228,9 @@ async function run(mode: Mode): Promise<void> {
   let uploadMs = 0;
   let uploads = 0;
   let done = false;
+  // Diagnostics: where the depth path stops.
+  const diag = { loops: 0, noFrame: 0, noPose: 0, noView: 0, gpuNull: 0, thrown: 0, cpuTry: 0, cpuOk: 0, lastError: '' };
+  let bindingInfo = '';
 
   const draw = () => {
     ctx.fillStyle = 'rgba(17,20,24,0.92)';
@@ -240,10 +243,11 @@ async function run(mode: Mode): Promise<void> {
       `Mode: ${mode === 'gpu' ? 'GPU depth first' : 'CPU depth first'}  |  session: ${session.depthUsage ?? 'no depth'}`,
       `Depth: ${depthNote}${Number.isFinite(centerM) ? `  (center ${centerM.toFixed(2)} m)` : ''}`,
       gpuDepthNote ? `GPU depth: ${gpuDepthNote}` : '',
+      `frames ${diag.loops}  no pose ${diag.noPose}  empty ${diag.gpuNull}  errors ${diag.thrown}`,
       ...phases.map((p, i) => `${p.name}: ${fps[i] !== undefined ? `${fps[i].toFixed(0)} fps` : i === phase && !done ? 'measuring...' : '-'}`),
       done ? 'Done. Press the Meta button and exit to see results.' : 'Look around your basement...',
     ].filter(Boolean);
-    lines.forEach((l, i) => ctx.fillText(l, 32, 120 + i * 50));
+    lines.forEach((l, i) => ctx.fillText(l, 32, 110 + i * 46));
     tex.needsUpdate = true;
   };
 
@@ -251,6 +255,12 @@ async function run(mode: Mode): Promise<void> {
     if (done) return;
     done = true;
     rows.push(['Depth frames received', `${depthSeen} (${depthNote})`, depthSeen > 0 ? 'ok' : 'bad']);
+    rows.push([
+      'Depth path diagnostics',
+      `loops ${diag.loops}, no frame ${diag.noFrame}, no pose ${diag.noPose}, no view ${diag.noView}, empty ${diag.gpuNull}, errors ${diag.thrown}${diag.lastError ? ` (${diag.lastError})` : ''}, CPU getter ok ${diag.cpuOk}/${diag.cpuTry}`,
+      '',
+    ]);
+    if (bindingInfo) rows.push(['XRGPUBinding', bindingInfo, '']);
     if (gpuDepthNote) rows.push(['GPU depth through XRGPUBinding', gpuDepthNote, gpuDepthNote.startsWith('texture') ? 'ok' : 'warn']);
     if (Number.isFinite(centerM)) rows.push(['Depth at view center', `${centerM.toFixed(2)} m`, 'ok']);
     if (uploads) rows.push(['Depth upload to GPU', `${(uploadMs / uploads).toFixed(2)} ms per frame (${depthW}x${depthH})`, uploadMs / uploads < 2 ? 'ok' : 'warn']);
@@ -281,20 +291,24 @@ async function run(mode: Mode): Promise<void> {
     cube.rotation.y = t;
     if (phaseT0 < 0) phaseT0 = t;
 
-    // Depth, whichever path the session picked.
+    // Depth, whichever path the session picked. Count every way it can fail.
+    diag.loops++;
+    if (!frame) diag.noFrame++;
     if (frame && hasDepth) {
       const ref = renderer.xr.getReferenceSpace();
       const pose = ref ? frame.getViewerPose(ref) : null;
+      if (!pose) diag.noPose++;
       const view = pose?.views?.[0];
+      if (pose && !view) diag.noView++;
       if (view) {
         try {
           if (session.depthUsage === 'cpu-optimized') {
             const d = frame.getDepthInformation(view);
+            if (!d) diag.gpuNull++;
             if (d) {
               depthSeen++;
               depthNote = `CPU ${d.width}x${d.height}`;
               centerM = d.getDepthInMeters(0.5, 0.5);
-              // Upload as float meters (what the fusion pass reads).
               const t0 = performance.now();
               ensureDepthTex(d.width, d.height);
               if (meterBuf.length !== d.width * d.height) meterBuf = new Float32Array(d.width * d.height);
@@ -307,21 +321,46 @@ async function run(mode: Mode): Promise<void> {
             }
           } else {
             const binding: any = renderer.xr.getWebGPUBinding();
+            if (!bindingInfo) {
+              const proto = binding ? Object.getOwnPropertyNames(Object.getPrototypeOf(binding)) : [];
+              bindingInfo = binding ? `methods: ${proto.filter((k) => k !== 'constructor').join(', ')}` : 'no binding';
+            }
             if (!binding || typeof binding.getDepthInformation !== 'function') {
               gpuDepthNote = 'XRGPUBinding has no getDepthInformation';
               depthNote = 'not available on the GPU path';
             } else {
-              const d = binding.getDepthInformation(view);
-              if (d) {
+              let d: any = null;
+              try {
+                d = binding.getDepthInformation(view);
+              } catch (e) {
+                diag.thrown++;
+                diag.lastError = (e as Error).message;
+              }
+              if (!d) {
+                diag.gpuNull++;
+                depthNote = 'GPU call returned nothing';
+              } else {
                 depthSeen++;
-                const keys = Object.keys(Object.getPrototypeOf(d) ?? {}).concat(Object.keys(d));
-                gpuDepthNote = d.texture ? `texture ${d.width}x${d.height}, near ${d.depthNear ?? '?'}` : `object without texture (${keys.join(', ')})`;
-                depthNote = `GPU ${d.width}x${d.height}`;
-              } else depthNote = 'GPU call returned nothing';
+                const keys: string[] = [];
+                for (const k in d) keys.push(k);
+                gpuDepthNote = d.texture ? `texture ${d.width ?? d.texture.width}x${d.height ?? d.texture.height}, near ${d.depthNear ?? '?'}, image ${d.imageIndex ?? '?'}` : `object without texture (${keys.join(', ')})`;
+                depthNote = 'GPU texture';
+              }
+            }
+            // Does the CPU getter work alongside? (It should throw for a GPU session.)
+            if (diag.cpuTry < 3) {
+              diag.cpuTry++;
+              try {
+                if (frame.getDepthInformation(view)) diag.cpuOk++;
+              } catch (e) {
+                if (!diag.lastError) diag.lastError = `cpu getter: ${(e as Error).message}`;
+              }
             }
           }
         } catch (e) {
-          depthNote = `error: ${(e as Error).message}`;
+          diag.thrown++;
+          diag.lastError = (e as Error).message;
+          depthNote = `error: ${diag.lastError}`;
         }
       }
     } else if (!hasDepth) depthNote = 'not granted';
