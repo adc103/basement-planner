@@ -1,4 +1,4 @@
-import { addMarker, wallNormalToward } from '../../core/ops.js';
+import { wallNormalToward } from '../../core/ops.js';
 import type { MarkerType } from '../../core/plan.js';
 import { MARKER_INFO } from '../../core/plan2d.js';
 import { formatLength } from '../../core/units.js';
@@ -84,8 +84,6 @@ export class PinsTool implements Tool {
       this.ctx.toast(this.hint());
       return;
     }
-    this.ctx.store.edit(`Add ${MARKER_INFO[this.type].name.toLowerCase()}`, (d) =>
-      addMarker(d, { type: this.type, x: p.x, y: p.y, z: p.z, wallId: p.wallId, note: '' }),
-    );
+    this.ctx.act('marker.add', { type: this.type, x: p.x, y: p.y, z: p.z, wallId: p.wallId });
   }
 }

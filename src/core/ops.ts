@@ -1,6 +1,12 @@
 import type { Draft } from 'immer';
 import { add, dist, dot, norm, projectOnSegment, scale, sub, type Vec2 } from './geom2d.js';
-import { FramingSchema, newId, type Marker, type Measure, type Obstacle, type Opening, type Plan, type PlanNode, type Room, type Wall } from './plan.js';
+import { z } from 'zod';
+import { FramingSchema, MarkerSchema, newId, ObstacleSchema, OpeningSchema, RoomSchema, SoffitSchema, WallSchema, type Evidence, type Measure, type Plan, type PlanNode, type Room, type Wall } from './plan.js';
+
+/** Input shapes: schema defaults fill in anything left out. */
+export type OpeningInput = Omit<z.input<typeof OpeningSchema>, 'id'>;
+export type MarkerInput = Omit<z.input<typeof MarkerSchema>, 'id'>;
+export type ObstacleInput = Omit<z.input<typeof ObstacleSchema>, 'id'>;
 
 /** Things that read a plan work on both frozen plans and drafts. */
 type AnyPlan = Plan | Draft<Plan>;
@@ -113,6 +119,8 @@ export interface NewWallProps {
   kind?: 'new' | 'existing';
   againstFoundation?: boolean;
   source?: 'draw' | 'scan' | 'capture';
+  evidence?: Evidence;
+  confidence?: number | null;
 }
 
 /** Add a wall between two points. Returns the wall id, or null if degenerate/duplicate. */
@@ -123,17 +131,20 @@ export function addWallBetween(d: Draft<Plan>, p1: Vec2, p2: Vec2, props: NewWal
   if (aId === bId) return null;
   const dup = d.walls.find((w) => (w.a === aId && w.b === bId) || (w.a === bId && w.b === aId));
   if (dup) return null;
-  const wall: Wall = {
+  const source = props.source ?? (props.kind === 'existing' ? 'scan' : 'draw');
+  const wall: Wall = WallSchema.parse({
     id: newId('w'),
     a: aId,
     b: bId,
     height: props.height,
     thickness: props.thickness,
     kind: props.kind ?? 'new',
-    source: props.source ?? (props.kind === 'existing' ? 'scan' : 'draw'),
+    source,
     againstFoundation: props.againstFoundation ?? false,
     framing: JSON.parse(JSON.stringify(d.settings.framing ?? FramingSchema.parse({}))),
-  };
+    evidence: props.evidence ?? (source === 'scan' ? 'measured' : source === 'capture' ? 'partial' : 'manual'),
+    confidence: props.confidence ?? null,
+  });
   d.walls.push(wall);
   return wall.id;
 }
@@ -218,7 +229,8 @@ export function openingOverlaps(plan: AnyPlan, wallId: string, offset: number, w
   );
 }
 
-export function addOpening(d: Draft<Plan>, o: Omit<Opening, 'id'>): string | null {
+export function addOpening(d: Draft<Plan>, input: OpeningInput): string | null {
+  const o = OpeningSchema.parse({ ...input, id: 'tmp' });
   const w = d.walls.find((x) => x.id === o.wallId);
   if (!w) return null;
   const l = wallLength(d, w as Wall);
@@ -243,7 +255,7 @@ export function replaceExistingWalls(
   height: number,
 ): number {
   // Only scanned walls are replaced; captured walls and everything you drew stay.
-  for (const w of [...d.walls]) if (w.kind === 'existing' && w.source !== 'capture') deleteWall(d, w.id);
+  for (const w of [...d.walls]) if (w.kind === 'existing' && w.source !== 'capture' && !w.locked) deleteWall(d, w.id);
   let count = 0;
   for (const s of segments) {
     const id = addWallBetween(d, s.a, s.b, {
@@ -298,9 +310,9 @@ export function setWallThickness(d: Draft<Plan>, wallId: string, thickness: numb
 
 // --- Markers, rooms, measures ---------------------------------------------------
 
-export function addMarker(d: Draft<Plan>, m: Omit<Marker, 'id'>): string {
+export function addMarker(d: Draft<Plan>, m: MarkerInput): string {
   const id = newId('m');
-  d.markers.push({ ...m, id });
+  d.markers.push(MarkerSchema.parse({ ...m, id }));
   return id;
 }
 
@@ -324,14 +336,7 @@ export function upsertRoom(d: Draft<Plan>, seed: Vec2, patch: Partial<Omit<Room,
     return r.id;
   }
   const id = newId('r');
-  d.rooms.push({
-    id,
-    seed: { ...seed },
-    name: patch.name ?? 'Room',
-    finish: patch.finish ?? 'none',
-    ceilingType: patch.ceilingType ?? null,
-    ceilingHeight: patch.ceilingHeight ?? null,
-  });
+  d.rooms.push(RoomSchema.parse({ ...patch, id, seed: { ...seed }, name: patch.name ?? 'Room' }));
   return id;
 }
 
@@ -349,9 +354,9 @@ export function deleteMeasure(d: Draft<Plan>, id: string): void {
   d.measures = d.measures.filter((m) => m.id !== id);
 }
 
-export function setObstacles(d: Draft<Plan>, obstacles: Array<Omit<Obstacle, 'id'>>): void {
-  d.obstacles = d.obstacles.filter((o) => o.source === 'manual');
-  for (const o of obstacles) d.obstacles.push({ ...o, id: newId('ob'), poly: o.poly.map((p) => ({ ...p })) });
+export function setObstacles(d: Draft<Plan>, obstacles: ObstacleInput[]): void {
+  d.obstacles = d.obstacles.filter((o) => o.source === 'manual' || o.locked);
+  for (const o of obstacles) d.obstacles.push(ObstacleSchema.parse({ ...o, id: newId('ob'), poly: o.poly.map((p) => ({ ...p })) }));
 }
 
 // --- Ceiling ----------------------------------------------------------------------
@@ -359,7 +364,7 @@ export function setObstacles(d: Draft<Plan>, obstacles: Array<Omit<Obstacle, 'id
 export function addSoffit(d: Draft<Plan>, poly: Vec2[], bottom: number): string | null {
   if (poly.length < 3) return null;
   const id = newId('sf');
-  d.soffits.push({ id, poly: poly.map((p) => ({ x: p.x, y: p.y })), bottom });
+  d.soffits.push(SoffitSchema.parse({ id, poly: poly.map((p) => ({ x: p.x, y: p.y })), bottom }));
   return id;
 }
 

@@ -1,25 +1,5 @@
-import {
-  DepthOccludable,
-  OcclusionShadersMode,
-  FollowBehavior,
-  Follower,
-  EnvironmentRaycastTarget,
-  Group,
-  Mesh,
-  PlaneGeometry,
-  InputComponent,
-  Object3D,
-  Quaternion,
-  Raycaster,
-  Vector3,
-  XRAnchor,
-  XRMesh,
-  XRPlane,
-  type Entity,
-  type World,
-} from '@iwsdk/core';
+import { DepthOccludable, OcclusionShadersMode, FollowBehavior, Follower, EnvironmentRaycastTarget, Group, Mesh, PlaneGeometry, InputComponent, Object3D, Quaternion, Raycaster, Vector3, XRAnchor, XRMesh, XRPlane, type Entity, type World } from '@iwsdk/core';
 import { IDENTITY, type PlanTransform } from '../core/alignment.js';
-import { replaceExistingWalls, setObstacles, setWallHeight } from '../core/ops.js';
 import { loadSavedPlan, savePlan } from '../core/persistence.js';
 import type { Plan } from '../core/plan.js';
 import { obstaclesFromScan, scanSignature, wallsFromScan, type P3, type ScanBox, type ScanPlane } from '../core/roomScan.js';
@@ -40,13 +20,15 @@ import { DeleteTool } from './tools/deleteTool.js';
 import { EditTool } from './tools/editTool.js';
 import { MeasureTool } from './tools/measureTool.js';
 import { OpeningTool } from './tools/openingTool.js';
-import type { AimHit, Tool, ToolContext } from './tools/tool.js';
+import type { AimHit, Tool } from './tools/tool.js';
 import { WallTool } from './tools/wallTool.js';
 import { RoomsTool } from './tools/roomsTool.js';
 import { PinsTool } from './tools/pinsTool.js';
 import { SoffitTool } from './tools/soffitTool.js';
 import { RefAnchors } from './refAnchors.js';
 import { CameraProbe, PROBE_KEY } from './cameraProbe.js';
+import { registerWebMcp } from './webmcp.js';
+import { CommandBus, type CommandName, type ParamsOf, type ResultOf } from '../core/commands.js';
 import { planToLocal } from './planView.js';
 import { solveTwoPoint } from '../core/alignment.js';
 import { roomCeiling } from '../core/ops.js';
@@ -67,7 +49,6 @@ import { Acquired } from './acquired.js';
 import { FloorFinder } from './floorFinder.js';
 import { setPokeEnabled } from './ui/poke.js';
 import { setSurfaceOcclusion, updateSurfaceOcclusion } from './surfaceOcclusion.js';
-import { applyScan } from '../core/scanApply.js';
 
 const TRANSFORM_KEY = 'basement-planner:transform:v1';
 const IWSDK_ANCHOR_KEY = 'iwsdk_scene_anchor_uuid';
@@ -108,6 +89,8 @@ export interface AppStatus {
  */
 export class PlannerApp {
   readonly store: PlanStore;
+  /** Every change to the plan goes through a command (you, the scanner, an assistant). */
+  readonly cmd: CommandBus;
   readonly view = new PlanView();
   readonly preview = new Preview();
   private planEntity!: Entity;
@@ -188,6 +171,7 @@ export class PlannerApp {
     const { plan, restored } = loadSavedPlan();
     this.restored = restored;
     this.store = new PlanStore(plan);
+    this.cmd = new CommandBus(this.store);
     this.transform = this.loadTransform();
     this.store.subscribe((p, reason) => this.onPlanChanged(p, reason));
     // Ask the browser not to evict our storage (keeps the plan safe on the headset).
@@ -230,6 +214,8 @@ export class PlannerApp {
     const ctx: CaptureContext = {
       roomMeshPoints: (c, r) => this.roomMeshPoints(c, r),
       store: this.store,
+      cmd: this.cmd,
+      act: (name, params) => this.act(name, params),
       view: this.view,
       preview: this.preview,
       toast: (m, s) => this.toast(m, s),
@@ -261,6 +247,9 @@ export class PlannerApp {
       soffit: new SoffitTool(ctx, () => this.axisAngle),
       review: new ScanReviewTool(ctx, this.scan),
     };
+
+    // Browser AI agents (WebMCP) get the same commands, tagged as an assistant.
+    registerWebMcp(this.cmd, () => this.refreshUi());
 
     this.menu = new MainMenu(world, this.menuApi());
     this.menu.panel.feedback = (kind) => this.uiFeedback(kind);
@@ -319,9 +308,7 @@ export class PlannerApp {
       cancelCapture: () => this.captureTool.cancelProposal(),
       captureThickness: () => this.store.plan.settings.captureThickness,
       setCaptureThickness: (t) =>
-        this.store.edit('Capture thickness', (d) => {
-          d.settings.captureThickness = t;
-        }),
+        this.act('settings.set', { values: { captureThickness: t } }),
       selectionText: () => this.editTool.describe(),
       selectionKind: () => {
         const k = this.editTool.selection?.kind;
@@ -351,9 +338,7 @@ export class PlannerApp {
       lastMeasure: () => (this.measureTool.last ? `Last: ${this.measureTool.last}` : ''),
       measureCount: () => this.store.plan.measures.length,
       clearMeasures: () =>
-        this.store.edit('Clear measurements', (d) => {
-          d.measures = [];
-        }),
+        this.act('measure.clear', {}),
       scanStatus: () => this.scanStatus(),
       importScan: () => this.importScan(false),
       scanning: () => this.scan.scanning,
@@ -376,9 +361,7 @@ export class PlannerApp {
       hasScanMap: () => this.scan.hasMap,
       autoImport: () => this.store.plan.settings.autoImportScan,
       toggleAutoImport: () =>
-        this.store.edit('Auto-import', (d) => {
-          d.settings.autoImportScan = !d.settings.autoImportScan;
-        }),
+        this.act('settings.set', { values: { autoImportScan: !this.store.plan.settings.autoImportScan } }),
       cameraTest: () => this.runCameraTest(),
       cameraTestRunning: () => this.probe.running || this.hybrid.running,
       hasRefs: () => !!this.store.plan.reference,
@@ -399,9 +382,7 @@ export class PlannerApp {
       cycleRealWalls: () => {
         const order = ['shown', 'outline', 'hidden'] as const;
         const next = order[(order.indexOf(this.store.plan.settings.realWalls) + 1) % 3];
-        this.store.edit('Real walls display', (d) => {
-          d.settings.realWalls = next;
-        });
+        this.act('settings.set', { values: { realWalls: next } });
         this.toast(next === 'shown' ? 'Real walls shown' : next === 'outline' ? 'Real walls as outlines' : 'Real walls hidden (still used for snapping and rooms)', 3);
       },
       occlusion: () => this.occlusionOn,
@@ -446,9 +427,7 @@ export class PlannerApp {
           label: () => (this.store.plan.settings.showCeiling ? 'Shown' : 'Hidden'),
           icon: 'eye',
           onClick: () =>
-            this.store.edit('Show ceiling', (d) => {
-              d.settings.showCeiling = !d.settings.showCeiling;
-            }),
+            this.act('settings.set', { values: { showCeiling: !this.store.plan.settings.showCeiling } }),
           active: () => this.store.plan.settings.showCeiling,
         }],
         [
@@ -470,9 +449,7 @@ export class PlannerApp {
             span: 3,
             onClick: () =>
               this.openKeypad('Soffit bottom height', this.store.plan.settings.soffitBottom, (h) =>
-                this.store.edit('Soffit height', (d) => {
-                  d.settings.soffitBottom = h;
-                }),
+                this.act('settings.set', { values: { soffitBottom: h } }),
               ),
           },
         ],
@@ -480,22 +457,18 @@ export class PlannerApp {
     };
   }
 
+  /** Run a command; if it's refused, say why. */
+  act<N extends CommandName>(name: N, params: ParamsOf<N>): ResultOf<N> | null {
+    const r = this.cmd.exec(name, params);
+    if (r.ok) return r.value;
+    this.toast(r.error, 3);
+    return null;
+  }
+
   /** Change the ceiling of the selected room, or the plan default when no room is selected. */
-  private setCeiling(patch: { type?: CeilingType | null; height?: number | null }, show = false): void {
+  private setCeiling(patch: { type?: CeilingType | null; height?: number | null }, _show = false): void {
     const r = this.roomsTool.selectedRoom();
-    this.store.edit('Ceiling', (d) => {
-      if (show || patch.height) d.settings.showCeiling = true;
-      if (r) {
-        const room = d.rooms.find((x) => x.id === r.id);
-        if (!room) return;
-        if (patch.type !== undefined) room.ceilingType = patch.type;
-        if (patch.height !== undefined) room.ceilingHeight = patch.height;
-      } else {
-        if (patch.type) d.settings.ceilingType = patch.type;
-        if (patch.height) d.settings.wallHeight = patch.height;
-      }
-      d.settings.showCeiling = true;
-    });
+    this.act('ceiling.set', { roomId: r?.id ?? null, ...patch });
   }
 
   private typeCeilingHeight(): void {
@@ -555,9 +528,7 @@ export class PlannerApp {
           this.toast(`${rt().selectedRoom()?.name ?? 'Room'}: ${FINISH_NAMES[f]}`, 2);
         } else {
           this.toast(`Whole floor: ${FINISH_NAMES[f]}`, 2);
-          this.store.edit('Floor finish', (d) => {
-            d.settings.floorFinish = f;
-          });
+          this.act('settings.set', { values: { floorFinish: f } });
           if (!this.hasFloorArea()) this.toast('Scan the basement (Room tab) or draw a few walls so the floor knows where it goes', 5);
         }
       },
@@ -735,9 +706,7 @@ export class PlannerApp {
 
   private resetReference(): void {
     this.refAnchors.forget();
-    this.store.edit('Reset reference corners', (d) => {
-      d.reference = null;
-    });
+    this.act('reference.set', { reference: null });
     this.setTool('align');
     this.toast('Click two real floor corners to set new references');
   }
@@ -1254,7 +1223,7 @@ export class PlannerApp {
     const n = s.count();
     if (!s.reviewing && res.footprint) {
       // Nothing new to review, but the floor area is still worth keeping.
-      this.store.edit('Scanned floor area', (d) => applyScan(d, { ...res, walls: [], soffits: [], posts: [] }));
+      this.cmd.run('scan.applyStructure', { result: { ...res, walls: [], soffits: [], posts: [] } }, 'scan');
       s.discard();
       s.hide();
       this.toast('No new walls found. Saved the scanned floor area for the floor and ceiling.', 5);
@@ -1293,7 +1262,7 @@ export class PlannerApp {
       this.applyTransform();
       this.storeTransform();
     }
-    this.store.edit('Add scanned structure', (d) => applyScan(d, res));
+    this.cmd.run('scan.applyStructure', { result: res }, 'scan');
     const n = this.scan.count();
     this.scan.discard();
     this.scan.hide();
@@ -1372,17 +1341,7 @@ export class PlannerApp {
     const ceilingIn =
       res.ceilingY !== null && res.floorY !== null ? Math.round(((res.ceilingY - res.floorY) / INCH_M) * 4) / 4 : null;
     const goodCeiling = ceilingIn !== null && ceilingIn > 60 && ceilingIn < 180;
-    this.store.edit(auto ? 'Room scan update' : 'Import room scan', (d) => {
-      if (res.walls.length) replaceExistingWalls(d, res.walls, goodCeiling ? ceilingIn! : d.settings.wallHeight);
-      setObstacles(d, objects);
-      if (goodCeiling) {
-        const old = d.settings.wallHeight;
-        d.settings.wallHeight = ceilingIn!;
-        // New walls still at the old default height follow the ceiling.
-        for (const w of d.walls) if (w.kind === 'new' && w.height === old) setWallHeight(d, w.id, ceilingIn!);
-      }
-      d.settings.scanSignature = sig;
-    });
+    this.cmd.run('scan.importRoom', { scan: { walls: res.walls, objects, ceiling: goodCeiling ? ceilingIn : null, signature: sig } }, 'scan');
     this.toast(
       `${auto ? 'Room scan loaded' : 'Imported'}: ${res.walls.length} walls, ${objects.length} objects${
         goodCeiling ? `, ceiling ${formatLength(ceilingIn!)}` : ''

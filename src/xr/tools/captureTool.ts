@@ -1,5 +1,5 @@
 import { dist, type Vec2 } from '../../core/geom2d.js';
-import { addWallBetween, findNodeNear } from '../../core/ops.js';
+import { findNodeNear } from '../../core/ops.js';
 import { formatLength } from '../../core/units.js';
 import { centerlineFromFace, detectWallFromMesh, faceFromSweep, type DetectedFace, type PP } from '../../core/wallDetect.js';
 import type { AimHit, Tool, ToolContext } from './tool.js';
@@ -180,14 +180,7 @@ export class CaptureTool implements Tool {
       const n = findNodeNear(plan, p, 6);
       return n ? { x: n.x, y: n.y } : p;
     };
-    const id = this.ctx.store.edit('Capture wall', (d) =>
-      addWallBetween(d, snapEnd(c.a), snapEnd(c.b), {
-        height: st.wallHeight,
-        thickness: st.captureThickness,
-        kind: 'existing',
-        source: 'capture',
-      }),
-    );
+    const id = this.ctx.cmd.run('wall.add', { a: snapEnd(c.a), b: snapEnd(c.b), height: st.wallHeight, thickness: st.captureThickness, kind: 'existing', source: 'capture' });
     this.ctx.toast(id ? `Captured a ${formatLength(dist(face.a, face.b))} wall` : 'That wall is already there');
     this.ctx.refreshUi();
   }

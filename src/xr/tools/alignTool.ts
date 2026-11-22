@@ -74,9 +74,7 @@ export class AlignTool implements Tool {
       if (Math.hypot(r1.x - r2.x, r1.y - r2.y) < 12) {
         this.ctx.toast('Pick corners at least a foot apart. Try again.');
       } else {
-        this.ctx.store.edit('Set reference corners', (d) => {
-          d.reference = { r1, r2 };
-        });
+        this.ctx.act('reference.set', { reference: { r1, r2 } });
         this.host.anchorReferences();
         this.ctx.toast('Reference corners saved and anchored. The plan will relock itself next time.', 6);
       }

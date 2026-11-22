@@ -21,6 +21,31 @@ export const FramingSchema = z.object({
 });
 export type Framing = z.infer<typeof FramingSchema>;
 
+/** How sure we are about an element's geometry (scan-to-model provenance). */
+export const EVIDENCE = ['measured', 'partial', 'inferred', 'manual'] as const;
+export type Evidence = (typeof EVIDENCE)[number];
+
+/** Fields every editable element shares. */
+const elementFields = {
+  /** Locked elements refuse edits from every source (you, the scanner, an assistant). */
+  locked: z.boolean().default(false),
+};
+const provenanceFields = {
+  /** measured = seen directly; partial = partly seen; inferred = filled in by rules; manual = drawn. */
+  evidence: z.enum(EVIDENCE).default('manual'),
+  /** Scanner confidence 0-1 when the element came from a scan. */
+  confidence: z.number().min(0).max(1).nullable().default(null),
+};
+
+export const LevelSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  /** Floor elevation, inches, relative to the main floor. */
+  elevation: z.number().default(0),
+});
+export type Level = z.infer<typeof LevelSchema>;
+export const DEFAULT_LEVEL = 'L1';
+
 export const NodeSchema = z.object({
   id: z.string(),
   x: z.number(),
@@ -43,6 +68,11 @@ export const WallSchema = z.object({
   /** True when this new wall is framed against a foundation wall. */
   againstFoundation: z.boolean().default(false),
   framing: FramingSchema.default(FramingSchema.parse({})),
+  /** An existing wall marked to be torn out (phase: demolish). Ignored for 'new' walls. */
+  demolish: z.boolean().default(false),
+  level: z.string().default(DEFAULT_LEVEL),
+  ...elementFields,
+  ...provenanceFields,
 });
 export type Wall = z.infer<typeof WallSchema>;
 
@@ -59,6 +89,10 @@ export const OpeningSchema = z.object({
   /** Door swing side, for later drawing. */
   hinge: z.enum(['a', 'b']).default('a'),
   swing: z.enum(['left', 'right']).default('left'),
+  /** 'existing' = already there; 'new' = to be cut or framed. */
+  kind: z.enum(['new', 'existing']).default('new'),
+  ...elementFields,
+  ...provenanceFields,
 });
 export type Opening = z.infer<typeof OpeningSchema>;
 
@@ -72,6 +106,7 @@ export const ObstacleSchema = z.object({
   poly: z.array(PointSchema),
   height: z.number().positive(),
   source: z.enum(['scan', 'manual']).default('scan'),
+  ...elementFields,
 });
 export type Obstacle = z.infer<typeof ObstacleSchema>;
 
@@ -98,6 +133,7 @@ export const MarkerSchema = z.object({
   /** Wall it is mounted on, if any. */
   wallId: z.string().nullable().default(null),
   note: z.string().default(''),
+  ...elementFields,
 });
 export type Marker = z.infer<typeof MarkerSchema>;
 
@@ -116,6 +152,7 @@ export const RoomSchema = z.object({
   /** Overrides of the plan-wide ceiling (null = use the default). */
   ceilingType: z.enum(CEILING_TYPES).nullable().default(null),
   ceilingHeight: z.number().positive().nullable().default(null),
+  ...elementFields,
 });
 
 /** A lowered box in the ceiling (around ducts, beams, pipes). Footprint in plan inches. */
@@ -124,6 +161,7 @@ export const SoffitSchema = z.object({
   poly: z.array(PointSchema),
   /** Height of the soffit's underside above the floor, inches. */
   bottom: z.number().positive(),
+  ...elementFields,
 });
 export type Soffit = z.infer<typeof SoffitSchema>;
 export type Room = z.infer<typeof RoomSchema>;
@@ -132,35 +170,41 @@ export type Room = z.infer<typeof RoomSchema>;
 export const MeasureSchema = z.object({ id: z.string(), a: Point3Schema, b: Point3Schema });
 export type Measure = z.infer<typeof MeasureSchema>;
 
+/** Plan-wide settings and defaults. */
+export const SettingsSchema = z.object({
+  /** Default height for new walls (floor to ceiling), inches. */
+  wallHeight: z.number().positive().default(96),
+  /** Default finished thickness for new interior walls, inches. */
+  wallThickness: z.number().positive().default(4.5),
+  /** Assumed thickness of an existing foundation wall, inches. */
+  foundationThickness: z.number().positive().default(8),
+  /** Default framing for new walls. */
+  framing: FramingSchema.default(FramingSchema.parse({})),
+  /** Thickness given to walls captured by pointing at them (existing partitions). */
+  captureThickness: z.number().positive().default(4.5),
+  /** Fingerprint of the last room scan imported, so unchanged scans aren't re-imported. */
+  scanSignature: z.string().nullable().default(null),
+  autoImportScan: z.boolean().default(true),
+  ceilingType: z.enum(CEILING_TYPES).default('drywall'),
+  showCeiling: z.boolean().default(false),
+  /** How real (existing) walls are drawn: like planned walls, as outlines, or not at all. */
+  realWalls: z.enum(['shown', 'outline', 'hidden']).default('shown'),
+  /** Floor finish for the area outside named rooms. */
+  floorFinish: z.enum(FINISHES).default('none'),
+  /** Default underside height for new soffits, inches. */
+  soffitBottom: z.number().positive().default(84),
+});
+export type Settings = z.infer<typeof SettingsSchema>;
+
 export const PlanSchema = z.object({
   format: z.literal('basement-planner'),
-  version: z.literal(1),
+  /** 1 = first release; 2 = building model (phases, locks, evidence, levels). */
+  version: z.literal(2),
   name: z.string().default('Basement'),
   createdAt: z.string(),
   updatedAt: z.string(),
-  settings: z.object({
-    /** Default height for new walls (floor to ceiling), inches. */
-    wallHeight: z.number().positive().default(96),
-    /** Default finished thickness for new interior walls, inches. */
-    wallThickness: z.number().positive().default(4.5),
-    /** Assumed thickness of an existing foundation wall, inches. */
-    foundationThickness: z.number().positive().default(8),
-    /** Default framing for new walls. */
-    framing: FramingSchema.default(FramingSchema.parse({})),
-    /** Thickness given to walls captured by pointing at them (existing partitions). */
-    captureThickness: z.number().positive().default(4.5),
-    /** Fingerprint of the last room scan imported, so unchanged scans aren't re-imported. */
-    scanSignature: z.string().nullable().default(null),
-    autoImportScan: z.boolean().default(true),
-    ceilingType: z.enum(CEILING_TYPES).default('drywall'),
-    showCeiling: z.boolean().default(false),
-    /** How real (existing) walls are drawn: like planned walls, as outlines, or not at all. */
-    realWalls: z.enum(['shown', 'outline', 'hidden']).default('shown'),
-    /** Floor finish for the area outside named rooms. */
-    floorFinish: z.enum(FINISHES).default('none'),
-    /** Default underside height for new soffits, inches. */
-    soffitBottom: z.number().positive().default(84),
-  }),
+  settings: SettingsSchema,
+  levels: z.array(LevelSchema).default([{ id: DEFAULT_LEVEL, name: 'Basement', elevation: 0 }]),
   nodes: z.array(NodeSchema).default([]),
   walls: z.array(WallSchema).default([]),
   openings: z.array(OpeningSchema).default([]),
@@ -185,11 +229,33 @@ export const PlanSchema = z.object({
 });
 export type Plan = z.infer<typeof PlanSchema>;
 
+export const PLAN_VERSION = 2;
+
+/** Bring an older plan file up to the current version (works on raw JSON). */
+export function migratePlan(json: unknown): unknown {
+  if (!json || typeof json !== 'object') return json;
+  const raw = { ...(json as Record<string, unknown>) };
+  if (raw.version === 1) {
+    // Openings in real walls were real openings.
+    const walls = Array.isArray(raw.walls) ? (raw.walls as Array<{ id?: string; kind?: string; source?: string }>) : [];
+    const kindOf = new Map(walls.map((w) => [w.id, w.kind ?? 'new']));
+    if (Array.isArray(raw.openings))
+      raw.openings = (raw.openings as Array<Record<string, unknown>>).map((o) => ({ kind: kindOf.get(o.wallId as string) ?? 'new', ...o }));
+    // Scanned walls were measured, captured ones partly so.
+    raw.walls = walls.map((w) => ({
+      evidence: w.source === 'scan' ? 'measured' : w.source === 'capture' ? 'partial' : 'manual',
+      ...w,
+    }));
+    raw.version = 2;
+  }
+  return raw;
+}
+
 export function createEmptyPlan(now = new Date()): Plan {
   const iso = now.toISOString();
   return PlanSchema.parse({
     format: 'basement-planner',
-    version: 1,
+    version: PLAN_VERSION,
     createdAt: iso,
     updatedAt: iso,
     settings: {},
@@ -198,7 +264,7 @@ export function createEmptyPlan(now = new Date()): Plan {
 
 /** Validate an unknown JSON value as a plan. Throws a readable error on failure. */
 export function parsePlan(json: unknown): Plan {
-  const result = PlanSchema.safeParse(json);
+  const result = PlanSchema.safeParse(migratePlan(json));
   if (!result.success) {
     const first = result.error.issues[0];
     throw new Error(
@@ -212,6 +278,7 @@ export function parsePlan(json: unknown): Plan {
   const wallIds = new Set(plan.walls.map((w) => w.id));
   plan.openings = plan.openings.filter((o) => wallIds.has(o.wallId));
   for (const m of plan.markers) if (m.wallId && !wallIds.has(m.wallId)) m.wallId = null;
+  if (!plan.levels.length) plan.levels.push({ id: DEFAULT_LEVEL, name: 'Basement', elevation: 0 });
   return plan;
 }
 

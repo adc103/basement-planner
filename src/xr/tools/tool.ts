@@ -1,3 +1,4 @@
+import type { CommandBus, CommandName, ParamsOf, ResultOf } from '../../core/commands.js';
 import type { Vec2 } from '../../core/geom2d.js';
 import type { SnapOptions } from '../../core/snapping.js';
 import type { PlanStore } from '../../core/store.js';
@@ -29,6 +30,10 @@ export interface AimHit {
 
 export interface ToolContext {
   store: PlanStore;
+  /** Every plan change goes through a command. */
+  cmd: CommandBus;
+  /** Run a command; on refusal, tell the user why and return null. */
+  act<N extends CommandName>(name: N, params: ParamsOf<N>): ResultOf<N> | null;
   view: PlanView;
   preview: Preview;
   toast(msg: string, seconds?: number): void;

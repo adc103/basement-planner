@@ -1,5 +1,5 @@
 import { type Vec2 } from '../../core/geom2d.js';
-import { addMeasure, wallNormalToward } from '../../core/ops.js';
+import { wallNormalToward } from '../../core/ops.js';
 import { snap } from '../../core/snapping.js';
 import { formatLength } from '../../core/units.js';
 import type { AimHit, Tool, ToolContext } from './tool.js';
@@ -73,7 +73,7 @@ export class MeasureTool implements Tool {
     const a = this.a;
     this.a = null;
     if (Math.hypot(a.x - pt.p.x, a.y - pt.p.y, a.z - pt.p.z) < 0.25) return;
-    this.ctx.store.edit('Measure', (d) => addMeasure(d, a, pt.p));
+    if (!this.ctx.act('measure.add', { a, b: pt.p })) return;
     this.last = measureText(a, pt.p);
     this.ctx.toast(this.last);
     this.ctx.refreshUi();

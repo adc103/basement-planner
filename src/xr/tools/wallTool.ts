@@ -1,5 +1,5 @@
 import { dist, type Vec2 } from '../../core/geom2d.js';
-import { addWallBetween, findNodeNear, setWallHeight, setWallLength, wallById, wallEnds, wallLength, wallsAtNode } from '../../core/ops.js';
+import { findNodeNear, wallById, wallEnds, wallLength, wallsAtNode } from '../../core/ops.js';
 import { snap, type SnapResult } from '../../core/snapping.js';
 import { formatLength } from '../../core/units.js';
 import type { AimHit, Tool, ToolContext } from './tool.js';
@@ -91,13 +91,7 @@ export class WallTool implements Tool {
       const n = findNodeNear(this.ctx.store.plan, p);
       return n ? wallsAtNode(this.ctx.store.plan, n.id).length > 0 : false;
     })();
-    const id = this.ctx.store.edit('Add wall', (d) =>
-      addWallBetween(d, from, p, {
-        height: st.wallHeight,
-        thickness: st.wallThickness,
-        againstFoundation: s.kind === 'follow',
-      }),
-    );
+    const id = this.ctx.cmd.run('wall.add', { a: from, b: p, height: st.wallHeight, thickness: st.wallThickness, againstFoundation: s.kind === 'follow' });
     if (!id) {
       this.ctx.toast('That wall already exists');
       return;
@@ -151,8 +145,7 @@ export class WallTool implements Tool {
       return;
     }
     this.ctx.openKeypad('Length of last wall', wallLength(plan, wall), (inches) => {
-      const ok = this.ctx.store.edit('Set length', (d) => setWallLength(d, wall.id, inches, 'a'));
-      if (!ok) return;
+      if (!this.ctx.act('wall.setLength', { id: wall.id, length: inches, keep: 'a' })) return;
       const w = wallById(this.ctx.store.plan, wall.id);
       if (w && this.chainWalls.at(-1) === wall.id) {
         const { b } = wallEnds(this.ctx.store.plan, w);
@@ -171,9 +164,9 @@ export class WallTool implements Tool {
   applyHeight(inches: number): void {
     const last = this.lastWall();
     const ids = this.chainWalls.length ? [...this.chainWalls] : last ? [last.id] : [];
-    this.ctx.store.edit('Set height', (d) => {
-      d.settings.wallHeight = inches;
-      for (const id of ids) setWallHeight(d, id, inches);
+    this.ctx.cmd.group('Set height', () => {
+      this.ctx.act('settings.set', { values: { wallHeight: inches } });
+      for (const id of ids) this.ctx.act('wall.setHeight', { id, height: inches });
     });
     this.ctx.toast(`Wall height ${formatLength(inches)}`);
   }

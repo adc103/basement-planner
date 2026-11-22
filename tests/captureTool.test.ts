@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createEmptyPlan } from '../src/core/plan';
 import { PlanStore } from '../src/core/store';
+import { CommandBus } from '../src/core/commands';
 import { defaultSnapOptions } from '../src/core/snapping';
 import { CaptureTool, type CaptureContext } from '../src/xr/tools/captureTool';
 import type { AimHit } from '../src/xr/tools/tool';
@@ -12,8 +13,11 @@ const fakePreview = new Proxy({}, { get: () => noop });
 function setup(mesh: PP[] | null) {
   const store = new PlanStore(createEmptyPlan());
   const toasts: string[] = [];
+  const cmd = new CommandBus(store);
   const ctx = {
     store,
+    cmd,
+    act: (n: never, p: never) => cmd.run(n, p),
     view: fakePreview,
     preview: fakePreview,
     toast: (m: string) => toasts.push(m),

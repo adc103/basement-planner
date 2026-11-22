@@ -1,4 +1,4 @@
-import { deleteMarker, deleteOpening, deleteWall, locateOnWall, wallById } from '../../core/ops.js';
+import { locateOnWall, wallById } from '../../core/ops.js';
 import type { AimHit, Tool, ToolContext } from './tool.js';
 
 /** Point at a wall or opening and press to delete it. */
@@ -42,9 +42,7 @@ export class DeleteTool implements Tool {
   commit(aim: AimHit): void {
     const t = this.target(aim);
     if (!t) return;
-    if (t.kind === 'marker') this.ctx.store.edit('Delete pin', (d) => deleteMarker(d, t.id));
-    else if (t.kind === 'opening') this.ctx.store.edit('Delete opening', (d) => deleteOpening(d, t.id));
-    else this.ctx.store.edit('Delete wall', (d) => deleteWall(d, t.id));
+    if (!this.ctx.act('element.delete', { id: t.id })) return;
     this.ctx.view.setHighlight(null);
     this.ctx.toast('Deleted. Undo brings it back.');
   }

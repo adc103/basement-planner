@@ -1,5 +1,5 @@
 import { add, norm, scale, sub, type Vec2 } from '../../core/geom2d.js';
-import { addOpening, clampOpeningOffset, locateOnWall, openingOverlaps, wallById, wallEnds } from '../../core/ops.js';
+import { clampOpeningOffset, locateOnWall, openingOverlaps, wallById, wallEnds } from '../../core/ops.js';
 import type { Plan, Wall } from '../../core/plan.js';
 import { formatLength } from '../../core/units.js';
 import { widthText } from '../planView.js';
@@ -99,18 +99,13 @@ export class OpeningTool implements Tool {
       return;
     }
     const preset = this.ctx.openingPreset();
-    const id = this.ctx.store.edit('Add opening', (d) =>
-      addOpening(d, {
-        wallId: pl.wall.id,
-        type: preset.type,
-        offset: pl.offset,
-        width: preset.width,
-        height: preset.height,
-        sill: 0,
-        hinge: 'a',
-        swing: 'left',
-      }),
-    );
+    const id = this.ctx.act('opening.add', {
+      wallId: pl.wall.id,
+      type: preset.type,
+      offset: pl.offset,
+      width: preset.width,
+      height: preset.height,
+    });
     this.ctx.toast(id ? `${preset.type === 'door' ? 'Door' : 'Opening'} added` : "Doesn't fit there");
   }
 }

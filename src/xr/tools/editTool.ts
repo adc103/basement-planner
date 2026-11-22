@@ -1,21 +1,5 @@
 import { dist, type Vec2 } from '../../core/geom2d.js';
-import {
-  deleteMarker,
-  deleteOpening,
-  deleteWall,
-  locateOnWall,
-  moveMarker,
-  moveNode,
-  moveOpening,
-  setWallHeight,
-  setWallKind,
-  setWallLength,
-  splitWall,
-  wallEnds,
-  setWallThickness,
-  wallById,
-  wallLength,
-} from '../../core/ops.js';
+import { locateOnWall, wallEnds, wallById, wallLength } from '../../core/ops.js';
 import type { Wall } from '../../core/plan.js';
 import { snap } from '../../core/snapping.js';
 import { formatLength } from '../../core/units.js';
@@ -123,6 +107,11 @@ export class EditTool implements Tool {
     const t = this.pick(aim);
     this.hovered = t;
     if (!t) return;
+    if (this.isLocked(t)) {
+      this.select(t.kind === 'node' ? null : t);
+      this.ctx.toast('Locked. Unlock it in the Edit tab to change it.', 3);
+      return;
+    }
     const start = aim.floor ?? aim.wall?.point ?? { x: 0, y: 0 };
     this.dragging = { target: t, start, moved: false };
     if (t.kind === 'wall') {
@@ -161,7 +150,7 @@ export class EditTool implements Tool {
         d.moved = true;
         const s = snap(plan, aim.floor, { ...this.ctx.snapOptions(aim), excludeNodeId: id });
         this.ctx.acquire(s.kind === 'endpoint' || s.kind === 'midpoint' ? s.point : null);
-        this.ctx.store.edit('Move corner', (dr) => moveNode(dr, id, s.point));
+        this.ctx.cmd.run('node.move', { id, x: s.point.x, y: s.point.y });
         pv.showCursor(s.point, s.kind, false);
         pv.showGuides(s.guides, s.point);
       }
@@ -182,16 +171,12 @@ export class EditTool implements Tool {
             break;
           }
         }
-        const orig = d.orig;
+        const [oa, ob] = d.orig;
         const nrm = d.normal;
-        this.ctx.store.edit('Slide wall', (dr) => {
-          for (const o of orig) {
-            const n = dr.nodes.find((x) => x.id === o.id);
-            if (n) {
-              n.x = o.x + nrm.x * off;
-              n.y = o.y + nrm.y * off;
-            }
-          }
+        this.ctx.cmd.run('wall.place', {
+          id: wallId,
+          a: { x: oa.x + nrm.x * off, y: oa.y + nrm.y * off },
+          b: { x: ob.x + nrm.x * off, y: ob.y + nrm.y * off },
         });
         const w = wallById(plan, wallId);
         if (w) {
@@ -208,7 +193,7 @@ export class EditTool implements Tool {
         if (d.moved || Math.abs(loc.along - op.offset) > 1) {
           d.moved = true;
           const off = Math.round(loc.along * 2) / 2;
-          this.ctx.store.edit('Move door', (dr) => moveOpening(dr, op.id, off));
+          this.ctx.cmd.run('opening.update', { id: op.id, offset: off });
           pv.showHint(`${formatLength(op.offset - op.width / 2)} from corner`, p, op.height + 6);
         }
       }
@@ -226,7 +211,7 @@ export class EditTool implements Tool {
         }
         if (next && (d.moved || dist(next, m) > 1)) {
           d.moved = true;
-          this.ctx.store.edit('Move pin', (dr) => moveMarker(dr, id, next!, wallId));
+          this.ctx.cmd.run('marker.move', { id, ...next, wallId });
         }
       }
     }
@@ -307,8 +292,7 @@ export class EditTool implements Tool {
     const w = this.selectedWall();
     if (!w) return;
     this.ctx.openKeypad('Wall length', wallLength(this.ctx.store.plan, w), (inches) => {
-      this.ctx.store.edit('Set length', (d) => setWallLength(d, w.id, inches, 'a'));
-      this.ctx.toast(`Wall set to ${formatLength(inches)}`);
+      if (this.ctx.act('wall.setLength', { id: w.id, length: inches, keep: 'a' })) this.ctx.toast(`Wall set to ${formatLength(inches)}`);
     });
   }
 
@@ -316,7 +300,7 @@ export class EditTool implements Tool {
     const w = this.selectedWall();
     if (!w) return;
     this.ctx.openKeypad('Wall height', w.height, (inches) => {
-      this.ctx.store.edit('Set height', (d) => setWallHeight(d, w.id, inches));
+      this.ctx.act('wall.setHeight', { id: w.id, height: inches });
       this.ctx.refreshUi();
     });
   }
@@ -325,7 +309,7 @@ export class EditTool implements Tool {
     const w = this.selectedWall();
     if (!w) return;
     this.ctx.openKeypad('Wall thickness', w.thickness, (inches) => {
-      this.ctx.store.edit('Set thickness', (d) => setWallThickness(d, w.id, inches));
+      this.ctx.act('wall.setThickness', { id: w.id, thickness: inches });
     });
   }
 
@@ -333,7 +317,7 @@ export class EditTool implements Tool {
   split(): void {
     const w = this.selectedWall();
     if (!w) return;
-    this.ctx.store.edit('Split wall', (d) => splitWall(d, w.id, 0.5));
+    if (!this.ctx.act('wall.split', { id: w.id, t: 0.5 })) return;
     this.select(null);
     this.ctx.toast('Split. Drag the new corner to place it.');
   }
@@ -342,8 +326,36 @@ export class EditTool implements Tool {
     const w = this.selectedWall();
     if (!w) return;
     const next = w.kind === 'existing' ? 'new' : 'existing';
-    this.ctx.store.edit(next === 'new' ? 'Make planned wall' : 'Make real wall', (d) => setWallKind(d, w.id, next));
+    if (!this.ctx.act('wall.setKind', { id: w.id, kind: next })) return;
     this.ctx.toast(next === 'new' ? 'Now a planned (new) wall' : 'Now a real (existing) wall');
+  }
+
+  /** Is this target (or, for a corner, a wall meeting there) locked? */
+  isLocked(t: Target): boolean {
+    const plan = this.ctx.store.plan;
+    if (t.kind === 'node') return plan.walls.some((w) => (w.a === t.id || w.b === t.id) && w.locked);
+    const coll = t.kind === 'wall' ? plan.walls : t.kind === 'opening' ? plan.openings : plan.markers;
+    return !!coll.find((x) => x.id === t.id)?.locked;
+  }
+
+  /** Lock or unlock the selection. */
+  toggleLock(): void {
+    const s = this.selection;
+    if (!s || s.kind === 'node') return;
+    const next = !this.isLocked(s);
+    if (this.ctx.act('element.setLocked', { id: s.id, locked: next })) this.ctx.toast(next ? 'Locked: nothing can change it until you unlock it' : 'Unlocked');
+  }
+
+  /** Mark the selected real wall for demolition, or keep it. */
+  toggleDemolish(): void {
+    const w = this.selectedWall();
+    if (!w) return;
+    if (w.kind !== 'existing') {
+      this.ctx.toast('Only real walls can be demolished. Delete a planned wall instead.', 3);
+      return;
+    }
+    const next = !w.demolish;
+    if (this.ctx.act('wall.setDemolish', { id: w.id, demolish: next })) this.ctx.toast(next ? 'Marked for demolition' : 'Keeping this wall');
   }
 
   selectedOpening() {
@@ -354,12 +366,7 @@ export class EditTool implements Tool {
   typeOpeningHeight(): void {
     const o = this.selectedOpening();
     if (!o) return;
-    this.ctx.openKeypad('Opening height', o.height, (h) =>
-      this.ctx.store.edit('Set opening height', (d) => {
-        const op = d.openings.find((x) => x.id === o.id);
-        if (op) op.height = h;
-      }),
-    );
+    this.ctx.openKeypad('Opening height', o.height, (h) => this.ctx.act('opening.update', { id: o.id, height: h }));
   }
 
   /** Door -> opening -> window. */
@@ -367,15 +374,12 @@ export class EditTool implements Tool {
     const o = this.selectedOpening();
     if (!o) return;
     const next = o.type === 'door' ? 'opening' : o.type === 'opening' ? 'window' : 'door';
-    this.ctx.store.edit('Opening type', (d) => {
-      const op = d.openings.find((x) => x.id === o.id);
-      if (!op) return;
-      op.type = next;
-      if (next === 'window' && op.sill <= 0) {
-        op.sill = 48;
-        op.height = Math.min(op.height, 36);
-      }
-      if (next !== 'window') op.sill = 0;
+    const toWindow = next === 'window' && o.sill <= 0;
+    this.ctx.act('opening.update', {
+      id: o.id,
+      type: next,
+      sill: next === 'window' ? (toWindow ? 48 : o.sill) : 0,
+      height: toWindow ? Math.min(o.height, 36) : o.height,
     });
   }
 
@@ -383,21 +387,14 @@ export class EditTool implements Tool {
   flipDoor(): void {
     const o = this.selectedOpening();
     if (!o) return;
-    this.ctx.store.edit('Flip door', (d) => {
-      const op = d.openings.find((x) => x.id === o.id);
-      if (!op) return;
-      if (op.hinge === 'a') op.hinge = 'b';
-      else {
-        op.hinge = 'a';
-        op.swing = op.swing === 'left' ? 'right' : 'left';
-      }
-    });
+    // Hinge side first, then swing direction.
+    this.ctx.act('opening.update', o.hinge === 'a' ? { id: o.id, hinge: 'b' } : { id: o.id, hinge: 'a', swing: o.swing === 'left' ? 'right' : 'left' });
   }
 
   setStud(size: '2x4' | '2x6'): void {
     const w = this.selectedWall();
     if (!w) return;
-    this.ctx.store.edit(`Make ${size}`, (d) => setWallThickness(d, w.id, size === '2x6' ? 6.5 : 4.5));
+    this.ctx.act('wall.setThickness', { id: w.id, thickness: size === '2x6' ? 6.5 : 4.5 });
   }
 
   typeWidth(): void {
@@ -406,29 +403,14 @@ export class EditTool implements Tool {
     const o = this.ctx.store.plan.openings.find((x) => x.id === s.id);
     if (!o) return;
     this.ctx.openKeypad('Opening width', o.width, (w) => {
-      const ok = this.ctx.store.edit('Set width', (d) => {
-        const op = d.openings.find((x) => x.id === s.id);
-        if (!op) return false;
-        const old = op.width;
-        op.width = w;
-        if (!moveOpening(d, op.id, op.offset)) {
-          op.width = old;
-          return false;
-        }
-        return true;
-      });
-      if (!ok) this.ctx.toast("That width doesn't fit there");
+      this.ctx.act('opening.update', { id: s.id, width: w });
     });
   }
 
   deleteSelection(): void {
     const s = this.selection;
     if (!s) return;
-    this.ctx.store.edit('Delete', (d) => {
-      if (s.kind === 'wall') deleteWall(d, s.id);
-      else if (s.kind === 'opening') deleteOpening(d, s.id);
-      else if (s.kind === 'marker') deleteMarker(d, s.id);
-    });
+    if (s.kind === 'node' || !this.ctx.act('element.delete', { id: s.id })) return;
     this.select(null);
     this.ctx.toast('Deleted. Undo brings it back.');
   }

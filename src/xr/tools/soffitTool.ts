@@ -1,5 +1,4 @@
 import { add, rotate, scale, sub, type Vec2 } from '../../core/geom2d.js';
-import { addSoffit, deleteSoffit } from '../../core/ops.js';
 import { pointInPolygon } from '../../core/poly.js';
 import { snap } from '../../core/snapping.js';
 import { formatLength } from '../../core/units.js';
@@ -88,8 +87,7 @@ export class SoffitTool implements Tool {
     if (!this.moved) {
       const over = this.ctx.store.plan.soffits.find((s) => pointInPolygon(p, s.poly));
       if (over) {
-        this.ctx.store.edit('Delete soffit', (d) => deleteSoffit(d, over.id));
-        this.ctx.toast('Soffit deleted');
+        if (this.ctx.act('element.delete', { id: over.id })) this.ctx.toast('Soffit deleted');
       }
       return;
     }
@@ -101,7 +99,7 @@ export class SoffitTool implements Tool {
       return;
     }
     const bottom = this.ctx.store.plan.settings.soffitBottom;
-    this.ctx.store.edit('Add soffit', (d) => addSoffit(d, r, bottom));
+    if (!this.ctx.act('soffit.add', { poly: r, bottom })) return;
     this.ctx.toast(`Soffit ${formatLength(w)} x ${formatLength(h)}, bottom at ${formatLength(bottom)}`);
   }
 }

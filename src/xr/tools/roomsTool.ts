@@ -1,4 +1,3 @@
-import { deleteRoom, upsertRoom } from '../../core/ops.js';
 import type { Finish, Plan } from '../../core/plan.js';
 import { pointInPolygon } from '../../core/poly.js';
 import { faceAt, findRoomFaces, type RoomFace } from '../../core/rooms.js';
@@ -81,7 +80,7 @@ export class RoomsTool implements Tool {
       return;
     }
     const existing = this.roomForFace(face);
-    const id = existing?.id ?? this.ctx.store.edit('Add room', (d) => upsertRoom(d, face.center, { name: 'Room' }));
+    const id = existing?.id ?? this.ctx.act('room.add', { seed: face.center, name: 'Room' });
     this.select(id);
   }
 
@@ -99,18 +98,18 @@ export class RoomsTool implements Tool {
 
   setName(name: string): void {
     const r = this.selectedRoom();
-    if (r) this.ctx.store.edit('Name room', (d) => upsertRoom(d, r.seed, { name }, r.id));
+    if (r) this.ctx.act('room.update', { id: r.id, name });
   }
 
   setFinish(finish: Finish): void {
     const r = this.selectedRoom();
-    if (r) this.ctx.store.edit('Floor finish', (d) => upsertRoom(d, r.seed, { finish }, r.id));
+    if (r) this.ctx.act('room.update', { id: r.id, finish });
   }
 
   remove(): void {
     const r = this.selectedRoom();
     if (!r) return;
-    this.ctx.store.edit('Remove room', (d) => deleteRoom(d, r.id));
+    this.ctx.act('element.delete', { id: r.id });
     this.select(null);
   }
 }
