@@ -225,13 +225,14 @@ try {
   }
   {
     // Real wall: two taps on the scanned wall's surface (the emulator has no hit test, so the
-    // taps are handed to the tool directly), 1.1" off the true face: the mesh snaps it exact.
+    // taps are handed to the tool directly), 1.1" off the true face and with a wrong surface
+    // normal (the headset's is noisy): the taps set the direction and the mesh snaps it exact.
     const r = await page.evaluate(() => {
       const app = window.basementPlanner;
       app.setTool('trace');
       const face = 28 / 0.0254;
       const tool = app.tools.trace;
-      const tap = (x) => tool.commit({ surface: { p: { x, y: face + 1.1 }, z: 50, n: { x: 0, y: 1 }, ny: 0, distM: 1 }, floor: null, wall: null });
+      const tap = (x) => tool.commit({ surface: { p: { x, y: face + 1.1 }, z: 50, n: { x: 0.6, y: 0.8 }, ny: 0, distM: 1 }, floor: null, wall: null, eye: { x: 1185, y: face + 60 } });
       const before = app.store.plan.walls.length;
       tap(1150);
       tap(1220);

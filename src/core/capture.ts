@@ -1,28 +1,25 @@
 import { add, dot, len, norm, perp, scale, sub, type Vec2 } from './geom2d.js';
 
 /**
- * Point-and-capture: two hits on a real wall surface -> an existing wall centerline.
- * p1/p2 are surface points in plan inches; n1/n2 the horizontal surface normals
- * (pointing out of the wall, toward you). Returns null if the hits are unusable.
+ * Trace a real wall from two taps on its surface. The wall runs from the first tap
+ * to the second (the taps set the direction, not the headset's surface normal,
+ * which is too noisy on walls). The centerline sits half the thickness behind the
+ * face, on the far side from where you stand. Returns null if the taps are closer
+ * than 6" or you are standing in line with them.
  */
 export function captureWall(
   p1: Vec2,
-  n1: Vec2,
   p2: Vec2,
-  n2: Vec2 | null,
+  eye: Vec2,
   thickness: number,
 ): { a: Vec2; b: Vec2; faceA: Vec2; faceB: Vec2 } | null {
-  if (len(n1) < 0.2) return null; // hit a floor/ceiling, not a wall
-  let n = norm(n1);
-  if (n2 && len(n2) > 0.2) {
-    const m = norm(n2);
-    if (dot(n, m) > 0.8) n = norm(add(n, m)); // same wall: average the normals
-  }
-  const d = perp(n);
-  const t2 = dot(sub(p2, p1), d);
-  if (Math.abs(t2) < 6) return null; // need at least 6" between the two points
-  const faceA = p1;
-  const faceB = add(p1, scale(d, t2));
+  const along = sub(p2, p1);
+  if (len(along) < 6) return null;
+  const d = norm(along);
+  let n = perp(d);
+  const side = dot(sub(eye, scale(add(p1, p2), 0.5)), n);
+  if (Math.abs(side) < 1) return null;
+  if (side < 0) n = scale(n, -1); // n points out of the wall, toward you
   const back = scale(n, -thickness / 2);
-  return { a: add(faceA, back), b: add(faceB, back), faceA, faceB };
+  return { a: add(p1, back), b: add(p2, back), faceA: p1, faceB: p2 };
 }

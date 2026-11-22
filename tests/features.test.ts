@@ -343,18 +343,22 @@ describe('ceiling', () => {
 });
 
 describe('point-and-capture', () => {
-  it('turns two hits on a wall into an existing wall behind the surface', () => {
-    // Wall surface along y = 100, facing -y (toward the viewer at y < 100).
-    const w = captureWall({ x: 10, y: 100 }, { x: 0, y: -1 }, { x: 90, y: 101.5 }, { x: 0.02, y: -1 }, 4.5)!;
-    expect(w.faceA.y).toBeCloseTo(100);
-    expect(Math.abs(w.faceB.y - 100)).toBeLessThan(1);
-    expect(Math.abs(w.b.x - w.a.x)).toBeCloseTo(80, 0);
-    // Centerline sits half the thickness behind the face.
-    expect(w.a.y).toBeCloseTo(102.25, 1);
+  it('runs the wall from tap to tap, centerline behind the face away from you', () => {
+    // Wall surface along y = 100, you stand at y = 40.
+    const w = captureWall({ x: 10, y: 100 }, { x: 90, y: 100 }, { x: 50, y: 40 }, 4.5)!;
+    expect(w.faceA).toEqual({ x: 10, y: 100 });
+    expect(w.faceB).toEqual({ x: 90, y: 100 });
+    expect(w.a.y).toBeCloseTo(102.25);
+    expect(w.b.y).toBeCloseTo(102.25);
+    // Standing on the other side puts the centerline on the other side.
+    expect(captureWall({ x: 10, y: 100 }, { x: 90, y: 100 }, { x: 50, y: 160 }, 4.5)!.a.y).toBeCloseTo(97.75);
+    // A diagonal wall follows the taps.
+    const g = captureWall({ x: 0, y: 0 }, { x: 60, y: 80 }, { x: 80, y: 0 }, 4)!;
+    expect(Math.atan2(g.b.y - g.a.y, g.b.x - g.a.x)).toBeCloseTo(Math.atan2(80, 60));
   });
 
-  it('rejects floor hits and points too close together', () => {
-    expect(captureWall({ x: 0, y: 0 }, { x: 0, y: 0.05 }, { x: 50, y: 0 }, null, 4.5)).toBeNull();
-    expect(captureWall({ x: 0, y: 0 }, { x: 0, y: -1 }, { x: 3, y: 0 }, null, 4.5)).toBeNull();
+  it('rejects taps too close together or in line with you', () => {
+    expect(captureWall({ x: 0, y: 0 }, { x: 3, y: 0 }, { x: 0, y: -50 }, 4.5)).toBeNull();
+    expect(captureWall({ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 100, y: 0 }, 4.5)).toBeNull();
   });
 });
