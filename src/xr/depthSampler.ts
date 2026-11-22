@@ -69,6 +69,53 @@ export class DepthSampler {
     this.scene.add(new Mesh(new PlaneGeometry(2, 2), this.mat));
   }
 
+  /** Readback size, for consumers of {@link readMeters}. */
+  readonly width = W;
+  readonly height = H;
+
+  /**
+   * Read the current depth image as meters (row 0 = bottom), W x H.
+   * Returns false when depth isn't available this frame.
+   */
+  readMeters(out: Float32Array): boolean {
+    if (!this.renderPass()) return false;
+    for (let i = 0, k = 0; i < W * H; i++, k += 4) out[i] = (this.buf[k] * 256 + this.buf[k + 1]) / 1000;
+    return true;
+  }
+
+  /** Render the packed-depth pass and read it into `buf`. */
+  private renderPass(): boolean {
+    const world = this.world;
+    const frame = world.xrFrame;
+    const ds = world.getSystem(DepthSensingSystem) as unknown as
+      | { getDepthTextureArray(): unknown; gpuDepthData: Array<{ depthNear?: number }>; rawValueToMeters: number }
+      | undefined;
+    if (!frame || !ds) return false;
+    const tex = ds.getDepthTextureArray();
+    if (!tex) return false;
+    const u = this.mat.uniforms;
+    u.uDepth.value = tex;
+    u.uIsGPU.value = ds.gpuDepthData.length > 0;
+    u.uRaw.value = ds.rawValueToMeters || 0.001;
+    u.uNear.value = ds.gpuDepthData[0]?.depthNear ?? 0;
+    const r = world.renderer;
+    const xrOn = r.xr.enabled;
+    const prev = r.getRenderTarget();
+    try {
+      r.xr.enabled = false;
+      r.setRenderTarget(this.rt);
+      r.render(this.scene, this.cam);
+      r.readRenderTargetPixels(this.rt, 0, 0, W, H, this.buf);
+    } catch (e) {
+      this.lastError = (e as Error).message;
+      return false;
+    } finally {
+      r.setRenderTarget(prev);
+      r.xr.enabled = xrOn;
+    }
+    return true;
+  }
+
   /**
    * Sample the current frame. Calls `emit(x, y, z)` with world-space points.
    * Returns the number of points, or -1 when depth isn't available.

@@ -46,7 +46,7 @@ import { RoomsTool } from './tools/roomsTool.js';
 import { PinsTool } from './tools/pinsTool.js';
 import { SoffitTool } from './tools/soffitTool.js';
 import { RefAnchors } from './refAnchors.js';
-import { CameraProbe } from './cameraProbe.js';
+import { CameraProbe, PROBE_KEY } from './cameraProbe.js';
 import { planToLocal } from './planView.js';
 import { solveTwoPoint } from '../core/alignment.js';
 import { roomCeiling } from '../core/ops.js';
@@ -59,6 +59,7 @@ import type { Finish } from '../core/plan.js';
 import { MainMenu, MENU_H, type MenuApi, type ToolName } from './ui/mainMenu.js';
 import { Sfx } from './ui/sfx.js';
 import { ScanSession } from './scanSession.js';
+import { HybridProbe } from './hybridProbe.js';
 import type { StructureResult } from '../core/structure.js';
 import { ScanReviewTool } from './tools/scanReviewTool.js';
 import { findRoomFaces } from '../core/rooms.js';
@@ -152,6 +153,7 @@ export class PlannerApp {
   private refAnchors!: RefAnchors;
   private probe!: CameraProbe;
   scan!: ScanSession;
+  private hybrid!: HybridProbe;
   private anchorLockToasted = false;
   private depthWarned = false;
   /** Corners and midpoints the user hovered, for inference guides (shared by tools). */
@@ -201,6 +203,7 @@ export class PlannerApp {
     this.planEntity.addComponent(XRAnchor);
     this.refAnchors = new RefAnchors(world);
     this.scan = new ScanSession(world, this.view.root);
+    this.hybrid = new HybridProbe(this.scan.sampler);
     this.probe = new CameraProbe(world, () => this.meshQuery?.() ?? [], () => this.planeQuery?.() ?? []);
 
     // Real-world hit testing for point-and-capture, one target per hand.
@@ -377,7 +380,7 @@ export class PlannerApp {
           d.settings.autoImportScan = !d.settings.autoImportScan;
         }),
       cameraTest: () => this.runCameraTest(),
-      cameraTestRunning: () => this.probe.running,
+      cameraTestRunning: () => this.probe.running || this.hybrid.running,
       hasRefs: () => !!this.store.plan.reference,
       resetRefs: () => this.resetReference(),
       viewMode: () => this.view.mode,
@@ -632,11 +635,23 @@ export class PlannerApp {
   }
 
   private runCameraTest(): void {
-    if (this.probe.running) return;
+    if (this.probe.running || this.hybrid.running) return;
     this.toast('Camera test: allow the camera if asked', 4);
     this.probe
       .run((m) => this.toast(m, 4))
-      .then((r) => {
+      .then(async (r) => {
+        // Then: WebGPU fusion beside this WebGL session (~20 s).
+        this.toast('GPU scanning test: look around for 20 seconds', 6);
+        const extra = await this.hybrid.start();
+        r.rows.push(...extra);
+        try {
+          localStorage.setItem(PROBE_KEY, JSON.stringify({ ...r, thumb: null }));
+          localStorage.setItem(PROBE_KEY, JSON.stringify(r));
+        } catch {
+          /* thumbnail too large: the copy without it stays */
+        }
+        const v = extra.find((x) => x.name === 'Verdict');
+        if (v) this.toast(`GPU scanning: ${v.detail}`, 6);
         const fails = r.rows.filter((x) => x.ok === false).length;
         const cam = r.rows.find((x) => x.name === 'Camera stream during AR');
         this.toast(
@@ -811,6 +826,7 @@ export class PlannerApp {
       this.hands.right.update(world, time);
       this.updateSurfaces(time);
       this.scan.tick(time);
+      this.hybrid.tick(time);
       this.updateFloor(time);
       if (this.scan.scanning && this.scan.depthOk === false && !this.depthWarned) {
         this.depthWarned = true;
