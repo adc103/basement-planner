@@ -4,11 +4,12 @@ import {
   DoubleSide,
   Group,
   Mesh,
+  MeshBasicMaterial,
   MeshLambertMaterial,
   type Object3D,
 } from '@iwsdk/core';
 import type { DepthFrame } from '../core/scanIngest.js';
-import { brickCoords, type BrickMesh } from '../core/tsdf.js';
+import { brickCoords, type BrickMesh, type ColorPhoto } from '../core/tsdf.js';
 import { surfaceFromMeshes, type Surface } from '../core/fit.js';
 import type { FusionIn, FusionOut } from './fusionWorker.js';
 
@@ -29,6 +30,12 @@ export class RoomMesh {
   private chunkBricks = new Map<string, Set<number>>();
   private pieces = new Map<string, Mesh>();
   private mat = new MeshLambertMaterial({ color: 0x8fd0ff, transparent: true, opacity: 0.32, depthWrite: false, side: DoubleSide });
+  /** Photo colors, solid: the room as the camera saw it. */
+  private matColor = new MeshBasicMaterial({ vertexColors: true, side: DoubleSide });
+  /** Show photo colors instead of the see-through blue. */
+  colored = false;
+  /** Bricks painted by at least one photo. */
+  coloredBricks = 0;
   private lastMesh = 0;
   private pending = false;
   bricks = 0;
@@ -68,6 +75,18 @@ export class RoomMesh {
     if (!this.worker) return;
     const frame: DepthFrame = { ...f, depthMM: f.depthMM.slice() };
     this.send({ type: 'frame', frame }, [frame.depthMM.buffer]);
+  }
+
+  /** Paint the mesh from a camera photo (copied pixels go to the fusion worker). */
+  colorize(photo: ColorPhoto): void {
+    if (!this.worker) return;
+    const rgba = photo.rgba.slice();
+    this.send({ type: 'color', photo: { ...photo, rgba, camToRoot: Array.from(photo.camToRoot) } }, [rgba.buffer]);
+  }
+
+  setColored(on: boolean): void {
+    this.colored = on;
+    for (const m of this.pieces.values()) m.material = on ? this.matColor : this.mat;
   }
 
   /** Per frame: ask for fresh mesh pieces now and then. */
@@ -176,6 +195,8 @@ export class RoomMesh {
     }
     const pos = new Float32Array(nv);
     const nrm = new Float32Array(nv);
+    // Vertex colors: grey where no photo has reached yet.
+    const col = new Uint8Array(nv).fill(110);
     const idx = new Uint32Array(ni);
     let ov = 0;
     let oi = 0;
@@ -183,6 +204,7 @@ export class RoomMesh {
       const b = this.bricksMesh.get(k)!;
       pos.set(b.positions, ov);
       nrm.set(b.normals, ov);
+      if (b.colors.length === b.positions.length) col.set(b.colors, ov);
       const base = ov / 3;
       for (let i = 0; i < b.indices.length; i++) idx[oi + i] = b.indices[i] + base;
       ov += b.positions.length;
@@ -191,6 +213,7 @@ export class RoomMesh {
     const g = new BufferGeometry();
     g.setAttribute('position', new BufferAttribute(pos, 3));
     g.setAttribute('normal', new BufferAttribute(nrm, 3));
+    g.setAttribute('color', new BufferAttribute(col, 3, true));
     g.setIndex(new BufferAttribute(idx, 1));
     g.computeBoundingSphere();
     if (old) {
@@ -198,7 +221,7 @@ export class RoomMesh {
       old.geometry = g;
       return;
     }
-    const mesh = new Mesh(g, this.mat);
+    const mesh = new Mesh(g, this.colored ? this.matColor : this.mat);
     mesh.raycast = () => {};
     mesh.renderOrder = -1;
     this.group.add(mesh);

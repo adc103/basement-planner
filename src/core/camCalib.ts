@@ -309,3 +309,40 @@ export function calibrate(photos: CalibPhoto[], frames: DepthFrame[], opts: { sp
   m = nelderMead((x) => score(x, set), m, KEYS, { f: 8, cx: 5, cy: 5, rx: 0.01, ry: 0.01, rz: 0.01, tx: 0.02, ty: 0.02, tz: 0.02 }, 600);
   return { model: m, error: score(m, set), errorBefore, photos: set.photos.length };
 }
+
+/** The camera's factory calibration as the Quest browser reports it (track settings, with the experimental flags on). */
+export interface LensData {
+  lensCalibration: number[]; // fx, fy, cx, cy, skew (full-sensor pixels)
+  lensRotation: { x: number; y: number; z: number; w: number };
+  lensTranslation: { x: number; y: number; z: number };
+}
+
+/**
+ * Where the passthrough camera is and how it sees, from the lens data and the
+ * left eye's pose at the moment the photo was captured. Checked against real
+ * captures: depth outlines land on photo edges. The rotation is in the camera's
+ * own convention (y down, z forward), turned into the scene's (y up, -z forward).
+ */
+export function lensCamera(lens: LensData, leftViewToRoot: ArrayLike<number>, w: number, h: number): { camToRoot: Float32Array; fx: number; fy: number; cx: number; cy: number } {
+  const [FX, FY, CX, CY] = lens.lensCalibration;
+  const k = w / (2 * CX); // centred square sensor, scaled to the delivered width
+  const { x, y, z, w: qw } = lens.lensRotation;
+  const M = [
+    1 - 2 * (y * y + z * z), 2 * (x * y - z * qw), 2 * (x * z + y * qw),
+    2 * (x * y + z * qw), 1 - 2 * (x * x + z * z), 2 * (y * z - x * qw),
+    2 * (x * z - y * qw), 2 * (y * z + x * qw), 1 - 2 * (x * x + y * y),
+  ];
+  // view -> camera rotation R = F * M with F = diag(1, -1, -1); camera -> view is R^T.
+  const R = [M[0], M[1], M[2], -M[3], -M[4], -M[5], -M[6], -M[7], -M[8]];
+  const t = [lens.lensTranslation.x, lens.lensTranslation.y, -lens.lensTranslation.z];
+  // camToView (column-major): columns are R^T's columns = R's rows.
+  const C = [R[0], R[1], R[2], 0, R[3], R[4], R[5], 0, R[6], R[7], R[8], 0, t[0], t[1], t[2], 1];
+  const V = leftViewToRoot;
+  const out = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    let s = 0;
+    for (let i = 0; i < 4; i++) s += V[i * 4 + r] * C[c * 4 + i];
+    out[c * 4 + r] = s;
+  }
+  return { camToRoot: out, fx: FX * k, fy: FY * k, cx: w / 2, cy: h / 2 + (CY - CX) * k };
+}

@@ -1,4 +1,5 @@
 import { CameraSource, CameraState, CameraUtils, type Entity, type World } from '@iwsdk/core';
+import type { LensData } from '../core/camCalib.js';
 
 /**
  * Passthrough camera photos during a scan, once a second, kept with the
@@ -19,6 +20,12 @@ export class ScanPhotos {
    * the factory calibration needed to line photos up with the scan.
    */
   settings: Record<string, unknown> | null = null;
+
+  /** The factory lens calibration, when the browser reports it. */
+  get lens(): LensData | null {
+    const s = this.settings as Partial<LensData> | null;
+    return s?.lensCalibration && s.lensRotation && s.lensTranslation ? (s as LensData) : null;
+  }
 
   constructor(private world: World) {
     this.canvas.width = 640;
@@ -89,7 +96,7 @@ export class ScanPhotos {
   }
 
   /** A 640x480 JPEG of the current camera frame and when it was captured (performance.now ms), or null. */
-  async snap(): Promise<{ jpeg: Uint8Array; capturedMs: number } | null> {
+  async snap(): Promise<{ jpeg: Uint8Array; capturedMs: number; rgba: Uint8ClampedArray } | null> {
     if (!this.ready) return null;
     const frame = CameraUtils.captureFrame(this.entity!);
     if (!frame) return null;
@@ -98,8 +105,9 @@ export class ScanPhotos {
     try {
       const ctx = this.canvas.getContext('2d')!;
       ctx.drawImage(frame, 0, 0, 640, 480);
+      const rgba = ctx.getImageData(0, 0, 640, 480).data;
       const blob = await new Promise<Blob | null>((r) => this.canvas.toBlob(r, 'image/jpeg', 0.82));
-      return blob ? { jpeg: new Uint8Array(await blob.arrayBuffer()), capturedMs } : null;
+      return blob ? { jpeg: new Uint8Array(await blob.arrayBuffer()), capturedMs, rgba } : null;
     } finally {
       this.busy = false;
     }

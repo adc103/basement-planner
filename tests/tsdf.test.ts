@@ -93,3 +93,41 @@ describe('depth fusion (TSDF) and mesh', () => {
     expect(new TsdfVolume({ voxel: 0.05 }).load(vol.serialize())).toBe(false);
   });
 });
+
+describe('mesh coloring from photos', () => {
+  it('paints what a photo sees with that photo\'s colors, where it sees it', () => {
+    const scene = basementScene();
+    const frames = depthFramesFor(scene);
+    const vol = new TsdfVolume();
+    for (const f of frames) vol.integrate(f);
+    vol.meshDirty();
+    // A photo from one depth view: left half red, right half blue.
+    const f = frames[Math.floor(frames.length / 2)];
+    const w = 160;
+    const h = 120;
+    const rgba = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) rgba.set(x < w / 2 ? [220, 20, 20, 255] : [20, 20, 220, 255], (y * w + x) * 4);
+    const cam = { camToRoot: f.viewToRoot, fx: (f.proj[0] * w) / 2, fy: (f.proj[5] * h) / 2, cx: (w / 2) * (1 - f.proj[8]), cy: (h / 2) * (1 + f.proj[9]) };
+    expect(vol.colorize({ rgba, w, h, ...cam })).toBeGreaterThan(10);
+    const meshes = vol.meshDirty();
+    let right = 0;
+    let wrong = 0;
+    const M = f.viewToRoot;
+    for (const m of meshes) {
+      if (!m.colors.length) continue;
+      for (let v = 0; v < m.positions.length / 3; v++) {
+        const r = m.colors[v * 3];
+        const b = m.colors[v * 3 + 2];
+        if (r === b) continue; // not reached by the photo
+        const px = m.positions[v * 3] - M[12], py = m.positions[v * 3 + 1] - M[13], pz = m.positions[v * 3 + 2] - M[14];
+        const z = -(M[8] * px + M[9] * py + M[10] * pz);
+        const u = cam.cx + (cam.fx * (M[0] * px + M[1] * py + M[2] * pz)) / z;
+        if (Math.abs(u - w / 2) < 8) continue; // the seam
+        if (u < w / 2 === r > b) right++;
+        else wrong++;
+      }
+    }
+    expect(right).toBeGreaterThan(200);
+    expect(wrong / (right + wrong)).toBeLessThan(0.03);
+  });
+});

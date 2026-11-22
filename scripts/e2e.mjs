@@ -849,6 +849,18 @@ try {
         app.toggleDetailedCapture();
         return { on, off: app.scan.sampler.width, keys: Object.keys(ex), version: ex.app.version, walls: ex.plan.walls.length };
       });
+      const cyc = await page.evaluate(() => {
+        const app = window.basementPlanner;
+        const m = app.scan.mesh;
+        const st = () => (m.shown ? (m.colored ? 'color' : 'blue') : 'off');
+        const seen = [st()];
+        for (let i = 0; i < 3; i++) {
+          app.menuApi().toggleRoomMesh();
+          seen.push(st());
+        }
+        return seen.join(' > ');
+      });
+      check(cyc === 'blue > color > off > blue', `Mesh button cycles see-through, color, hidden (${cyc})`);
       check(cap.on === 160 && cap.off === 80, `Detailed capture switches depth to 160x120 and back (${cap.on} / ${cap.off})`);
       check(['app', 'device', 'plan', 'proposals', 'spaceSetup', 'journal'].every((k) => cap.keys.includes(k)) && cap.version && cap.version !== 'dev', `review capture carries the app state (${cap.keys.join(', ')}, version ${cap.version})`);
     }

@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import type { DepthFrame } from '../core/scanIngest.js';
-import { TsdfVolume, type BrickMesh } from '../core/tsdf.js';
+import { TsdfVolume, type BrickMesh, type ColorPhoto } from '../core/tsdf.js';
 import { idbGet, idbSet } from './idb.js';
 
 /**
@@ -11,6 +11,7 @@ import { idbGet, idbSet } from './idb.js';
 export type FusionIn =
   | { type: 'frame'; frame: DepthFrame }
   | { type: 'mesh' }
+  | { type: 'color'; photo: ColorPhoto }
   | { type: 'clear' }
   | { type: 'save' }
   | { type: 'load' };
@@ -26,7 +27,7 @@ let integrateMs = 0;
 
 function sendMeshes(meshes: BrickMesh[], ms: number): void {
   const transfer: Transferable[] = [];
-  for (const m of meshes) transfer.push(m.positions.buffer, m.normals.buffer, m.indices.buffer);
+  for (const m of meshes) transfer.push(m.positions.buffer, m.normals.buffer, m.indices.buffer, m.colors.buffer);
   post({ type: 'meshes', meshes, bricks: vol.brickCount, frames: vol.frames, ms }, transfer);
 }
 
@@ -37,6 +38,8 @@ self.onmessage = async (e: MessageEvent<FusionIn>) => {
     vol.integrate(m.frame);
     integrateMs = integrateMs * 0.9 + (performance.now() - t0) * 0.1;
     post({ type: 'stats', bricks: vol.brickCount, frames: vol.frames, integrateMs });
+  } else if (m.type === 'color') {
+    vol.colorize(m.photo);
   } else if (m.type === 'mesh') {
     if (!vol.dirty.size) return;
     const t0 = performance.now();

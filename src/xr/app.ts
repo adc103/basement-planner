@@ -496,11 +496,22 @@ export class PlannerApp {
       hasRoomMesh: () => this.scan.mesh.triangles > 0,
       detailedCapture: () => this.detailedCapture,
       toggleDetailedCapture: () => this.toggleDetailedCapture(),
+      // Mesh button cycles: see-through blue -> photo colors -> hidden.
       toggleRoomMesh: () => {
         const m = this.scan.mesh;
-        m.setShown(!m.shown);
-        this.toast(m.shown ? (m.triangles ? 'Room mesh shown' : 'Room mesh shown (scan the room to build it)') : 'Room mesh hidden (still shows while scanning)', 3);
+        if (m.shown && !m.colored) {
+          m.setColored(true);
+          this.toast(this.scan.photos.lens ? 'Room mesh in color (painted from camera photos while you scan)' : 'Room mesh in color: needs the browser\'s experimental WebXR flags for the camera calibration', 5);
+        } else if (m.shown) {
+          m.setColored(false);
+          m.setShown(false);
+          this.toast('Room mesh hidden (still shows while scanning)', 3);
+        } else {
+          m.setShown(true);
+          this.toast(m.triangles ? 'Room mesh shown' : 'Room mesh shown (scan the room to build it)', 3);
+        }
       },
+      roomMeshColored: () => this.scan.mesh.colored,
       cycleRealWalls: () => {
         const order = ['shown', 'outline', 'hidden'] as const;
         const next = order[(order.indexOf(this.store.plan.settings.realWalls) + 1) % 3];

@@ -1,3 +1,4 @@
+import { lensCamera } from '../core/camCalib.js';
 import {
   BoxGeometry,
   BufferAttribute,
@@ -33,6 +34,8 @@ import { RoomMesh } from './roomMesh.js';
 import { ScanPhotos } from './scanPhotos.js';
 
 const STORE_KEY = 'scan-map:v1';
+/** Seconds between the camera's capture time stamp and the head pose that matches it (fit on real captures). */
+const PHOTO_LAG = 0.03;
 const FREE_KEY = 'scan-free:v1';
 const LIVE_EVERY = 3; // s between live wall previews while scanning
 const SAMPLE_EVERY = 0.25; // s
@@ -220,6 +223,16 @@ export class ScanSession {
             if (!r) return;
             const captured = Number.isFinite(r.capturedMs) ? toScan(r.capturedMs) : NaN;
             this.recorder.addPhoto({ ...pose, jpeg: r.jpeg, captured, track });
+            // Paint the room mesh with it, from where the camera was when it captured
+            // the frame (the head pose a little before the capture time stamp).
+            const lens = this.photos.lens;
+            if (lens) {
+              const tc = (Number.isFinite(captured) ? captured : pose.t) - PHOTO_LAG;
+              let view: Float32Array = pose.viewToRoot;
+              let best = Infinity;
+              for (const e of track) if (Math.abs(e.t - tc) < best) [best, view] = [Math.abs(e.t - tc), e.m];
+              this.mesh.colorize({ rgba: r.rgba, w: 640, h: 480, ...lensCamera(lens, view, 640, 480) });
+            }
           });
         }
       }

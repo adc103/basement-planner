@@ -38,6 +38,24 @@ export const DEFAULT_TSDF: TsdfOptions = { voxel: 0.04, trunc: 0.12, behind: 0.0
 interface Brick {
   d: Float32Array; // signed distance / trunc, -1..1
   w: Uint8Array; // weight
+  /** Color per voxel (rgb) and how many photos it averages, once a photo has reached it. */
+  c?: Uint8Array;
+  cw?: Uint8Array;
+}
+
+/** A camera photo placed in the room: for coloring the mesh. */
+export interface ColorPhoto {
+  /** RGBA pixels, row 0 = top. */
+  rgba: Uint8Array | Uint8ClampedArray;
+  w: number;
+  h: number;
+  /** Camera -> plan-root meters (column-major; camera looks down -z, y up). */
+  camToRoot: Float32Array | number[];
+  /** Pinhole intrinsics in this image's pixels (y down). */
+  fx: number;
+  fy: number;
+  cx: number;
+  cy: number;
 }
 
 export interface BrickMesh {
@@ -46,6 +64,8 @@ export interface BrickMesh {
   positions: Float32Array;
   normals: Float32Array;
   indices: Uint32Array;
+  /** rgb per vertex (0-255), empty when no photo has colored this brick yet. */
+  colors: Uint8Array;
 }
 
 const key = (bx: number, by: number, bz: number) => ((bx + OFF) * 2048 + (by + OFF)) * 2048 + (bz + OFF);
@@ -177,6 +197,73 @@ export class TsdfVolume {
     return updated;
   }
 
+  /**
+   * Paint the surface voxels a photo can see with its colors. Hidden surfaces
+   * are left alone: a quarter-resolution depth buffer of the projected surface
+   * keeps only the nearest surface at each pixel. Colors average over photos.
+   * Returns the number of bricks colored (they are marked for re-meshing).
+   */
+  colorize(ph: ColorPhoto, maxDist = 4.5): number {
+    const { voxel: vs, minWeight } = this.o;
+    const M = ph.camToRoot;
+    const tx = M[12], ty = M[13], tz = M[14];
+    const r00 = M[0], r01 = M[1], r02 = M[2];
+    const r10 = M[4], r11 = M[5], r12 = M[6];
+    const r20 = M[8], r21 = M[9], r22 = M[10];
+    const ZW = Math.ceil(ph.w / 4);
+    const ZH = Math.ceil(ph.h / 4);
+    const zb = new Float32Array(ZW * ZH).fill(Infinity);
+    const bs = vs * BRICK;
+    const hits: Array<{ b: Brick; k: number; vi: number; u: number; v: number; z: number }> = [];
+    for (const [k, b] of this.bricks) {
+      const [bx, by, bz] = brickCoords(k);
+      // Quick reject: brick centre well outside the view.
+      {
+        const cx = (bx + 0.5) * bs - tx, cy = (by + 0.5) * bs - ty, cz = (bz + 0.5) * bs - tz;
+        const z = -(r20 * cx + r21 * cy + r22 * cz);
+        if (z < 0.15 - bs || z > maxDist + bs) continue;
+        const u = ph.cx + (ph.fx * (r00 * cx + r01 * cy + r02 * cz)) / Math.max(z, 0.05);
+        const v = ph.cy - (ph.fy * (r10 * cx + r11 * cy + r12 * cz)) / Math.max(z, 0.05);
+        const m = (ph.fx * bs) / Math.max(z, 0.05);
+        if (u < -m || v < -m || u > ph.w + m || v > ph.h + m) continue;
+      }
+      for (let vi = 0; vi < B3; vi++) {
+        if (b.w[vi] < minWeight || Math.abs(b.d[vi]) > 0.5) continue;
+        const x = vi % BRICK;
+        const y = Math.floor(vi / BRICK) % BRICK;
+        const zz = Math.floor(vi / (BRICK * BRICK));
+        const cx = (bx * BRICK + x + 0.5) * vs - tx;
+        const cy = (by * BRICK + y + 0.5) * vs - ty;
+        const cz = (bz * BRICK + zz + 0.5) * vs - tz;
+        const z = -(r20 * cx + r21 * cy + r22 * cz);
+        if (z < 0.15 || z > maxDist) continue;
+        const u = ph.cx + (ph.fx * (r00 * cx + r01 * cy + r02 * cz)) / z;
+        const v = ph.cy - (ph.fy * (r10 * cx + r11 * cy + r12 * cz)) / z;
+        if (u < 0 || v < 0 || u >= ph.w || v >= ph.h) continue;
+        const zi = (v >> 2) * ZW + (u >> 2);
+        if (z < zb[zi]) zb[zi] = z;
+        hits.push({ b, k, vi, u, v, z });
+      }
+    }
+    const colored = new Set<number>();
+    for (const h of hits) {
+      if (h.z > zb[(h.v >> 2) * ZW + (h.u >> 2)] + 0.06) continue; // behind something nearer
+      const b = h.b;
+      if (!b.c) {
+        b.c = new Uint8Array(B3 * 3);
+        b.cw = new Uint8Array(B3);
+      }
+      const p = ((h.v | 0) * ph.w + (h.u | 0)) * 4;
+      const n = b.cw![h.vi];
+      const o = h.vi * 3;
+      for (let ch = 0; ch < 3; ch++) b.c[o + ch] = Math.round((b.c[o + ch] * n + ph.rgba[p + ch]) / (n + 1));
+      if (n < 20) b.cw![h.vi] = n + 1;
+      colored.add(h.k);
+    }
+    for (const k of colored) this.dirty.add(k);
+    return colored.size;
+  }
+
   /** Signed distance (fraction of trunc) and weight at a global voxel. */
   sample(gx: number, gy: number, gz: number): { d: number; w: number } {
     const bx = Math.floor(gx / BRICK);
@@ -213,6 +300,9 @@ export class TsdfVolume {
     const N = BRICK + 3; // local grid -1 .. BRICK+1
     const D = new Float32Array(N * N * N).fill(1);
     const Wt = new Uint8Array(N * N * N);
+    const Cc = new Uint8Array(N * N * N * 3);
+    const Cw = new Uint8Array(N * N * N);
+    let anyColor = false;
     const li = (x: number, y: number, z: number) => ((z + 1) * N + (y + 1)) * N + (x + 1);
     // Gather this brick and its neighbours' edge voxels.
     const nb = new Map<number, Brick | undefined>();
@@ -236,6 +326,13 @@ export class TsdfVolume {
           const l = li(x, y, z);
           D[l] = b.d[vi];
           Wt[l] = b.w[vi];
+          if (b.cw && b.cw[vi]) {
+            Cw[l] = b.cw[vi];
+            Cc[l * 3] = b.c![vi * 3];
+            Cc[l * 3 + 1] = b.c![vi * 3 + 1];
+            Cc[l * 3 + 2] = b.c![vi * 3 + 2];
+            anyColor = true;
+          }
         }
       }
     }
@@ -246,6 +343,7 @@ export class TsdfVolume {
     const cellV = new Int32Array(C * C * C).fill(-1);
     const pos: number[] = [];
     const nrm: number[] = [];
+    const col: number[] = [];
     const corner = new Float32Array(8);
     for (let z = -1; z < BRICK; z++) {
       for (let y = -1; y < BRICK; y++) {
@@ -291,6 +389,21 @@ export class TsdfVolume {
           const gzv = corner[4] + corner[5] + corner[6] + corner[7] - corner[0] - corner[1] - corner[2] - corner[3];
           const gl = Math.hypot(gxv, gyv, gzv) || 1;
           nrm.push(gxv / gl, gyv / gl, gzv / gl);
+          if (anyColor) {
+            // The cell's colored corners, averaged; grey where no photo has reached.
+            let r = 0, g = 0, bl = 0, cn = 0;
+            for (let c = 0; c < 8; c++) {
+              const l = li(x + (c & 1), y + ((c >> 1) & 1), z + ((c >> 2) & 1));
+              const wgt = Cw[l];
+              if (!wgt) continue;
+              r += Cc[l * 3] * wgt;
+              g += Cc[l * 3 + 1] * wgt;
+              bl += Cc[l * 3 + 2] * wgt;
+              cn += wgt;
+            }
+            if (cn) col.push(Math.round(r / cn), Math.round(g / cn), Math.round(bl / cn));
+            else col.push(128, 128, 128);
+          }
         }
       }
     }
@@ -326,7 +439,7 @@ export class TsdfVolume {
         }
       }
     }
-    return { key: k, positions: new Float32Array(pos), normals: new Float32Array(nrm), indices: new Uint32Array(idx) };
+    return { key: k, positions: new Float32Array(pos), normals: new Float32Array(nrm), indices: new Uint32Array(idx), colors: new Uint8Array(col) };
   }
 
   // --- Saving -------------------------------------------------------------------

@@ -96,6 +96,7 @@ export interface MenuApi {
   viewText(): string;
   realWalls(): 'shown' | 'outline' | 'hidden';
   roomMesh(): boolean;
+  roomMeshColored(): boolean;
   hasSection(): boolean;
   dollhouse(): boolean;
   dollAction(a: 'toggle' | 'left' | 'right' | 'bigger' | 'smaller' | 'here'): void;
@@ -561,7 +562,7 @@ export class MainMenu {
             { id: 'labels', label: () => 'Labels', span: 1, onClick: () => a.toggleLabels(), active: () => a.labels() },
             { id: 'snap', label: () => 'Snap', icon: 'magnet', span: 1, onClick: () => a.toggleSnap(), active: () => a.snap() },
             { id: 'occlusion', label: () => 'Occlude', icon: 'eye', span: 1, onClick: () => a.toggleOcclusion(), active: () => a.occlusion() },
-            { id: 'roommesh', label: () => 'Mesh', span: 1, onClick: () => a.toggleRoomMesh(), active: () => a.roomMesh() },
+            { id: 'roommesh', label: () => (a.roomMeshColored() ? 'Color' : 'Mesh'), span: 1, onClick: () => a.toggleRoomMesh(), active: () => a.roomMesh() },
           ],
           [
             { id: 'section', label: () => 'Section', span: 1, col: 0, onClick: () => a.setTool(a.tool() === 'section' ? 'walls' : 'section'), active: () => a.tool() === 'section' },
