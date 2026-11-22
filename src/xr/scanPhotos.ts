@@ -13,6 +13,12 @@ export class ScanPhotos {
   /** When the newest video frame was captured (performance.now ms), from the browser's frame metadata. */
   private lastCaptureMs = NaN;
   label = '';
+  /**
+   * The camera track's settings. With the browser's experimental flags on, the Quest
+   * adds lensCalibration [fx, fy, cx, cy, skew], lensRotation and lensTranslation:
+   * the factory calibration needed to line photos up with the scan.
+   */
+  settings: Record<string, unknown> | null = null;
 
   constructor(private world: World) {
     this.canvas.width = 640;
@@ -39,6 +45,11 @@ export class ScanPhotos {
         const st = e.getValue(CameraSource, 'state');
         if (st === CameraState.Active) {
           this.state = 'on';
+          const stream = e.getValue(CameraSource, 'stream') as MediaStream | null;
+          const s = { ...(stream?.getVideoTracks()[0]?.getSettings() ?? {}) } as Record<string, unknown>;
+          delete s.deviceId;
+          delete s.groupId;
+          this.settings = s;
           this.watchFrames();
           return;
         }

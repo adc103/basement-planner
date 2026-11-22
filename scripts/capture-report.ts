@@ -62,6 +62,7 @@ L(`- Captured ${header.createdAt}, app ${ex.app?.version ?? 'unknown'} (built ${
 L(`- ${header.userAgent ?? ''}`);
 L(`- ${frames.length} depth frames at ${header.w}x${header.h} over ${f1(dur)} s; walked ${f1(path)} m; ${photos.length} photos${photos.length ? ` (${photos.filter((p) => Number.isFinite(p.captured ?? NaN)).length} with capture time, ${photos.filter((p) => p.track?.length).length} with pose track)` : ''}`);
 L(`- Replay: ${pts.length} points, room mesh ${surf.pos.length / 3} vertices, ${vol.brickCount} bricks; replay ${replayMs.toFixed(0)} ms, wall finding ${findMs.toFixed(0)} ms`);
+if (ex.device?.cameraSettings) L(`- Camera: ${ex.device.camera}; lens ${JSON.stringify(ex.device.cameraSettings.lensCalibration ?? 'not reported')}, rotation ${JSON.stringify(ex.device.cameraSettings.lensRotation ?? '-')}, translation ${JSON.stringify(ex.device.cameraSettings.lensTranslation ?? '-')}`);
 L(`- Floor offset ${res.floorOffset ?? '-'}", ceiling ${res.ceiling ?? '-'}", room direction ${((res.axis * 180) / Math.PI).toFixed(1)} deg`);
 L();
 

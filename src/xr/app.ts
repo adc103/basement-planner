@@ -1704,7 +1704,7 @@ export class PlannerApp {
     const sc = this.scan;
     return {
       app: { version: __APP_VERSION__, builtAt: __BUILD_TIME__ },
-      device: { userAgent: navigator.userAgent, depth: `${sc.sampler.width}x${sc.sampler.height}`, camera: sc.photos.label, detailed: this.detailedCapture },
+      device: { userAgent: navigator.userAgent, depth: `${sc.sampler.width}x${sc.sampler.height}`, camera: sc.photos.label, cameraSettings: sc.photos.settings, detailed: this.detailedCapture },
       plan: JSON.parse(JSON.stringify(this.store.plan)),
       proposals: sc.proposals ?? sc.live ?? null,
       roomMesh: { bricks: sc.mesh.bricks, triangles: sc.mesh.triangles },
