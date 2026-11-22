@@ -346,6 +346,12 @@ export function refineStructure(res: StructureResult, surf: Surface, known: Seg[
   );
   for (const w of walls) {
     const d = dirOf(w);
+    // Only judge a wall where the mesh actually looked: older scans (or spots the
+    // mesh hasn't reached) keep their point-map evidence instead of reading as "guessed".
+    if (idx.near(w.a, w.b, w.thickness / 2 + 12).length < 60) {
+      w.evidence = w.evidence ?? 'partial';
+      continue;
+    }
     const ops = w.openings.map((o) => ({ offset: (o.center.x - w.a.x) * d.x + (o.center.y - w.a.y) * d.y, width: o.width, height: o.height, sill: o.sill }));
     const f = fitWall(idx, { a: w.a, b: w.b, thickness: w.thickness, z0, z1, openings: ops });
     w.evidence = f.evidence;
