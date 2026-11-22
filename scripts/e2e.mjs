@@ -771,6 +771,61 @@ try {
       check(r.after !== null && r.after < 0.3 && r.evidence === 'measured', `Fit to scan puts it on the mesh (${r.after?.toFixed(2)}" off, ${r.evidence})`);
       check(r.undo === 'Fit to scan', `fit is one undo step (${r.undo})`);
     }
+    // See-through: a real wall in front of that mesh wall opens as a window onto it.
+    {
+      // Stand where the fake depth camera stood (plan-root (30, 1.6, 30) m), facing the mesh wall.
+      const headBefore = await page.evaluate(() => {
+        const d = window.__dev;
+        const before = { p: [d.position.x, d.position.y, d.position.z], q: [d.quaternion.x, d.quaternion.y, d.quaternion.z, d.quaternion.w] };
+        const root = window.basementPlanner.view.root;
+        root.updateWorldMatrix(true, false);
+        const at = root.localToWorld(new (root.position.constructor)(30, 1.6, 30));
+        d.position.set(at.x, at.y, at.z);
+        d.quaternion.set(0, 0, 0, 1);
+        return before;
+      });
+      await frames(4);
+      const r = await page.evaluate(() => {
+        const app = window.basementPlanner;
+        const face = 28 / 0.0254;
+        const id = app.cmd.run('wall.add', { a: { x: 1110, y: face + 40 }, b: { x: 1250, y: face + 40 }, kind: 'existing', thickness: 4.5, height: 96 });
+        app.editTool.select({ kind: 'wall', id });
+        const behind = app.meshBehind(id);
+        app.toggleSeeThrough();
+        const open = app.portals.has(id);
+        const hidden = app.view.wallMeshes.find((m) => m.userData.wallId === id)?.visible === false;
+        return { id, behind, open, hidden };
+      });
+      check(r.behind > 100, `mesh found behind the wall (${r.behind} points)`);
+      check(r.open && r.hidden, 'See through opens the wall and hides its model');
+      await frames(3);
+      const t = await page.evaluate((id) => {
+        const app = window.basementPlanner;
+        const p = app.portals.portals.get(id);
+        const V = app.view.root.position.constructor;
+        const E = app.world.camera.getWorldPosition(new V());
+        // Through the window's middle, a meter past the wall: inside every plane.
+        const w = app.store.plan.walls.find((x) => x.id === id);
+        const A = app.store.plan.nodes.find((n) => n.id === w.a), B = app.store.plan.nodes.find((n) => n.id === w.b);
+        const mid = app.view.root.localToWorld(new V(((A.x + B.x) / 2) * 0.0254, 1.2, ((A.y + B.y) / 2) * 0.0254));
+        const thru = mid.clone().sub(E).normalize().multiplyScalar(E.distanceTo(mid) + 1).add(E);
+        const beside = app.view.root.localToWorld(new V(((A.x + B.x) / 2) * 0.0254 + 6, 1.2, ((A.y + B.y) / 2) * 0.0254 - 1));
+        const inside = (q) => p.planes.every((pl) => pl.distanceToPoint(q) >= 0);
+        return { mirrors: p.mirrors.size, thru: inside(thru), beside: inside(beside), near: inside(mid) };
+      }, r.id);
+      check(t.mirrors > 0, `the window draws the room mesh (${t.mirrors} chunks)`);
+      await page.screenshot({ path: 'artifacts/e2e-seethrough.png' });
+      check(t.thru && !t.beside && !t.near, `the view is cut to the window and to beyond the wall (through ${t.thru}, beside ${t.beside}, at the wall ${t.near})`);
+      await page.evaluate(({ id, h }) => {
+        const app = window.basementPlanner;
+        app.toggleSeeThrough();
+        app.cmd.run('element.delete', { id });
+        app.editTool.select(null);
+        window.__dev.position.set(...h.p);
+        window.__dev.quaternion.set(...h.q);
+      }, { id: r.id, h: headBefore });
+      await frames(4);
+    }
     const before = await page.evaluate(() => window.basementPlanner.store.plan.walls.length);
     // Paint a 20' x 14' box room 30 ft away from the drawn walls, so detection has real structure.
     await page.evaluate(() => {

@@ -1,4 +1,4 @@
-import { DepthSensingSystem, Vector2, type Material, type World } from '@iwsdk/core';
+import { DepthSensingSystem, Vector2, Vector4, type Material, type World } from '@iwsdk/core';
 
 /**
  * Depth occlusion for planned surfaces that sit ON real surfaces: real walls,
@@ -22,16 +22,25 @@ export function setSurfaceOcclusion(enabled: boolean): void {
   on = enabled;
 }
 
-/** Patch a material to fade where something real is more than `bias` meters in front of it. */
-export function surfaceOccludable<T extends Material>(m: T, bias = 0.1): T {
+/**
+ * Patch a material to fade where something real is more than `bias` meters in
+ * front of it. With `plane` (world-space, xyz = normal, w = constant), the
+ * comparison uses where the view ray crosses that plane instead of the
+ * fragment itself: content drawn "through" a real wall then still hides behind
+ * things in front of that wall, but not behind the wall.
+ */
+export function surfaceOccludable<T extends Material>(m: T, bias = 0.1, plane?: { value: Vector4 }): T {
   m.transparent = true;
   const prev = m.onBeforeCompile?.bind(m);
   m.onBeforeCompile = (shader, renderer) => {
     prev?.(shader, renderer);
-    Object.assign(shader.uniforms, shared, { uSoBias: { value: bias } });
+    Object.assign(shader.uniforms, shared, { uSoBias: { value: bias }, uSoPlane: plane ?? { value: new Vector4(0, 0, 0, 0) } });
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', 'varying float vSoDepth;\n#include <common>')
-      .replace('#include <fog_vertex>', '#include <fog_vertex>\nvSoDepth = -(modelViewMatrix * vec4(position, 1.0)).z;');
+      .replace('#include <common>', 'varying float vSoDepth;\nvarying vec3 vSoWorld;\n#include <common>')
+      .replace(
+        '#include <fog_vertex>',
+        '#include <fog_vertex>\nvSoDepth = -(modelViewMatrix * vec4(position, 1.0)).z;\nvSoWorld = (modelMatrix * vec4(position, 1.0)).xyz;',
+      );
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
@@ -43,7 +52,9 @@ uniform float uSoRaw;
 uniform float uSoNear;
 uniform vec2 uSoViewport;
 uniform float uSoBias;
+uniform vec4 uSoPlane;
 varying float vSoDepth;
+varying vec3 vSoWorld;
 #ifndef VIEW_ID
 #define VIEW_ID 0
 #endif
@@ -60,6 +71,13 @@ if (uSoEnabled) {
   vec2 suv = gl_FragCoord.xy / uSoViewport;
   vec2 duv = uSoGPU ? suv : vec2(suv.x, 1.0 - suv.y);
   float d = vSoDepth - uSoBias;
+  if (dot(uSoPlane.xyz, uSoPlane.xyz) > 0.5) {
+    // Depth where the ray from the eye crosses the plane (a fraction of the way to this fragment).
+    vec3 ray = vSoWorld - cameraPosition;
+    float den = dot(uSoPlane.xyz, ray);
+    float t = abs(den) > 1e-5 ? -(dot(uSoPlane.xyz, cameraPosition) + uSoPlane.w) / den : 1.0;
+    d = vSoDepth * clamp(t, 0.0, 1.0) - uSoBias;
+  }
   vec2 px = 8.0 / uSoViewport;
   float a = soSample(duv, d) * 0.4 + (soSample(duv + vec2(px.x, 0.0), d) + soSample(duv - vec2(px.x, 0.0), d)
     + soSample(duv + vec2(0.0, px.y), d) + soSample(duv - vec2(0.0, px.y), d)) * 0.15;
@@ -68,7 +86,7 @@ if (uSoEnabled) {
 }`,
       );
   };
-  m.customProgramCacheKey = () => `so${bias}`;
+  m.customProgramCacheKey = () => `so${bias}${plane ? 'p' : ''}`;
   m.needsUpdate = true;
   return m;
 }

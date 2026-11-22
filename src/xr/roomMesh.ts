@@ -80,6 +80,11 @@ export class RoomMesh {
     setTimeout(() => (this.pending = false), 1500);
   }
 
+  /** The rendered chunks (for drawing the mesh elsewhere, e.g. through a wall). */
+  chunks(): IterableIterator<[string, Mesh]> {
+    return this.pieces.entries();
+  }
+
   /** Mesh vertices and normals in plan inches, for fitting and checking walls. */
   surface(): Surface {
     return surfaceFromMeshes(this.bricksMesh.values());

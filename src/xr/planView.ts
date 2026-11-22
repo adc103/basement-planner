@@ -750,6 +750,13 @@ export class PlanView {
   }
 
   /** Persistent selection highlight (blue). */
+  /** Walls shown as see-through windows: their own model is hidden (still pointable). */
+  private openWalls = new Set<string>();
+  setOpenWalls(ids: string[]): void {
+    this.openWalls = new Set(ids);
+    this.applyMaterials();
+  }
+
   setSelected(wallId: string | null): void {
     if (wallId === this.selected) return;
     this.selected = wallId;
@@ -759,8 +766,8 @@ export class PlanView {
   private applyMaterials(): void {
     for (const m of this.wallMeshes) {
       const id = m.userData.wallId as string;
-      // Outline/hidden real walls still show while pointed at or selected.
-      m.visible = m.userData.drawn !== false || id === this.highlighted || id === this.selected;
+      // Outline/hidden real walls still show while pointed at or selected; see-through walls never do.
+      m.visible = !this.openWalls.has(id) && (m.userData.drawn !== false || id === this.highlighted || id === this.selected);
       const base = m.userData.kind === 'demolish' ? this.matDemolish : m.userData.kind === 'existing' ? this.matExisting : this.matNew;
       m.material =
         id === this.highlighted

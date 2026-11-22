@@ -44,7 +44,8 @@ export interface MenuApi {
   editStud(s: '2x4' | '2x6'): void;
   editWidth(): void;
   deleteSelection(): void;
-  edit(action: 'thickness' | 'split' | 'kind' | 'openingHeight' | 'openingType' | 'flip' | 'lock' | 'demolish' | 'fit' | 'keepLength'): void;
+  edit(action: 'thickness' | 'split' | 'kind' | 'openingHeight' | 'openingType' | 'flip' | 'lock' | 'demolish' | 'fit' | 'keepLength' | 'seeThrough'): void;
+  selectedSeeThrough(): boolean;
   selectedKeptLength(): boolean;
   dimText(): string;
   dimState(): 'none' | 'one' | 'parallel' | 'angle';
@@ -426,7 +427,8 @@ export class MainMenu {
             { id: 'd-again', label: () => 'Pick again', span: 4, col: 0, onClick: () => a.dim('reset'), visible: () => a.tool() === 'dimension' && a.dimState() !== 'none' },
             { id: 'e-thick', label: () => 'Thickness', icon: 'keypad', col: 0, onClick: () => a.edit('thickness'), visible: sel('wall') },
             { id: 'e-split', label: () => 'Split', col: 1, onClick: () => a.edit('split'), visible: sel('wall') },
-            { id: 'e-kind', label: () => (a.selectedIsReal() ? 'Make planned' : 'Make real'), span: 2, col: 2, onClick: () => a.edit('kind'), visible: sel('wall') },
+            { id: 'e-kind', label: () => (a.selectedIsReal() ? 'To planned' : 'To real'), col: 2, onClick: () => a.edit('kind'), visible: sel('wall') },
+            { id: 'e-see', label: () => 'See through', icon: 'eye', col: 3, onClick: () => a.edit('seeThrough'), active: () => a.selectedSeeThrough(), visible: () => a.selectionKind() === 'wall' && a.selectedIsReal() },
           ],
           [
             { id: 'e-keeplen', label: () => (a.selectedKeptLength() ? 'Unkeep length' : 'Keep length'), span: 2, col: 0, onClick: () => a.edit('keepLength'), active: () => a.selectedKeptLength(), visible: sel('wall') },

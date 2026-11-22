@@ -51,6 +51,7 @@ import { CameraProbe, PROBE_KEY } from './cameraProbe.js';
 import { registerWebMcp } from './webmcp.js';
 import { DimensionTool } from './tools/dimensionTool.js';
 import { Dollhouse } from './dollhouse.js';
+import { WallPortals } from './wallPortal.js';
 import { BoxTool, BOX_PRESETS, type BoxPreset } from './tools/boxTool.js';
 import { SectionTool, type SectionCut } from './tools/sectionTool.js';
 import { checkPlan, type WallCheck } from '../core/fit.js';
@@ -260,6 +261,7 @@ export class PlannerApp {
     this.measureTool = new MeasureTool(ctx);
     this.dimTool = new DimensionTool(ctx);
     world.renderer.localClippingEnabled = true;
+    this.portals = new WallPortals(this.view.root, this.scan.mesh);
     this.dollhouse = new Dollhouse(world, this.view.root);
     world.createTransformEntity(this.dollhouse.group, { parent: world.sceneEntity, persistent: true });
     this.roomsTool = new RoomsTool(ctx);
@@ -369,12 +371,17 @@ export class PlannerApp {
         else if (action === 'demolish') t.toggleDemolish();
         else if (action === 'fit') this.fitSelectedToScan();
         else if (action === 'keepLength') t.toggleKeepLength();
+        else if (action === 'seeThrough') this.toggleSeeThrough();
       },
       selectedLocked: () => {
         const s = this.editTool.selection;
         return !!s && s.kind !== 'node' && this.editTool.isLocked(s);
       },
       selectedDemolish: () => !!this.editTool.selectedWall()?.demolish,
+      selectedSeeThrough: () => {
+        const w = this.editTool.selectedWall();
+        return !!w && this.portals.has(w.id);
+      },
       selectedKeptLength: () => {
         const w = this.editTool.selectedWall();
         return !!w && this.store.plan.constraints.some((c) => c.type === 'length' && c.a === w.id);
@@ -560,6 +567,53 @@ export class PlannerApp {
 
   // --------------------------------------------------------------- section ---
   boxPreset: BoxPreset = BOX_PRESETS[0];
+  portals!: WallPortals;
+  private portalEye = new Vector3();
+
+  /** Edit tab: open or close the selected real wall as a window onto the scanned room behind it. */
+  private toggleSeeThrough(): void {
+    const w = this.editTool.selectedWall();
+    if (!w) return;
+    if (w.kind !== 'existing') {
+      this.toast('See-through is for real walls. A planned wall can be hidden with Ghost or X-ray on the View tab.', 4);
+      return;
+    }
+    if (!this.portals.has(w.id)) {
+      const behind = this.meshBehind(w.id);
+      if (behind === 0) {
+        this.toast('Nothing scanned behind this wall yet. Scan the room on the other side, then try again.', 5);
+        return;
+      }
+    }
+    const open = this.portals.toggle(w.id);
+    if (!open && !this.portals.has(w.id) && this.portals.ids.length >= 4) this.toast('Up to 4 walls can be see-through at once', 3);
+    this.view.setOpenWalls(this.portals.ids);
+    if (open) this.toast(`See-through: the room behind, from the scan${w.demolish ? ' (as it will look opened up)' : ''}. Your hands still show in front.`, 5);
+    this.refreshUi();
+  }
+
+  /** Mesh vertices on the far side of a wall (either side counts: you may be standing on one). */
+  private meshBehind(wallId: string): number {
+    const plan = this.store.plan;
+    const w = plan.walls.find((x) => x.id === wallId);
+    const a = w && plan.nodes.find((n) => n.id === w.a);
+    const b = w && plan.nodes.find((n) => n.id === w.b);
+    if (!w || !a || !b) return 0;
+    const surf = this.scan.mesh.surface();
+    const L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const d = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
+    const eye = this.view.root.worldToLocal(this.world.player.head.getWorldPosition(this.portalEye));
+    const se = (eye.x / INCH_M - a.x) * -d.y + (eye.z / INCH_M - a.y) * d.x;
+    let n = 0;
+    for (let i = 0; i < surf.pos.length; i += 3) {
+      const t = (surf.pos[i] - a.x) * d.x + (surf.pos[i + 1] - a.y) * d.y;
+      const u = (surf.pos[i] - a.x) * -d.y + (surf.pos[i + 1] - a.y) * d.x;
+      if (t < 0 || t > L) continue;
+      // Beyond the far face, on the side away from you, within ~12 ft.
+      if (Math.sign(u) !== Math.sign(se) && Math.abs(u) > w.thickness / 2 + 3 && Math.abs(u) < 144) n++;
+    }
+    return n;
+  }
   dollhouse!: Dollhouse;
   private dollTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -990,6 +1044,7 @@ export class PlannerApp {
     updateSurfaceOcclusion(world);
     this.view.updateLabels(world.camera);
     this.dollhouse?.update();
+    this.portals?.update(this.store.plan, this.world.camera.getWorldPosition(this.portalEye));
     this.updateToast();
   }
 
