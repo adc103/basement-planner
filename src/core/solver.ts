@@ -156,21 +156,18 @@ export function solveConstraints(plan: Mutable, pinned: ReadonlySet<string> = ne
   let c0 = cost(fv);
   let lambda = 1e-3;
   let it = 0;
-  const h = 1e-5;
+  const h = 1e-6;
   const xp = new Float64Array(n);
   for (; it < 200; it++) {
     const m = fv.length;
-    // Jacobian by central differences.
+    // Jacobian by forward differences (the residuals are smooth; half the cost of central).
     const J = new Float64Array(m * n);
     const fp: number[] = [];
-    const fm: number[] = [];
     for (let j = 0; j < n; j++) {
       xp.set(x);
       xp[j] += h;
       full(xp, fp);
-      xp[j] -= 2 * h;
-      full(xp, fm);
-      for (let i = 0; i < m; i++) J[i * n + j] = (fp[i] - fm[i]) / (2 * h);
+      for (let i = 0; i < m; i++) J[i * n + j] = (fp[i] - fv[i]) / h;
     }
     // (J'J + lambda diag) dx = -J'f
     const A = new Float64Array(n * n);
@@ -208,6 +205,7 @@ export function solveConstraints(plan: Mutable, pinned: ReadonlySet<string> = ne
       } else lambda *= 4;
     }
     w0 = worstOf(x);
+    if (w0.worst <= SOLVE_TOL * 0.1) break;
     if (reg === REG && (w0.worst <= SOLVE_TOL * 2 || !improved)) {
       // Polish: anchor at the answer so far, barely any pull.
       reg = 1e-4;

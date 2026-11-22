@@ -84,10 +84,17 @@ describe('constraint solver', () => {
     for (let i = 0; i < 12; i++) ids.push(b.run('wall.add', { a: { x: 0, y: i * 40 }, b: { x: 200, y: i * 40 + (i % 3) } })!);
     const p = copy(b.store.plan);
     for (let i = 1; i < ids.length; i++) p.constraints.push({ id: `d${i}`, type: 'distance', a: ids[i - 1], b: ids[i], value: 32, mode: 'clear' });
-    const t0 = performance.now();
-    const r = solveConstraints(p);
-    expect(r.ok).toBe(true);
-    expect(performance.now() - t0).toBeLessThan(60);
+    // Steady state (after the first, compiling run), best of three.
+    let best = Infinity;
+    for (let k = 0; k < 4; k++) {
+      const q = copy(p);
+      const t0 = performance.now();
+      const r = solveConstraints(q);
+      expect(r.ok).toBe(true);
+      if (k) best = Math.min(best, performance.now() - t0);
+    }
+    console.log(`solver: 12 walls, 11 locks, ${best.toFixed(1)} ms`);
+    expect(best).toBeLessThan(40);
   });
 });
 
