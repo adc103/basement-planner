@@ -15,13 +15,14 @@ import { FreeGrid } from '../src/core/freeSpace';
 import { createEmptyPlan, parsePlan, type Plan } from '../src/core/plan';
 import { decodeRecording, ingestFrame } from '../src/core/scanIngest';
 import { ScanMap } from '../src/core/scanMap';
-import { findStructure, type StructureResult } from '../src/core/structure';
+import { estimateAxis, findStructure, type StructureResult } from '../src/core/structure';
 import { TsdfVolume } from '../src/core/tsdf';
 import { formatLength } from '../src/core/units';
 
 const file = process.argv[2];
 if (!file) throw new Error('usage: capture-report <capture> [outDir]');
-const out = process.argv[3] ?? join('/tmp/report', basename(file).replace(/\..*$/, ''));
+const slmFile = process.argv.find((a) => a.endsWith('.json'));
+const out = process.argv.slice(3).find((a) => !a.endsWith('.json')) ?? join('/tmp/report', basename(file).replace(/\..*$/, ''));
 mkdirSync(out, { recursive: true });
 let bytes = new Uint8Array(readFileSync(file));
 if (bytes[0] === 0x1f && bytes[1] === 0x8b) bytes = new Uint8Array(gunzipSync(bytes));
@@ -126,6 +127,7 @@ L();
 L(`${ss.planes.length} planes (${[...new Set(ss.planes.map((p: any) => p.label))].join(', ') || 'none'}), ${ss.meshes.length} meshes (${ss.meshes.reduce((n: number, m: any) => n + m.vertices.length, 0)} vertices).`);
 L();
 
+let slmWalls: { x: number; y: number }[][] = [];
 // --- Top-down picture -------------------------------------------------------------------------
 {
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
@@ -162,6 +164,19 @@ L();
       for (const o of w.openings) put(o.center.x, o.center.y, [0, 180, 220], 3);
     }
     for (const f of frames) put(f.head[0] / IN, f.head[2] / IN, [120, 0, 200], 1);
+    if (slmFile) {
+      // Undo exportPly: meters, y flipped, turned by the room axis.
+      const slm = JSON.parse(readFileSync(slmFile, 'utf8'));
+      const ax = estimateAxis(pts);
+      const c = Math.cos(ax), sn = Math.sin(ax);
+      const back = (x: number, y: number) => {
+        const u = x / IN, v = -y / IN;
+        return { x: u * c - v * sn, y: u * sn + v * c };
+      };
+      slmWalls = slm.walls.map((w: any) => [back(w.ax, w.ay), back(w.bx, w.by)]);
+      for (const [a, b] of slmWalls) line(a, b, [230, 0, 200], 1);
+      for (const d of slm.doors) put(back(d.position_x, d.position_y).x, back(d.position_x, d.position_y).y, [0, 120, 255], 4);
+    }
     writeFileSync(join(out, 'topdown.jpg'), jpeg.encode({ data: img, width: W, height: H }, 90).data);
     L('## Top-down');
     L();
@@ -200,6 +215,14 @@ if (photos.length) {
   L();
 }
 
+if (slmWalls.length) {
+  L('## SpatialLM walls (magenta in the picture)');
+  L();
+  L('| from | to | length |');
+  L('|---|---|---|');
+  for (const [a, b] of slmWalls) L(`| ${f1(a.x)}, ${f1(a.y)} | ${f1(b.x)}, ${f1(b.y)} | ${formatLength(Math.round(Math.hypot(b.x - a.x, b.y - a.y)))} |`);
+  L();
+}
 writeFileSync(join(out, 'report.md'), md.join('\n'));
 writeFileSync(join(out, 'result.json'), JSON.stringify({ header: { ...header, extras: undefined }, walls: res.walls, soffits: res.soffits, posts: res.posts }, null, 1));
 console.log(`report: ${join(out, 'report.md')}`);
