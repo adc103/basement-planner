@@ -12,6 +12,13 @@ import type { DepthFrame } from '../core/scanIngest.js';
 import { brickCoords, type BrickMesh, type ColorPhoto } from '../core/tsdf.js';
 import { surfaceFromMeshes, type Surface } from '../core/fit.js';
 import type { FusionIn, FusionOut } from './fusionWorker.js';
+import type { WallFit } from '../core/fit.js';
+import type { PickResult, Ray3 } from '../core/pickWall.js';
+
+export interface WallPick {
+  result: PickResult;
+  fit: WallFit | null;
+}
 
 const PREF = 'basement-planner:room-mesh:v1';
 const MESH_EVERY = 1; // s between mesh updates while scanning
@@ -145,7 +152,28 @@ export class RoomMesh {
     this.group.visible = this.active || this.shown;
   }
 
+  private picks = new Map<number, (p: WallPick | null) => void>();
+  private pickId = 0;
+
+  /**
+   * The wall under a ray, found and measured on the room mesh in the fusion worker
+   * (plan inches). Resolves null without a worker.
+   */
+  pick(ray: Ray3, thickness: number, height: number): Promise<WallPick | null> {
+    if (!this.worker) return Promise.resolve(null);
+    const id = ++this.pickId;
+    return new Promise((resolve) => {
+      this.picks.set(id, resolve);
+      this.send({ type: 'pick', id, ray, thickness, height });
+    });
+  }
+
   private onMessage(m: FusionOut): void {
+    if (m.type === 'pick') {
+      this.picks.get(m.id)?.({ result: m.result, fit: m.fit });
+      this.picks.delete(m.id);
+      return;
+    }
     this.bricks = m.bricks;
     this.frames = m.frames;
     if (m.type === 'stats') {

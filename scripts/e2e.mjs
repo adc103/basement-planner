@@ -224,30 +224,60 @@ try {
     check(r.undo === 'Fit to scan', `snapping is one undo step (${r.undo})`);
   }
   {
-    // Real wall: two taps on the scanned wall's surface (the emulator has no hit test, so the
-    // taps are handed to the tool directly), 1.1" off the true face and with a wrong surface
-    // normal (the headset's is noisy): the taps set the direction and the mesh snaps it exact.
-    const r = await page.evaluate(() => {
+    // Real wall: point at the scanned wall and tap (the emulator has no controller aim here,
+    // so the tap's ray is handed to the tool). The wall is found on the room mesh in the
+    // fusion worker, measured, and added; a second tap on it ends it there.
+    const r = await page.evaluate(async () => {
       const app = window.basementPlanner;
       app.setTool('trace');
       const face = 28 / 0.0254;
       const tool = app.tools.trace;
-      const tap = (x) => tool.commit({ surface: { p: { x, y: face + 1.1 }, z: 50, n: { x: 0.6, y: 0.8 }, ny: 0, distM: 1 }, floor: null, wall: null, eye: { x: 1185, y: face + 60 } });
+      const eye = { x: 1181, y: 1181, z: 60 };
+      const aimAt = (x) => {
+        const d = { x: x - eye.x, y: face - eye.y, z: 50 - eye.z };
+        const L = Math.hypot(d.x, d.y, d.z);
+        return { ray: { o: eye, d: { x: d.x / L, y: d.y / L, z: d.z / L } }, surface: null, floor: null, wall: null, eye: { x: eye.x, y: eye.y } };
+      };
+      const settle = async () => {
+        for (let i = 0; i < 100 && (tool.busy || tool.inFlight); i++) await new Promise((res) => setTimeout(res, 50));
+      };
+      // Hovering shows the wall before you tap.
+      tool.hover(aimAt(1180));
+      await settle();
+      tool.hover(aimAt(1180));
+      const previewed = !!(tool.found && tool.found.proposal);
       const before = app.store.plan.walls.length;
-      tap(1150);
-      tap(1220);
+      tool.commit(aimAt(1180));
+      await settle();
       const w = app.store.plan.walls.at(-1);
       const added = app.store.plan.walls.length - before;
+      const len = (id) => {
+        const ww = app.store.plan.walls.find((x) => x.id === id);
+        const a = app.store.plan.nodes.find((n) => n.id === ww.a), b = app.store.plan.nodes.find((n) => n.id === ww.b);
+        return Math.hypot(b.x - a.x, b.y - a.y);
+      };
+      const full = len(w.id);
       const dev = app.verifyWalls([w.id])?.[0]?.check.deviation ?? null;
-      const undo = app.store.undoLabel;
+      const undo1 = app.store.undoLabel;
+      // Tap the same wall 30" in from one end: that end moves there.
+      tool.commit(aimAt(1130));
+      await settle();
+      const trimmed = len(w.id);
+      const undo2 = app.store.undoLabel;
+      const count2 = app.store.plan.walls.length - before;
+      app.undo();
       app.undo();
       const after = app.store.plan.walls.length - before;
       app.setTool('edit');
-      return { added, kind: w.kind, dev, undo, after };
+      return { previewed, added, kind: w.kind, full, dev, undo1, trimmed, undo2, count2, after };
     });
-    check(r.added === 1 && r.kind === 'existing', `two taps on a real wall add one real wall (${r.added}, ${r.kind})`);
-    check(r.dev !== null && r.dev < 0.3, `the traced wall lands on the scanned surface (${r.dev?.toFixed(2)}" off)`);
-    check(r.undo === 'Trace real wall' && r.after === 0, `tracing is one undo step (${r.undo})`);
+    check(r.previewed, 'pointing at a scanned wall previews it before the tap');
+    check(r.added === 1 && r.kind === 'existing', `one tap on a scanned wall adds one real wall (${r.added}, ${r.kind})`);
+    check(r.full > 140 && r.full < 170, `the wall runs the length of the scanned face (${r.full.toFixed(0)}")`);
+    check(r.dev !== null && r.dev < 0.3, `the wall lands on the scanned surface (${r.dev?.toFixed(2)}" off)`);
+    check(r.undo1 === 'Trace real wall', `adding is one undo step (${r.undo1})`);
+    check(r.count2 === 1 && r.trimmed < r.full - 20, `tapping the same wall again ends it there (${r.full.toFixed(0)}" to ${r.trimmed.toFixed(0)}")`);
+    check(r.undo2 === 'End real wall' && r.after === 0, `ending is its own undo step (${r.undo2})`);
   }
   {
     const cyc = await page.evaluate(() => {

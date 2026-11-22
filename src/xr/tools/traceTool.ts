@@ -1,36 +1,83 @@
 import { captureWall } from '../../core/capture.js';
+import type { WallFit } from '../../core/fit.js';
 import { dist, type Vec2 } from '../../core/geom2d.js';
+import { pickSetupWall, type PickedWall, type Ray3, type SetupPlane } from '../../core/pickWall.js';
 import { formatLength } from '../../core/units.js';
+import type { WallPick } from '../roomMesh.js';
 import type { AimHit, Tool, ToolContext } from './tool.js';
 
-type Surface = NonNullable<AimHit['surface']>;
+/** Where Real wall gets its walls from. */
+export interface TraceSources {
+  /** The wall under a ray on the room mesh (null: no mesh or no worker). */
+  pick(ray: Ray3, thickness: number, height: number): Promise<WallPick | null>;
+  hasMesh(): boolean;
+  /** Space Setup planes seen this session (plan inches). */
+  setupPlanes(): SetupPlane[];
+}
+
+/** A wall found under the ray, ready to add. */
+interface Proposal {
+  from: 'mesh' | 'setup';
+  face: PickedWall;
+  /** Centerline and thickness to add. */
+  a: Vec2;
+  b: Vec2;
+  thickness: number;
+  fit: WallFit | null;
+}
+
+type Found = { proposal: Proposal } | { miss: string };
+
+/** Last wall added: a tap on the same face moves its nearer end there. */
+interface Last {
+  id: string;
+  face: { a: Vec2; n: Vec2; u: Vec2 };
+}
+
+const MISS_TEXT: Record<string, string> = {
+  nothing: 'No scanned surface there: scan this wall, or tap two points on it',
+  'not-a-wall': 'That is floor or ceiling: aim at the wall itself',
+  'too-little': 'Too little scan there: aim at a clearer part of the wall',
+  unclear: "Can't tell this wall's line here: aim at a clearer, flatter part",
+};
 
 /**
- * Trace a real wall: point at the wall near one end and tap, then near the
- * other end and tap. The wall runs between the two taps; the room mesh (when
- * scanned) then sets its exact position and thickness.
+ * Real wall: point at a wall and tap. The wall is found on the room mesh (fitted to
+ * the whole patch around where you point, then followed to its corners), or taken
+ * from Space Setup where the mesh hasn't covered it. Tap the same wall again to end
+ * it at that spot. With neither, tap two points on the wall.
  */
 export class TraceTool implements Tool {
   readonly name = 'Real wall';
+  private found: Found | null = null;
+  private asked: Ray3 | null = null;
+  private inFlight = false;
+  private busy = false;
+  private last: Last | null = null;
+  /** Two-tap fallback (no mesh, no Space Setup there): the first point. */
   private first: { p: Vec2; z: number; n: Vec2 } | null = null;
 
   constructor(
     private ctx: ToolContext,
-    /** Move a just-traced wall onto the room mesh; returns a short note for the toast. */
-    private snap: (wallId: string) => string,
+    private src: TraceSources,
   ) {}
 
   activate(): void {
     this.first = null;
+    this.last = null;
+    this.found = null;
   }
 
   deactivate(): void {
     this.first = null;
+    this.last = null;
     this.ctx.preview.clear();
   }
 
   hint(): string {
-    return this.first ? 'First end set. Tap the same wall near its other end (B to cancel)' : 'Point at a real wall near one end and tap';
+    if (this.first) return 'First end set. Tap the same wall near its other end (B to cancel)';
+    if (this.last) return 'Tap this wall again to end it there, or point at the next wall';
+    return 'Point at a real wall and tap';
   }
 
   undo(): boolean {
@@ -41,56 +88,200 @@ export class TraceTool implements Tool {
     return true;
   }
 
-  /** The real surface under the ray, or the floor (for a tap at the base of a wall). */
-  private point(aim: AimHit): { p: Vec2; z: number; n: Vec2 } | null {
-    const s: Surface | null = aim.surface;
-    if (s) return { p: s.p, z: s.z, n: s.n };
-    return aim.floor ? { p: aim.floor, z: 0, n: { x: 0, y: 0 } } : null;
+  private settings() {
+    return this.ctx.store.plan.settings;
+  }
+
+  /** Find the wall under a ray: room mesh first, then Space Setup. */
+  private async find(ray: Ray3): Promise<Found> {
+    const st = this.settings();
+    const r = this.src.hasMesh() ? await this.src.pick(ray, st.captureThickness, st.wallHeight) : null;
+    if (r && 'wall' in r.result) return { proposal: this.proposal('mesh', r.result.wall, r.fit) };
+    const ss = pickSetupWall(this.src.setupPlanes(), ray);
+    if (ss) return { proposal: this.proposal('setup', ss, null) };
+    return { miss: r && 'miss' in r.result ? r.result.miss : 'nothing' };
+  }
+
+  private proposal(from: Proposal['from'], face: PickedWall, fit: WallFit | null): Proposal {
+    const st = this.settings();
+    if (fit && fit.evidence !== 'inferred') return { from, face, a: fit.a, b: fit.b, thickness: Math.round(fit.thickness * 4) / 4, fit };
+    const h = st.captureThickness / 2;
+    const back = (p: Vec2) => ({ x: p.x - face.n.x * h, y: p.y - face.n.y * h });
+    return { from, face, a: back(face.a), b: back(face.b), thickness: st.captureThickness, fit: null };
+  }
+
+  /** Keep one pick in flight for the live preview. */
+  private request(ray: Ray3): void {
+    const a = this.asked;
+    if (this.inFlight) return;
+    if (a && a.d.x * ray.d.x + a.d.y * ray.d.y + a.d.z * ray.d.z > 0.99995 && Math.hypot(a.o.x - ray.o.x, a.o.y - ray.o.y, a.o.z - ray.o.z) < 0.5 && this.found) return;
+    this.asked = { o: { ...ray.o }, d: { ...ray.d } };
+    this.inFlight = true;
+    void this.find(this.asked).then((f) => {
+      this.found = f;
+      this.inFlight = false;
+    });
+  }
+
+  /** The last wall's new ends if this face point is on its face; null otherwise. */
+  private trim(face: PickedWall | null, aim: AimHit): { a: Vec2; b: Vec2 } | null {
+    const L = this.last;
+    if (!L) return null;
+    const w = this.ctx.store.plan.walls.find((x) => x.id === L.id);
+    if (!w) return null;
+    let p: Vec2 | null = null;
+    if (face) {
+      const par = Math.abs(face.n.x * L.face.n.x + face.n.y * L.face.n.y);
+      const off = Math.abs((face.hit.x - L.face.a.x) * L.face.n.x + (face.hit.y - L.face.a.y) * L.face.n.y);
+      if (par > 0.999 && off < 2) p = face.hit;
+    } else if (aim.surface) {
+      const off = Math.abs((aim.surface.p.x - L.face.a.x) * L.face.n.x + (aim.surface.p.y - L.face.a.y) * L.face.n.y);
+      if (off < 4) p = aim.surface.p;
+    }
+    if (!p) return null;
+    const nodes = this.ctx.store.plan.nodes;
+    const na = nodes.find((n) => n.id === w.a);
+    const nb = nodes.find((n) => n.id === w.b);
+    if (!na || !nb) return null;
+    const a = { x: na.x, y: na.y };
+    const b = { x: nb.x, y: nb.y };
+    const len = dist(a, b);
+    if (len < 1) return null;
+    const u = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+    const s = (p.x - a.x) * u.x + (p.y - a.y) * u.y;
+    const at = { x: a.x + u.x * s, y: a.y + u.y * s };
+    // Move the end nearer the tap (past an end: extend it).
+    const toA = Math.abs(s);
+    const toB = Math.abs(len - s);
+    const r = toA < toB ? { a: at, b } : { a, b: at };
+    return dist(r.a, r.b) >= 6 ? r : null;
   }
 
   hover(aim: AimHit | null): void {
     const pv = this.ctx.preview;
     pv.clear();
-    const f = this.first;
-    if (f) pv.showCursorAt({ x: f.p.x, y: f.p.y, z: f.z }, 'endpoint', false, f.n);
     if (!aim) return;
-    const q = this.point(aim);
-    if (!q) return;
-    if (aim.surface) pv.showSurfaceCursor({ x: q.p.x, y: q.p.y, z: q.z }, q.n);
-    if (!f) return;
-    const st = this.ctx.store.plan.settings;
-    const label = formatLength(Math.round(dist(f.p, q.p)));
-    pv.showMeasureLine({ x: f.p.x, y: f.p.y, z: f.z }, { x: q.p.x, y: q.p.y, z: f.z }, label);
-    const w = captureWall(f.p, q.p, aim.eye, st.captureThickness);
-    if (w) pv.showRubberWall(w.a, w.b, st.captureThickness, st.wallHeight, label);
+    const st = this.settings();
+    if (this.first) {
+      this.hoverTwoTap(aim);
+      return;
+    }
+    this.request(aim.ray);
+    const f = this.found;
+    const face = f && 'proposal' in f ? f.proposal.face : null;
+    const t = this.trim(face, aim);
+    if (t) {
+      const w = this.ctx.store.plan.walls.find((x) => x.id === this.last!.id)!;
+      pv.showRubberWall(t.a, t.b, w.thickness, st.wallHeight, `${formatLength(Math.round(dist(t.a, t.b)))}: tap to end it here`);
+      return;
+    }
+    if (f && 'proposal' in f) {
+      const p = f.proposal;
+      pv.showSurfaceCursor({ x: p.face.hit.x, y: p.face.hit.y, z: p.face.hit.z }, p.face.n);
+      const ends = p.face.ends.filter((e) => e === 'unseen').length;
+      const note = p.from === 'setup' ? ' (Space Setup)' : ends ? ' (scan ends: tap again to set the end)' : '';
+      pv.showRubberWall(p.a, p.b, p.thickness, st.wallHeight, `${formatLength(Math.round(dist(p.face.a, p.face.b)))}${note}`);
+    } else if (f && 'miss' in f && aim.floor) {
+      pv.showHint(MISS_TEXT[f.miss] ?? MISS_TEXT.nothing, aim.floor, 20);
+    }
   }
 
   commit(aim: AimHit): void {
-    const q = this.point(aim);
-    if (!q) {
-      this.ctx.toast('Point at a real wall', 3);
+    if (this.busy) return;
+    if (this.first) {
+      this.commitTwoTap(aim);
       return;
     }
-    if (!this.first) {
-      this.first = { p: { ...q.p }, z: q.z, n: { ...q.n } };
-      this.ctx.toast('First end set. Now tap near the other end of the same wall', 3);
+    // Always decide on a fresh pick at the tap, not the preview's last answer.
+    this.busy = true;
+    const ray: Ray3 = { o: { ...aim.ray.o }, d: { ...aim.ray.d } };
+    const surface = aim.surface ? { ...aim.surface } : null;
+    void this.find(ray).then((f) => {
+      this.busy = false;
+      this.found = f;
+      this.apply(f, { ...aim, surface });
+    });
+  }
+
+  private apply(f: Found, aim: AimHit): void {
+    const face = 'proposal' in f ? f.proposal.face : null;
+    const t = this.trim(face, aim);
+    if (t && this.last) {
+      const id = this.last.id;
+      this.ctx.cmd.group('End real wall', () => this.ctx.act('wall.place', { id, a: t.a, b: t.b }));
+      this.ctx.toast(`Wall is now ${formatLength(Math.round(dist(t.a, t.b)))}`, 3);
       this.ctx.refreshUi();
       return;
     }
-    const st = this.ctx.store.plan.settings;
-    const w = captureWall(this.first.p, q.p, aim.eye, st.captureThickness);
+    if ('proposal' in f) {
+      this.add(f.proposal);
+      return;
+    }
+    // Nothing known there: fall back to two taps on the headset's hit test.
+    const s = aim.surface;
+    if (s && Math.hypot(s.n.x, s.n.y) > 0.5) {
+      this.first = { p: { ...s.p }, z: s.z, n: { ...s.n } };
+      this.ctx.toast(`${MISS_TEXT[f.miss] ?? MISS_TEXT.nothing}. First end set: tap near the other end`, 4);
+      this.ctx.refreshUi();
+      return;
+    }
+    this.ctx.toast(MISS_TEXT[f.miss] ?? MISS_TEXT.nothing, 3);
+  }
+
+  private add(p: Proposal): void {
+    let id: string | null = null;
+    this.ctx.cmd.group('Trace real wall', () => {
+      id = this.ctx.act('wall.add', { a: p.a, b: p.b, kind: 'existing', source: 'capture', thickness: p.thickness });
+      if (id && p.fit) this.ctx.cmd.run('scan.setEvidence', { items: [{ id, evidence: p.fit.evidence, confidence: p.fit.confidence }] }, 'scan');
+    });
+    if (!id) return;
+    const u = { x: p.face.b.x - p.face.a.x, y: p.face.b.y - p.face.a.y };
+    const ul = Math.hypot(u.x, u.y) || 1;
+    this.last = { id, face: { a: p.face.a, n: p.face.n, u: { x: u.x / ul, y: u.y / ul } } };
+    const len = formatLength(Math.round(dist(p.face.a, p.face.b)));
+    const how = p.from === 'setup' ? 'from Space Setup' : p.fit ? `${p.thickness}" thick, measured` : 'one face seen';
+    this.ctx.toast(`Real wall added: ${len}, ${how}`, 4);
+    this.ctx.refreshUi();
+  }
+
+  private hoverTwoTap(aim: AimHit): void {
+    const pv = this.ctx.preview;
+    const f = this.first!;
+    pv.showCursorAt({ x: f.p.x, y: f.p.y, z: f.z }, 'endpoint', false, f.n);
+    const q = aim.surface ? aim.surface.p : aim.floor;
+    if (!q) return;
+    if (aim.surface) pv.showSurfaceCursor({ x: q.x, y: q.y, z: aim.surface.z }, aim.surface.n);
+    const st = this.settings();
+    const label = formatLength(Math.round(dist(f.p, q)));
+    pv.showMeasureLine({ x: f.p.x, y: f.p.y, z: f.z }, { x: q.x, y: q.y, z: f.z }, label);
+    const w = captureWall(f.p, q, aim.eye, st.captureThickness);
+    if (w) pv.showRubberWall(w.a, w.b, st.captureThickness, st.wallHeight, label);
+  }
+
+  private commitTwoTap(aim: AimHit): void {
+    const q = aim.surface ? aim.surface.p : aim.floor;
+    if (!q || !this.first) return;
+    const st = this.settings();
+    const w = captureWall(this.first.p, q, aim.eye, st.captureThickness);
     if (!w) {
       this.ctx.toast('Tap two spots at least 6" apart along the wall', 3);
       return;
     }
-    let note = 'Real wall added';
+    let id: string | null = null;
     this.ctx.cmd.group('Trace real wall', () => {
-      const id = this.ctx.act('wall.add', { a: w.a, b: w.b, kind: 'existing', source: 'capture', thickness: st.captureThickness });
-      if (id) note = this.snap(id);
+      id = this.ctx.act('wall.add', { a: w.a, b: w.b, kind: 'existing', source: 'capture', thickness: st.captureThickness });
     });
+    const n0 = this.first.n;
     this.first = null;
     this.ctx.preview.clear();
-    this.ctx.toast(note, 4);
+    if (id) {
+      const L = dist(w.faceA, w.faceB) || 1;
+      const u = { x: (w.faceB.x - w.faceA.x) / L, y: (w.faceB.y - w.faceA.y) / L };
+      let n = { x: -u.y, y: u.x };
+      if (n.x * n0.x + n.y * n0.y < 0) n = { x: -n.x, y: -n.y };
+      this.last = { id, face: { a: w.faceA, n, u } };
+    }
+    this.ctx.toast('Real wall added where you tapped (scan it to measure it exactly)', 4);
     this.ctx.refreshUi();
   }
 }

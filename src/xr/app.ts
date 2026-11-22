@@ -46,6 +46,7 @@ import { MeasureTool } from './tools/measureTool.js';
 import { OpeningTool } from './tools/openingTool.js';
 import type { AimHit, Tool, ToolContext } from './tools/tool.js';
 import { TraceTool } from './tools/traceTool.js';
+import type { SetupPlane } from '../core/pickWall.js';
 import { WallTool } from './tools/wallTool.js';
 import { MainMenu, MENU_H, type MenuApi, type ToolName } from './ui/mainMenu.js';
 import { setPokeEnabled } from './ui/poke.js';
@@ -221,9 +222,10 @@ export class PlannerApp {
     this.tools = {
       walls: this.wallTool,
       doors: new OpeningTool(ctx),
-      trace: new TraceTool(ctx, (id) => {
-        const r = this.fitWallToScan(id);
-        return r?.ok ? `Real wall added. ${r.note}` : r ? `Real wall added where you tapped. ${r.note}` : 'Real wall added where you tapped (scan the room to snap it exactly)';
+      trace: new TraceTool(ctx, {
+        pick: (ray, thickness, height) => this.scan.mesh.pick(ray, thickness, height),
+        hasMesh: () => this.scan.mesh.triangles > 0,
+        setupPlanes: () => (this.spaceSetupSeen?.planes ?? []) as SetupPlane[],
       }),
       edit: this.editTool,
       delete: new DeleteTool(ctx),
