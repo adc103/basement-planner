@@ -198,7 +198,7 @@ pre{white-space:pre-wrap;font-size:12px;color:#aaa}#msg{color:#facc15}
 <div><input id=file type=file accept=".ply"></div>
 <div><select id=detect><option value=all>Walls, doors, windows, furniture</option><option value=arch>Walls, doors, windows only</option></select>
 <button id=go>Find the layout</button></div>
-<p id=msg></p><svg id=svg viewBox="0 0 10 10"></svg><pre id=out></pre>
+<p id=msg></p><button id=save style="display:none">Save result (.json)</button><svg id=svg viewBox="0 0 10 10"></svg><pre id=out></pre>
 <script>
 const $=id=>document.getElementById(id);
 $('key').value=localStorage.getItem('roomAiKey')||'';
@@ -233,6 +233,7 @@ $('go').onclick=async()=>{
     const res=await r.json();
     $('msg').textContent=`${res.walls.length} walls, ${res.doors.length} doors, ${res.windows.length} windows, ${res.boxes.length} objects. Model ${res.seconds}s, total ${Math.round((Date.now()-t)/1000)}s. Red walls, blue doors, green windows, purple objects.`;
     draw(parsePly(buf),res);$('out').textContent=res.text;
+    $('save').style.display='';$('save').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(res,null,1)],{type:'application/json'}));a.download=f.name.replace(/\\.ply$/,'')+'-spatiallm.json';a.click()};
   }catch(e){$('msg').textContent='Failed: '+e.message}
 };
 </script></body></html>"""
