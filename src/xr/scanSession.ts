@@ -1,3 +1,4 @@
+import { disprovedWalls } from '../core/wallFinder.js';
 import { lensCamera } from '../core/camCalib.js';
 import {
   BoxGeometry,
@@ -369,11 +370,20 @@ export class ScanSession {
       if (w.evidence === 'inferred') this.excluded.add(`walls:${i}`);
     });
     this.lastPlan = plan;
+    // Scanned walls already in the plan that this scan saw straight through.
+    const node = new Map(plan.nodes.map((n) => [n.id, n]));
+    this.disproved = disprovedWalls(
+      plan.walls.map((w) => ({ id: w.id, a: node.get(w.a)!, b: node.get(w.b)!, source: w.source, locked: w.locked })).filter((w) => w.a && w.b),
+      this.free,
+      res.floorOffset ?? 0,
+    );
     this.showGhosts(res, plan);
     return res;
   }
 
   private lastPlan: Plan | null = null;
+  /** Ids of earlier scanned walls the latest scan disproved (seen straight through). */
+  disproved: string[] = [];
 
   /** What will be added: included kinds, minus tapped-off items. */
   chosen(): StructureResult | null {

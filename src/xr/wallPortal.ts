@@ -20,7 +20,11 @@ interface Portal {
   /** Occlusion compares against the wall's near face (world plane). */
   occl: { value: Vector4 };
   mirrors: Map<string, Mesh>;
+  /** Depth-only patches over the wall's doors and windows: the real view shows through them. */
+  holes: Mesh[];
 }
+
+const BEIGE = 0xe3ddd2;
 
 const MAX = 4;
 
@@ -32,6 +36,7 @@ export class WallPortals {
   private tmp2 = new Vector3();
   private eye = new Vector3();
   private n = new Vector3();
+  private holeMat = new MeshBasicMaterial({ colorWrite: false, depthWrite: true, side: DoubleSide });
 
   constructor(
     private planRoot: Object3D,
@@ -60,7 +65,7 @@ export class WallPortals {
     const planes = [new Plane(), new Plane(), new Plane(), new Plane(), new Plane()];
     const occl = { value: new Vector4() };
     const mat = surfaceOccludable(
-      new MeshStandardMaterial({ color: 0xe3ddd2, roughness: 0.92, metalness: 0, side: DoubleSide }),
+      new MeshStandardMaterial({ color: BEIGE, roughness: 0.92, metalness: 0, side: DoubleSide }),
       0.12,
       occl,
     );
@@ -74,7 +79,7 @@ export class WallPortals {
     const group = new Group();
     group.add(backdrop);
     this.group.add(group);
-    this.portals.set(id, { wallId: id, group, backdrop, mat, planes, occl, mirrors: new Map() });
+    this.portals.set(id, { wallId: id, group, backdrop, mat, planes, occl, mirrors: new Map(), holes: [] });
     return true;
   }
 
@@ -83,6 +88,7 @@ export class WallPortals {
     p.backdrop.geometry.dispose();
     (p.backdrop.material as MeshBasicMaterial).dispose();
     p.mat.dispose();
+    for (const h of p.holes) h.geometry.dispose();
     this.portals.delete(p.wallId);
   }
 
@@ -154,6 +160,37 @@ export class WallPortals {
       const nearPt = this.planRoot.localToWorld(this.tmp.set((ax + bx) / 2 + nx * half, 0, (az + bz) / 2 + nz * half));
       const nw = this.n.set(nx, 0, nz).transformDirection(this.planRoot.matrixWorld);
       p.occl.value.set(nw.x, nw.y, nw.z, -nw.dot(nearPt));
+
+      // Doors, openings and windows stay clear: you see the real room through them,
+      // not the dark backdrop or the mesh. A patch that only writes depth, just in
+      // front of the backdrop, keeps both from drawing there.
+      const ops = plan.openings.filter((o) => o.wallId === w.id);
+      while (p.holes.length < ops.length) {
+        const h = new Mesh(new PlaneGeometry(1, 1), this.holeMat);
+        h.renderOrder = 29;
+        h.raycast = () => {};
+        p.group.add(h);
+        p.holes.push(h);
+      }
+      p.holes.forEach((h, i) => {
+        const o = ops[i];
+        h.visible = !!o;
+        if (!o) return;
+        const t = o.offset * INCH_M;
+        const zc = (o.sill + o.height / 2) * INCH_M;
+        const hoff = half + 0.01;
+        h.position.set(ax + dx * t + nx * hoff, zc, az + dz * t + nz * hoff);
+        h.rotation.set(0, Math.atan2(nx, nz), 0);
+        h.scale.set(o.width * INCH_M, o.height * INCH_M, 1);
+      });
+
+      // The mesh in photo colors when you've switched the room mesh to Color.
+      const colored = this.mesh.colored;
+      if (p.mat.vertexColors !== colored) {
+        p.mat.vertexColors = colored;
+        p.mat.color.set(colored ? 0xffffff : BEIGE);
+        p.mat.needsUpdate = true;
+      }
 
       // Mirror the room mesh's chunks with this window's material.
       const seen = new Set<string>();

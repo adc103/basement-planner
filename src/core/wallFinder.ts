@@ -476,3 +476,34 @@ function classifyOpening(op: { t0: number; t1: number; zb: number; zt: number },
   return { center, width: Math.round(raw / 2) * 2, height: Math.max(8, Math.round(topZ + 1 - sill)), sill, type: 'window' };
 }
 
+
+/**
+ * Scanned walls already in the plan that a newer scan has looked straight
+ * through for most of their length: the earlier scan got them wrong. Walls you
+ * drew, locked, or imported from Space Setup are never second-guessed.
+ */
+export function disprovedWalls(
+  walls: Array<{ id: string; a: Vec2; b: Vec2; source?: string; locked?: boolean }>,
+  free: FreeLookup,
+  z0: number,
+  minSeen = 0.6,
+): string[] {
+  const out: string[] = [];
+  for (const w of walls) {
+    if (w.source !== 'capture' || w.locked) continue;
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    if (L < 1) continue;
+    const n = Math.max(1, Math.ceil(L / 4));
+    let seen = 0;
+    for (let i = 0; i < n; i++) {
+      const t = (i + 0.5) / n;
+      const x = w.a.x + (w.b.x - w.a.x) * t;
+      const y = w.a.y + (w.b.y - w.a.y) * t;
+      let hits = 0;
+      for (const z of [24, 40, 56, 72]) if (free.count(x, y, z0 + z) >= 2) hits++;
+      if (hits >= 2) seen++;
+    }
+    if (seen / n >= minSeen) out.push(w.id);
+  }
+  return out;
+}

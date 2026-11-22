@@ -447,7 +447,10 @@ export class TsdfVolume {
 
   serialize(): Uint8Array {
     const per = 8 + B3 * 4 + B3;
-    const out = new Uint8Array(12 + this.bricks.size * per);
+    // Photo colors follow as an optional section: u32 count, then per brick f64 key, rgb, weights.
+    const colored = [...this.bricks].filter(([, b]) => b.c);
+    const cper = 8 + B3 * 4;
+    const out = new Uint8Array(12 + this.bricks.size * per + 4 + colored.length * cper);
     const dv = new DataView(out.buffer);
     dv.setFloat32(0, this.o.voxel, true);
     dv.setFloat32(4, this.o.trunc, true);
@@ -458,6 +461,14 @@ export class TsdfVolume {
       out.set(new Uint8Array(b.d.buffer, b.d.byteOffset, B3 * 4), o + 8);
       out.set(b.w, o + 8 + B3 * 4);
       o += per;
+    }
+    dv.setUint32(o, colored.length, true);
+    o += 4;
+    for (const [k, b] of colored) {
+      dv.setFloat64(o, k, true);
+      out.set(b.c!, o + 8);
+      out.set(b.cw!, o + 8 + B3 * 3);
+      o += cper;
     }
     return out;
   }
@@ -475,6 +486,18 @@ export class TsdfVolume {
       const d = new Float32Array(bytes.slice(o + 8, o + 8 + B3 * 4).buffer);
       const w = bytes.slice(o + 8 + B3 * 4, o + per);
       this.bricks.set(k, { d, w });
+    }
+    // Colors (saved by newer versions).
+    const cper = 8 + B3 * 4;
+    if (o + 4 <= bytes.byteLength) {
+      const nc = dv.getUint32(o, true);
+      o += 4;
+      for (let i = 0; i < nc && o + cper <= bytes.byteLength; i++, o += cper) {
+        const b = this.bricks.get(dv.getFloat64(o, true));
+        if (!b) continue;
+        b.c = bytes.slice(o + 8, o + 8 + B3 * 3);
+        b.cw = bytes.slice(o + 8 + B3 * 3, o + cper);
+      }
     }
     return true;
   }

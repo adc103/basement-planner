@@ -1505,19 +1505,40 @@ export class PlannerApp {
     void s.analyze(this.store.plan, { x: e.x / INCH_M, y: e.z / INCH_M }).then((res) => this.showScanResult(res));
   }
 
+  /** Remove earlier scanned walls the new scan saw straight through. Returns how many. */
+  private removeDisproved(): number {
+    const ids = this.scan.disproved.filter((id) => this.store.plan.walls.some((w) => w.id === id));
+    this.scan.disproved = [];
+    if (!ids.length) return 0;
+    this.cmd.group('Remove walls the scan saw through', () => {
+      for (const id of ids) this.cmd.run('element.delete', { id }, 'scan');
+    });
+    return ids.length;
+  }
+
   private showScanResult(res: StructureResult): void {
     const s = this.scan;
     const n = s.count();
+    const gone = s.disproved.length;
     if (!s.reviewing && res.footprint) {
       // Nothing new to review, but the floor area is still worth keeping.
       this.cmd.run('scan.applyStructure', { result: { ...res, walls: [], soffits: [], posts: [] } }, 'scan');
+      const removed = this.removeDisproved();
       s.discard();
       s.hide();
-      this.toast('No new walls found. Saved the scanned floor area for the floor and ceiling.', 5);
+      this.toast(`No new walls found.${removed ? ` Removed ${removed} earlier scanned wall${removed > 1 ? 's' : ''} this scan saw straight through (Undo keeps them).` : ''} Saved the scanned floor area.`, 6);
       return;
     }
     if (!s.reviewing) {
-      this.toast(s.map.size < 500 ? 'Not enough was seen yet. Scan again and look around more.' : 'No new walls or ceiling features found', 5);
+      const removed = this.removeDisproved();
+      this.toast(
+        removed
+          ? `Removed ${removed} earlier scanned wall${removed > 1 ? 's' : ''} this scan saw straight through (Undo keeps them).`
+          : s.map.size < 500
+            ? 'Not enough was seen yet. Scan again and look around more.'
+            : 'No new walls or ceiling features found',
+        6,
+      );
       return;
     }
     const measured = res.walls.filter((w) => w.evidence === 'measured').length;
@@ -1526,6 +1547,7 @@ export class PlannerApp {
     if (res.soffits.length) parts.push(`${res.soffits.length} low areas`);
     if (res.posts.length) parts.push(`${res.posts.length} possible posts (off)`);
     if (res.ceiling) parts.push(`ceiling ${formatLength(res.ceiling - (res.floorOffset ?? 0))}`);
+    if (gone) parts.push(`${gone} earlier wall${gone > 1 ? 's' : ''} seen through (removed on Add)`);
     this.toast(`Found ${parts.join(', ')}. Click items to skip them, then Add.`, 7);
     this.reviewReturn = this.toolName === 'review' ? 'walls' : this.toolName;
     this.setTool('review');
@@ -1551,12 +1573,13 @@ export class PlannerApp {
       this.applyTransform();
       this.storeTransform();
     }
+    const removed = this.removeDisproved();
     this.cmd.run('scan.applyStructure', { result: res }, 'scan');
     const n = this.scan.count();
     this.scan.discard();
     this.scan.hide();
     this.endReview();
-    this.toast(`Added ${n} items from the scan`, 4);
+    this.toast(`Added ${n} items from the scan${removed ? `, removed ${removed} wall${removed > 1 ? 's' : ''} it saw through` : ''}`, 5);
   }
 
   /** Real walls checked against the room mesh, worst first (null: no mesh yet). */

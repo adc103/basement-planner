@@ -817,6 +817,15 @@ try {
       check(t.mirrors > 0, `the window draws the room mesh (${t.mirrors} chunks)`);
       await page.screenshot({ path: 'artifacts/e2e-seethrough.png' });
       check(t.thru && !t.beside && !t.near, `the view is cut to the window and to beyond the wall (through ${t.thru}, beside ${t.beside}, at the wall ${t.near})`);
+      const hole = await page.evaluate(async (id) => {
+        const app = window.basementPlanner;
+        app.cmd.run('opening.add', { wallId: id, type: 'door', offset: 70, width: 32, height: 80, sill: 0 });
+        await new Promise((r) => setTimeout(r, 300));
+        const p = app.portals.portals.get(id);
+        const h = p.holes.find((x) => x.visible);
+        return h ? { w: h.scale.x / 0.0254, h: h.scale.y / 0.0254, writesColor: h.material.colorWrite } : null;
+      }, r.id);
+      check(!!hole && Math.abs(hole.w - 32) < 0.5 && Math.abs(hole.h - 80) < 0.5 && hole.writesColor === false, `a door in a see-through wall stays clear (${JSON.stringify(hole)})`);
       await page.evaluate(({ id, h }) => {
         const app = window.basementPlanner;
         app.toggleSeeThrough();

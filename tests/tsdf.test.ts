@@ -131,3 +131,20 @@ describe('mesh coloring from photos', () => {
     expect(wrong / (right + wrong)).toBeLessThan(0.03);
   });
 });
+
+describe('saved colors', () => {
+  it('keeps photo colors through save and load', () => {
+    const vol = new TsdfVolume();
+    for (const f of depthFramesFor(basementScene()).slice(0, 40)) vol.integrate(f);
+    vol.meshDirty();
+    const f = depthFramesFor(basementScene())[20];
+    const rgba = new Uint8Array(160 * 120 * 4).fill(200);
+    vol.colorize({ rgba, w: 160, h: 120, camToRoot: f.viewToRoot, fx: (f.proj[0] * 160) / 2, fy: (f.proj[5] * 120) / 2, cx: 80, cy: 60 });
+    const colored = (v: TsdfVolume) => v.meshAll().reduce((n, m) => n + m.colors.length, 0);
+    const before = colored(vol);
+    const back = new TsdfVolume();
+    expect(back.load(vol.serialize())).toBe(true);
+    expect(before).toBeGreaterThan(0);
+    expect(colored(back)).toBe(before);
+  });
+});
