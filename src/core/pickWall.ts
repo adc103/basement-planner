@@ -318,8 +318,8 @@ export function pickWall(idx: SurfaceIndex, ray: Ray3): PickResult {
   for (let round = 0; ; round++) {
     const off0 = (h.x - c.x) * fn.x + (h.y - c.y) * fn.y;
     on = { x: h.x - fn.x * off0, y: h.y - fn.y * off0 };
-    const f1 = follow(idx, on, u, fn, 1);
-    const f0 = follow(idx, on, u, fn, -1);
+    const f1 = refineCorner(idx, on, u, fn, 1, follow(idx, on, u, fn, 1));
+    const f0 = refineCorner(idx, on, u, fn, -1, follow(idx, on, u, fn, -1));
     e1 = f1.len;
     e0 = f0.len;
     endB = f1.end;
@@ -471,4 +471,63 @@ export function pickSetupWall(planes: SetupPlane[], ray: Ray3): PickedWall | nul
     best = { a: { x: A[0], y: A[1] }, b: { x: B[0], y: B[1] }, n, ends: ['corner', 'corner'], hit: { x: hx, y: hy, z: hz }, rms: 0, points: 0 };
   }
   return best;
+}
+
+/**
+ * An inside corner found by following the face sits on a 3" step. Fit the crossing
+ * wall's face there and end exactly where the two faces meet (their planes'
+ * intersection), when that lands near where the mesh said.
+ */
+function refineCorner(idx: SurfaceIndex, on: Vec2, u: Vec2, n: Vec2, dir: 1 | -1, f: { len: number; end: WallEnd }): { len: number; end: WallEnd } {
+  if (f.end !== 'corner') return f;
+  const { pos, nrm } = idx.s;
+  // The crossing wall's face looks back along the wall, toward where you pointed.
+  const back = { x: -u.x * dir, y: -u.y * dir };
+  const e = { x: on.x + u.x * dir * f.len, y: on.y + u.y * dir * f.len };
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const i of idx.near(e, e, CORNER_DEPTH + 2)) {
+    const k = i * 3;
+    if (Math.abs(nrm[k + 2]) > 0.5 || nrm[k] * back.x + nrm[k + 1] * back.y < 0.75) continue;
+    const dx = pos[k] - on.x;
+    const dy = pos[k + 1] - on.y;
+    const s = (dx * u.x + dy * u.y) * dir;
+    const off = dx * n.x + dy * n.y;
+    if (s < f.len - 8 || s > f.len + 10 || off < 2 || off > CORNER_DEPTH) continue;
+    xs.push(pos[k]);
+    ys.push(pos[k + 1]);
+  }
+  if (xs.length < 30) return f;
+  // The face: its offset along the wall, from the densest 1" band, then the mean of that band.
+  const st = xs.map((x, i) => ((x - on.x) * u.x + (ys[i] - on.y) * u.y) * dir);
+  let bestS = f.len;
+  let bestN = 0;
+  for (let c = f.len - 8; c <= f.len + 10; c += 0.25) {
+    let cnt = 0;
+    for (const v of st) if (Math.abs(v - c) < 1) cnt++;
+    if (cnt > bestN) {
+      bestN = cnt;
+      bestS = c;
+    }
+  }
+  const band: number[] = [];
+  const bx: number[] = [];
+  const by: number[] = [];
+  for (let i = 0; i < st.length; i++) {
+    if (Math.abs(st[i] - bestS) >= 1.5) continue;
+    band.push(st[i]);
+    bx.push(xs[i]);
+    by.push(ys[i]);
+  }
+  if (band.length < 20) return f;
+  // Its direction, freely fitted (an out-of-square corner stays out of square), then
+  // where that line meets this face.
+  const line = fitLine(bx, by);
+  const det = u.x * dir * line.u.y - u.y * dir * line.u.x;
+  if (Math.abs(det) < 0.5) return f; // not a crossing wall (within 30 degrees of parallel)
+  const wx = line.c.x - on.x;
+  const wy = line.c.y - on.y;
+  const s = (wx * line.u.y - wy * line.u.x) / det;
+  if (!(Math.abs(s - f.len) <= 6) || s < 6) return f;
+  return { len: s, end: 'corner' };
 }

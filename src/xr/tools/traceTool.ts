@@ -1,6 +1,7 @@
 import { captureWall } from '../../core/capture.js';
 import type { WallFit } from '../../core/fit.js';
 import { dist, type Vec2 } from '../../core/geom2d.js';
+import { joinEnds } from '../../core/joinWall.js';
 import { pickSetupWall, type PickedWall, type Ray3, type SetupPlane } from '../../core/pickWall.js';
 import { formatLength } from '../../core/units.js';
 import type { WallPick } from '../roomMesh.js';
@@ -180,7 +181,8 @@ export class TraceTool implements Tool {
       pv.showSurfaceCursor({ x: p.face.hit.x, y: p.face.hit.y, z: p.face.hit.z }, p.face.n);
       const ends = p.face.ends.filter((e) => e === 'unseen').length;
       const note = p.from === 'setup' ? ' (Space Setup)' : ends ? ' (scan ends: tap again to set the end)' : '';
-      pv.showRubberWall(p.a, p.b, p.thickness, st.wallHeight, `${formatLength(Math.round(dist(p.face.a, p.face.b)))}${note}`);
+      const j = joinEnds(this.ctx.store.plan, p.a, p.b, p.thickness);
+      pv.showRubberWall(j.a, j.b, p.thickness, st.wallHeight, `${formatLength(Math.round(dist(p.face.a, p.face.b)))}${note}`);
     } else if (f && 'miss' in f && aim.floor) {
       pv.showHint(MISS_TEXT[f.miss] ?? MISS_TEXT.nothing, aim.floor, 20);
     }
@@ -230,8 +232,11 @@ export class TraceTool implements Tool {
 
   private add(p: Proposal): void {
     let id: string | null = null;
+    // Meet the walls already there: a T, or one shared corner.
+    const j = joinEnds(this.ctx.store.plan, p.a, p.b, p.thickness);
     this.ctx.cmd.group('Trace real wall', () => {
-      id = this.ctx.act('wall.add', { a: p.a, b: p.b, kind: 'existing', source: 'capture', thickness: p.thickness });
+      for (const m of j.moves) this.ctx.act('node.move', { id: m.node, x: m.to.x, y: m.to.y });
+      id = this.ctx.act('wall.add', { a: j.a, b: j.b, kind: 'existing', source: 'capture', thickness: p.thickness });
       if (id && p.fit) this.ctx.cmd.run('scan.setEvidence', { items: [{ id, evidence: p.fit.evidence, confidence: p.fit.confidence }] }, 'scan');
     });
     if (!id) return;

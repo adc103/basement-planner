@@ -35,8 +35,9 @@ describe('point at a real wall', () => {
     expect(Math.abs(w.b.x - 200)).toBeLessThan(0.75);
     expect(w.n.x).toBeLessThan(-0.99); // facing you (west)
     const ys = [w.a.y, w.b.y].sort((p, q) => p - q);
-    expect(ys[0]).toBeLessThan(6);
-    expect(ys[1]).toBeGreaterThan(234);
+    // Corners where the crossing faces are: the south (y = 0) and north (y = 240) walls.
+    expect(Math.abs(ys[0])).toBeLessThan(0.75);
+    expect(Math.abs(ys[1] - 240)).toBeLessThan(0.75);
     expect(w.ends).toEqual(['corner', 'corner']);
   });
 
@@ -45,8 +46,8 @@ describe('point at a real wall', () => {
     const w = wall(pickWall(idx, aim([60, 60, 60], [80, -10, 40])));
     expect(Math.abs(w.a.y)).toBeLessThan(0.75);
     const xs = [w.a.x, w.b.x].sort((p, q) => p - q);
-    expect(xs[0]).toBeLessThan(6);
-    expect(Math.abs(xs[1] - 200)).toBeLessThan(6);
+    expect(Math.abs(xs[0])).toBeLessThan(0.75);
+    expect(Math.abs(xs[1] - 200)).toBeLessThan(0.75);
   });
 
   it('measures the wall behind the face: both faces give the thickness', () => {
@@ -76,5 +77,30 @@ describe('Space Setup wall under the ray', () => {
     expect(w.ends).toEqual(['corner', 'corner']);
     expect(pickSetupWall(planes, aim([100, 200, 60], [100, 50, 50]))!.a.y).toBe(100);
     expect(pickSetupWall(planes, aim([100, 200, 60], [400, 200, 50]))).toBeNull();
+  });
+});
+
+describe('joining a traced wall to the walls already there', () => {
+  it('meets a crossing wall at its centerline: a T mid-wall, one corner at its end', async () => {
+    const { createEmptyPlan } = await import('../src/core/plan');
+    const { addWallBetween } = await import('../src/core/ops');
+    const { joinEnds } = await import('../src/core/joinWall');
+    const { produce } = await import('immer');
+    // An existing wall along x = 0 (4.5" thick), y 0..120.
+    let plan = createEmptyPlan();
+    plan = produce(plan, (d) => void addWallBetween(d, { x: 0, y: 0 }, { x: 0, y: 120 }, { height: 92, thickness: 4.5, kind: 'existing' }));
+    // New wall from its face (x = 2.25 + half of 4.5) out to x = 100, at y = 60: a T.
+    const t = joinEnds(plan, { x: 4.5, y: 60 }, { x: 100, y: 60 }, 4.5);
+    expect(t.a).toEqual({ x: 0, y: 60 });
+    expect(t.b).toEqual({ x: 100, y: 60 });
+    expect(t.moves).toHaveLength(0);
+    // New wall at y = 122.25 (its face on the end of the old one): one corner, the old end moves.
+    const c = joinEnds(plan, { x: 4.5, y: 122.25 }, { x: 100, y: 122.25 }, 4.5);
+    expect(c.a.x).toBeCloseTo(0);
+    expect(c.a.y).toBeCloseTo(122.25);
+    expect(c.moves).toHaveLength(1);
+    expect(c.moves[0].to.y).toBeCloseTo(122.25);
+    // Far away: no join.
+    expect(joinEnds(plan, { x: 30, y: 60 }, { x: 100, y: 60 }, 4.5).a).toEqual({ x: 30, y: 60 });
   });
 });
