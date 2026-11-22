@@ -285,8 +285,9 @@ async function run(mode: Mode): Promise<void> {
     log('Session ended.');
   });
 
-  renderer.setAnimationLoop((time: number) => {
-    const frame: any = renderer.xr.getFrame();
+  renderer.setAnimationLoop((time: number, xrFrame?: any) => {
+    // The WebGPU renderer hands the XR frame to the loop; getFrame() stays null here.
+    const frame: any = xrFrame ?? renderer.xr.getFrame();
     const t = time / 1000;
     cube.rotation.y = t;
     if (phaseT0 < 0) phaseT0 = t;
