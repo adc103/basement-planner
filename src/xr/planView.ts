@@ -25,6 +25,7 @@ import {
   Vector3,
   type Camera,
   type Material,
+  Plane,
 } from '@iwsdk/core';
 import { add, scale, type Vec2 } from '../core/geom2d.js';
 import { wallEnds } from '../core/ops.js';
@@ -231,6 +232,36 @@ export class PlanView {
     }
     this.highlighted = null;
     this.applyMaterials();
+    this.applyClipping();
+  }
+
+  // --- Section plane ---------------------------------------------------------
+  /** World-space cut planes shared by every plan material (three.js keeps the + side). */
+  readonly clip: Plane[] = [];
+  private clipped = new Set<Material>();
+  private clipCount = 0;
+
+  /** Give every material in the plan the shared cut planes. */
+  private applyClipping(): void {
+    const all = new Set<Material>([this.matNew, this.matExisting, this.matDemolish, this.matOutline, this.matHighlight, this.matHover, this.matSelected]);
+    this.content.traverse((o) => {
+      const m = (o as Mesh).material as Material | Material[] | undefined;
+      if (!m) return;
+      for (const x of Array.isArray(m) ? m : [m]) all.add(x);
+    });
+    for (const m of all) {
+      if (this.clipped.has(m)) continue;
+      m.clippingPlanes = this.clip;
+      m.needsUpdate = true;
+      this.clipped.add(m);
+    }
+  }
+
+  /** Call after changing `clip`: shaders recompile only when the count changes. */
+  clipChanged(): void {
+    if (this.clip.length === this.clipCount) return;
+    this.clipCount = this.clip.length;
+    for (const m of this.clipped) m.needsUpdate = true;
   }
 
   private roomMeshes = new Map<string, Mesh>();

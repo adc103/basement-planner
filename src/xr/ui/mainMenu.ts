@@ -4,7 +4,7 @@ import type { IconName } from './icons.js';
 import { chipRenderer, roundRenderer, SpatialPanel, tabRenderer, textRenderer, tileRenderer, THEME } from './spatialPanel.js';
 
 export type TabName = 'build' | 'edit' | 'measure' | 'rooms' | 'pins' | 'ceiling' | 'scan' | 'view';
-export type ToolName = 'walls' | 'doors' | 'capture' | 'edit' | 'delete' | 'measure' | 'align' | 'rooms' | 'pins' | 'soffit' | 'review' | 'dimension';
+export type ToolName = 'walls' | 'doors' | 'capture' | 'edit' | 'delete' | 'measure' | 'align' | 'rooms' | 'pins' | 'soffit' | 'review' | 'dimension' | 'section';
 
 /** Everything the menu needs from the app. */
 export interface MenuApi {
@@ -84,6 +84,11 @@ export interface MenuApi {
   viewText(): string;
   realWalls(): 'shown' | 'outline' | 'hidden';
   roomMesh(): boolean;
+  hasSection(): boolean;
+  dollhouse(): boolean;
+  dollAction(a: 'toggle' | 'left' | 'right' | 'bigger' | 'smaller' | 'here'): void;
+  cutHeight(): boolean;
+  sectionAction(a: 'flip' | 'clear' | 'height'): void;
   toggleRoomMesh(): void;
   cycleRealWalls(): void;
   labels(): boolean;
@@ -149,6 +154,8 @@ const COL_W = (CW - 3 * GAP) / 4;
 export class MainMenu {
   readonly panel: SpatialPanel;
   tab: TabName = 'build';
+  /** Rows that don't fit on the panel (should stay empty; checked by the tests). */
+  overflow: string[] = [];
 
   constructor(
     world: World,
@@ -244,6 +251,8 @@ export class MainMenu {
         });
       }
       t.rows.forEach((row, r) => {
+        // A row whose chips would hang off the panel is a layout bug: record it.
+        if (rowY(r) + lift - CHIP_H / 2 < -MENU_H / 2 + PAD / 2) this.overflow.push(`${t.name} row ${r + 1}`);
         let col = 0;
         for (const chip of row) {
           const span = chip.span ?? 1;
@@ -375,6 +384,8 @@ export class MainMenu {
           { id: 'dimension', icon: 'dimension', label: () => 'Dimension', tool: 'dimension' },
         ],
         text: () => (a.tool() === 'edit' ? a.selectionText() || 'Nothing selected' : a.tool() === 'dimension' ? a.dimText() : 'Point and pinch to delete'),
+        // Four rows fit under the tiles. Dimension chips share rows with the
+        // selection chips: the two tools are never active at once.
         rows: [
           [
             { id: 'd-type', label: () => 'Type distance', icon: 'keypad', span: 2, col: 0, onClick: () => a.dim('type'), visible: () => a.tool() === 'dimension' && a.dimState() === 'parallel' },
@@ -382,21 +393,17 @@ export class MainMenu {
             { id: 'd-mode', label: () => (a.dimMode() === 'clear' ? 'Clear' : 'Center'), span: 1, col: 3, onClick: () => a.dim('mode'), visible: () => a.tool() === 'dimension' && a.dimState() === 'parallel' },
             { id: 'd-square', label: () => (a.dimKept('perpendicular') ? 'Unsquare' : 'Make square'), span: 2, col: 0, onClick: () => a.dim('square'), active: () => a.dimKept('perpendicular'), visible: () => a.tool() === 'dimension' && a.dimState() === 'angle' },
             { id: 'd-par', label: () => (a.dimKept('parallel') ? 'Unparallel' : 'Make parallel'), span: 2, col: 2, onClick: () => a.dim('parallel'), active: () => a.dimKept('parallel'), visible: () => a.tool() === 'dimension' && a.dimState() === 'angle' },
-          ],
-          [
-            { id: 'd-again', label: () => 'Pick again', span: 4, col: 0, onClick: () => a.dim('reset'), visible: () => a.tool() === 'dimension' && a.dimState() !== 'none' },
-          ],
-          [
-            { id: 'e-len', label: () => 'Length', icon: 'keypad', onClick: () => a.editLength(), visible: sel('wall') },
-            { id: 'e-h', label: () => 'Height', icon: 'height', onClick: () => a.editHeight(), visible: sel('wall') },
-            { id: 'e-2x4', label: () => '2x4', onClick: () => a.editStud('2x4'), active: () => a.selectedStud() === '2x4', visible: sel('wall') },
-            { id: 'e-2x6', label: () => '2x6', onClick: () => a.editStud('2x6'), active: () => a.selectedStud() === '2x6', visible: sel('wall') },
+            { id: 'e-len', label: () => 'Length', icon: 'keypad', col: 0, onClick: () => a.editLength(), visible: sel('wall') },
+            { id: 'e-h', label: () => 'Height', icon: 'height', col: 1, onClick: () => a.editHeight(), visible: sel('wall') },
+            { id: 'e-2x4', label: () => '2x4', col: 2, onClick: () => a.editStud('2x4'), active: () => a.selectedStud() === '2x4', visible: sel('wall') },
+            { id: 'e-2x6', label: () => '2x6', col: 3, onClick: () => a.editStud('2x6'), active: () => a.selectedStud() === '2x6', visible: sel('wall') },
             { id: 'e-w', label: () => 'Width', icon: 'keypad', col: 0, onClick: () => a.editWidth(), visible: sel('opening') },
             { id: 'e-oh', label: () => 'Height', icon: 'height', col: 1, onClick: () => a.edit('openingHeight'), visible: sel('opening') },
             { id: 'e-type', label: () => a.openingType(), col: 2, onClick: () => a.edit('openingType'), visible: sel('opening') },
             { id: 'e-flip', label: () => 'Flip', col: 3, onClick: () => a.edit('flip'), visible: () => a.selectionKind() === 'opening' && a.openingType() === 'Door' },
           ],
           [
+            { id: 'd-again', label: () => 'Pick again', span: 4, col: 0, onClick: () => a.dim('reset'), visible: () => a.tool() === 'dimension' && a.dimState() !== 'none' },
             { id: 'e-thick', label: () => 'Thickness', icon: 'keypad', col: 0, onClick: () => a.edit('thickness'), visible: sel('wall') },
             { id: 'e-split', label: () => 'Split', col: 1, onClick: () => a.edit('split'), visible: sel('wall') },
             { id: 'e-kind', label: () => (a.selectedIsReal() ? 'Make planned' : 'Make real'), span: 2, col: 2, onClick: () => a.edit('kind'), visible: sel('wall') },
@@ -408,35 +415,16 @@ export class MainMenu {
           [
             {
               id: 'e-demo',
-              label: () => (a.selectedDemolish() ? 'Keep wall' : 'Demolish'),
-              span: 2,
+              label: () => (a.selectedDemolish() ? 'Keep' : 'Demolish'),
               col: 0,
               tone: 'danger',
               onClick: () => a.edit('demolish'),
               active: () => a.selectedDemolish(),
               visible: () => a.selectionKind() === 'wall' && a.selectedIsReal(),
             },
-            {
-              id: 'e-lock',
-              label: () => (a.selectedLocked() ? 'Unlock' : 'Lock'),
-              span: 2,
-              col: 2,
-              onClick: () => a.edit('lock'),
-              active: () => a.selectedLocked(),
-              visible: () => a.selectionKind() !== null,
-            },
-          ],
-          [
-            {
-              id: 'e-del',
-              label: () => 'Delete',
-              icon: 'trash',
-              tone: 'danger',
-              span: 2,
-              onClick: () => a.deleteSelection(),
-              visible: () => a.selectionKind() !== null,
-            },
-            { id: 'e-none', label: () => 'Deselect', span: 2, onClick: () => a.deselect(), visible: () => a.selectionKind() !== null },
+            { id: 'e-lock', label: () => (a.selectedLocked() ? 'Unlock' : 'Lock'), col: 1, onClick: () => a.edit('lock'), active: () => a.selectedLocked(), visible: () => a.selectionKind() !== null },
+            { id: 'e-del', label: () => 'Delete', icon: 'trash', tone: 'danger', col: 2, onClick: () => a.deleteSelection(), visible: () => a.selectionKind() !== null },
+            { id: 'e-none', label: () => 'Deselect', col: 3, onClick: () => a.deselect(), visible: () => a.selectionKind() !== null },
           ],
         ],
       },
@@ -521,12 +509,26 @@ export class MainMenu {
             },
           ],
           [
-            { id: 'labels', label: () => 'Labels', span: 2, onClick: () => a.toggleLabels(), active: () => a.labels() },
-            { id: 'snap', label: () => 'Snapping', icon: 'magnet', span: 2, onClick: () => a.toggleSnap(), active: () => a.snap() },
+            { id: 'labels', label: () => 'Labels', span: 1, onClick: () => a.toggleLabels(), active: () => a.labels() },
+            { id: 'snap', label: () => 'Snap', icon: 'magnet', span: 1, onClick: () => a.toggleSnap(), active: () => a.snap() },
+            { id: 'occlusion', label: () => 'Occlude', icon: 'eye', span: 1, onClick: () => a.toggleOcclusion(), active: () => a.occlusion() },
+            { id: 'roommesh', label: () => 'Mesh', span: 1, onClick: () => a.toggleRoomMesh(), active: () => a.roomMesh() },
           ],
           [
-            { id: 'occlusion', label: () => 'Objects hide walls', icon: 'eye', span: 2, onClick: () => a.toggleOcclusion(), active: () => a.occlusion() },
-            { id: 'roommesh', label: () => 'Room mesh', span: 2, onClick: () => a.toggleRoomMesh(), active: () => a.roomMesh() },
+            { id: 'section', label: () => 'Section', span: 1, col: 0, onClick: () => a.setTool(a.tool() === 'section' ? 'walls' : 'section'), active: () => a.tool() === 'section' },
+            { id: 'sec-flip', label: () => 'Flip', span: 1, col: 1, onClick: () => a.sectionAction('flip'), enabled: () => a.hasSection() },
+            { id: 'sec-clear', label: () => 'Clear', span: 1, col: 2, onClick: () => a.sectionAction('clear'), enabled: () => a.hasSection() },
+            { id: 'sec-cut', label: () => 'Cut 4 ft', span: 1, col: 3, onClick: () => a.sectionAction('height'), active: () => a.cutHeight() },
+          ],
+          [
+            { id: 'doll', label: () => 'Dollhouse', span: 2, col: 0, onClick: () => a.dollAction('toggle'), active: () => a.dollhouse() },
+            { id: 'doll-l', label: () => 'Turn L', span: 1, col: 2, onClick: () => a.dollAction('left'), visible: () => a.dollhouse() },
+            { id: 'doll-r', label: () => 'Turn R', span: 1, col: 3, onClick: () => a.dollAction('right'), visible: () => a.dollhouse() },
+          ],
+          [
+            { id: 'doll-s', label: () => 'Smaller', span: 1, col: 0, onClick: () => a.dollAction('smaller'), visible: () => a.dollhouse() },
+            { id: 'doll-b', label: () => 'Bigger', span: 1, col: 1, onClick: () => a.dollAction('bigger'), visible: () => a.dollhouse() },
+            { id: 'doll-h', label: () => 'Bring here', span: 2, col: 2, onClick: () => a.dollAction('here'), visible: () => a.dollhouse() },
           ],
           [
             {

@@ -76,6 +76,10 @@ try {
   await page.goto(url);
   await page.waitForSelector('#planner-dom', { timeout: 30000 });
   check(true, 'page loads and the planner mounts');
+  {
+    const over = await page.evaluate(() => window.basementPlanner.menu?.overflow ?? null);
+    if (over) check(over.length === 0, `every menu row fits on the panel${over.length ? ` (overflow: ${over.join(', ')})` : ''}`);
+  }
   check(await page.locator('#bp-enter').isEnabled(), 'Enter AR is available with the emulator');
 
   await page.click('#bp-enter');
@@ -441,6 +445,52 @@ try {
     const m = p4.measures.at(-1);
     const len = m ? Math.hypot(m.a.x - m.b.x, m.a.y - m.b.y, m.a.z - m.b.z) : 0;
     check(p4.measures.length === n0 + 1 && Math.abs(len - 39.37) < 0.5, `tape measures ~39 3/8" (${len.toFixed(2)})`);
+    await clickButton(menu, 'btn:tab-build');
+  }
+
+  // Section plane and dollhouse (View tab).
+  {
+    check(await clickButton(menu, 'btn:tab-view'), 'View tab for section and dollhouse');
+    const sec = await page.evaluate(() => {
+      const app = window.basementPlanner;
+      app.setSection({ a: { x: -80, y: -20 }, b: { x: 120, y: -20 }, keep: 1 });
+      const mats = app.view.wallMeshes.map((m) => m.material);
+      return { n: app.view.clip.length, shared: mats.every((m) => m.clippingPlanes === app.view.clip), enabled: app.world?.renderer?.localClippingEnabled ?? null };
+    });
+    check(sec.n === 1 && sec.shared, `a section plane clips every wall material (${sec.n} plane)`);
+    // The kept side is left of the cut line (plan y > -20): check points either side.
+    const side = await page.evaluate(() => {
+      const app = window.basementPlanner;
+      const root = app.view.root;
+      root.updateWorldMatrix(true, false);
+      const at = (x, y) => root.localToWorld(new (root.position.constructor)(x * 0.0254, 1, y * 0.0254));
+      const pl = app.view.clip[0];
+      return { kept: pl.distanceToPoint(at(20, 0)), cut: pl.distanceToPoint(at(20, -50)) };
+    });
+    check(side.kept > 0 && side.cut < 0, `the section keeps one side and cuts the other (${side.kept.toFixed(2)} / ${side.cut.toFixed(2)} m)`);
+    check(await clickButton(menu, 'btn:sec-cut'), 'Cut 4 ft chip');
+    const n2 = await page.evaluate(() => window.basementPlanner.view.clip.length);
+    check(n2 === 2, `cut height adds a horizontal plane (${n2})`);
+    await page.screenshot({ path: 'artifacts/e2e-section.png' });
+    check(await clickButton(menu, 'btn:sec-cut'), 'Cut 4 ft off');
+    check(await clickButton(menu, 'btn:sec-clear'), 'Clear section');
+    const n3 = await page.evaluate(() => window.basementPlanner.view.clip.length);
+    check(n3 === 0, 'section cleared');
+    check(await clickButton(menu, 'btn:doll'), 'Dollhouse chip');
+    await frames(4);
+    const d = await page.evaluate(() => {
+      const dh = window.basementPlanner.dollhouse;
+      let meshes = 0;
+      dh.group.traverse((o) => { if (o.isMesh && o.visible) meshes++; });
+      const p = new (dh.group.position.constructor)();
+      dh.group.getWorldPosition(p);
+      return { shown: dh.shown, visible: dh.group.visible, meshes, y: p.y, scale: dh.scale };
+    });
+    check(d.shown && d.visible && d.meshes >= 3, `dollhouse shows the plan (${d.meshes} meshes, at ${d.y.toFixed(2)} m)`);
+    check(await clickButton(menu, 'btn:doll-b'), 'Dollhouse Bigger');
+    await frames(3);
+    await page.screenshot({ path: 'artifacts/e2e-dollhouse.png' });
+    check(await clickButton(menu, 'btn:doll'), 'Dollhouse off');
     await clickButton(menu, 'btn:tab-build');
   }
 

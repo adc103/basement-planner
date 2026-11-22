@@ -1,4 +1,25 @@
-import { DepthOccludable, OcclusionShadersMode, FollowBehavior, Follower, EnvironmentRaycastTarget, Group, Mesh, PlaneGeometry, InputComponent, Object3D, Quaternion, Raycaster, Vector3, XRAnchor, XRMesh, XRPlane, type Entity, type World } from '@iwsdk/core';
+import {
+  DepthOccludable,
+  OcclusionShadersMode,
+  FollowBehavior,
+  Follower,
+  EnvironmentRaycastTarget,
+  Group,
+  Mesh,
+  PlaneGeometry,
+  InputComponent,
+  Object3D,
+  Quaternion,
+  Raycaster,
+  Vector3,
+  XRAnchor,
+  XRMesh,
+  XRPlane,
+  type Entity,
+  type World,
+  Plane,
+  MeshBasicMaterial,
+} from '@iwsdk/core';
 import { IDENTITY, type PlanTransform } from '../core/alignment.js';
 import { loadSavedPlan, savePlan } from '../core/persistence.js';
 import type { Plan } from '../core/plan.js';
@@ -29,6 +50,8 @@ import { RefAnchors } from './refAnchors.js';
 import { CameraProbe, PROBE_KEY } from './cameraProbe.js';
 import { registerWebMcp } from './webmcp.js';
 import { DimensionTool } from './tools/dimensionTool.js';
+import { Dollhouse } from './dollhouse.js';
+import { SectionTool, type SectionCut } from './tools/sectionTool.js';
 import { checkPlan, type WallCheck } from '../core/fit.js';
 import { CommandBus, type CommandName, type ParamsOf, type ResultOf } from '../core/commands.js';
 import { planToLocal } from './planView.js';
@@ -74,6 +97,7 @@ const TOOL_LABEL: Record<ToolName, string> = {
   pins: 'Pins',
   soffit: 'Soffit',
   review: 'Review scan',
+  section: 'Section',
   dimension: 'Dimension',
 };
 
@@ -233,6 +257,9 @@ export class PlannerApp {
     this.editTool = new EditTool(ctx);
     this.measureTool = new MeasureTool(ctx);
     this.dimTool = new DimensionTool(ctx);
+    world.renderer.localClippingEnabled = true;
+    this.dollhouse = new Dollhouse(world, this.view.root);
+    world.createTransformEntity(this.dollhouse.group, { parent: world.sceneEntity, persistent: true });
     this.roomsTool = new RoomsTool(ctx);
     this.pinsTool = new PinsTool(ctx);
     this.tools = {
@@ -245,6 +272,7 @@ export class PlannerApp {
       delete: new DeleteTool(ctx),
       measure: this.measureTool,
       dimension: this.dimTool,
+      section: new SectionTool(ctx, { get: () => this.section, set: (c) => this.setSection(c) }),
       align: new AlignTool(ctx, {
         getTransform: () => this.transform,
         setTransform: (t) => this.setTransform(t),
@@ -417,6 +445,20 @@ export class PlannerApp {
       },
       realWalls: () => this.store.plan.settings.realWalls,
       roomMesh: () => this.scan.mesh.shown,
+      hasSection: () => !!this.section,
+      dollhouse: () => this.dollhouse.shown,
+      dollAction: (a) => {
+        const d = this.dollhouse;
+        if (a === 'toggle') this.toast(d.toggle(this.store.plan) ? 'Dollhouse: the whole plan, small. The red marker is you.' : 'Dollhouse hidden', 4);
+        else if (a === 'left') d.rotate(-30);
+        else if (a === 'right') d.rotate(30);
+        else if (a === 'bigger') d.resize(1.5);
+        else if (a === 'smaller') d.resize(1 / 1.5);
+        else d.bringHere();
+        this.refreshUi();
+      },
+      cutHeight: () => this.cutHeight !== null,
+      sectionAction: (a) => (a === 'flip' ? this.flipSection() : a === 'clear' ? this.setSection(null) : this.toggleCutHeight()),
       checkWalls: () => this.checkWalls(),
       hasRoomMesh: () => this.scan.mesh.triangles > 0,
       toggleRoomMesh: () => {
@@ -500,6 +542,72 @@ export class PlannerApp {
         ],
       ],
     };
+  }
+
+  // --------------------------------------------------------------- section ---
+  dollhouse!: Dollhouse;
+  private dollTimer: ReturnType<typeof setTimeout> | null = null;
+
+  section: SectionCut | null = null;
+  /** Horizontal cut (inches above the floor), like a printed floor plan's cut. */
+  cutHeight: number | null = null;
+  private secPlanes = [new Plane(), new Plane()];
+  private secV = new Vector3();
+  private secN = new Vector3();
+  private secLine: Mesh | null = null;
+
+  setSection(cut: SectionCut | null): void {
+    this.section = cut;
+    if (this.secLine) {
+      this.secLine.geometry.dispose();
+      this.view.root.remove(this.secLine);
+      this.secLine = null;
+    }
+    if (cut) {
+      // A red strip on the floor along the cut.
+      const L = Math.hypot(cut.b.x - cut.a.x, cut.b.y - cut.a.y) * INCH_M;
+      const strip = new Mesh(new PlaneGeometry(L, 0.012).rotateX(-Math.PI / 2), new MeshBasicMaterial({ color: 0xff5a5a, transparent: true, opacity: 0.9, depthWrite: false }));
+      strip.position.set(((cut.a.x + cut.b.x) / 2) * INCH_M, 0.004, ((cut.a.y + cut.b.y) / 2) * INCH_M);
+      strip.rotation.y = -Math.atan2(cut.b.y - cut.a.y, cut.b.x - cut.a.x);
+      strip.raycast = () => {};
+      this.view.root.add(strip);
+      this.secLine = strip;
+    }
+    this.updateSection();
+    this.refreshUi();
+  }
+
+  flipSection(): void {
+    if (this.section) this.setSection({ ...this.section, keep: this.section.keep === 1 ? -1 : 1 });
+  }
+
+  toggleCutHeight(): void {
+    this.cutHeight = this.cutHeight === null ? 48 : null;
+    this.updateSection();
+    this.toast(this.cutHeight === null ? 'Full height' : 'Cut at 4 ft: see the layout from above', 3);
+    this.refreshUi();
+  }
+
+  /** World-space cut planes from the plan-space section (the plan root can move). */
+  private updateSection(): void {
+    const clip = this.view.clip;
+    clip.length = 0;
+    const root = this.view.root;
+    root.updateWorldMatrix(true, false);
+    const c = this.section;
+    if (c) {
+      const L = Math.hypot(c.b.x - c.a.x, c.b.y - c.a.y) || 1;
+      const n = { x: (-(c.b.y - c.a.y) / L) * c.keep, y: ((c.b.x - c.a.x) / L) * c.keep };
+      this.secN.set(n.x, 0, n.y).transformDirection(root.matrixWorld);
+      root.localToWorld(this.secV.set(c.a.x * INCH_M, 0, c.a.y * INCH_M));
+      clip.push(this.secPlanes[0].setFromNormalAndCoplanarPoint(this.secN, this.secV));
+    }
+    if (this.cutHeight !== null) {
+      this.secN.set(0, -1, 0).transformDirection(root.matrixWorld);
+      root.localToWorld(this.secV.set(0, this.cutHeight * INCH_M, 0));
+      clip.push(this.secPlanes[1].setFromNormalAndCoplanarPoint(this.secN, this.secV));
+    }
+    this.view.clipChanged();
   }
 
   /** Run a command; if it's refused, say why. */
@@ -760,6 +868,11 @@ export class PlannerApp {
 
   private onPlanChanged(plan: Plan, _reason: string): void {
     this.view.rebuild(plan);
+    if (this.dollhouse?.shown) {
+      // The small copy rebuilds a moment after edits settle (drags rebuild every frame).
+      if (this.dollTimer) clearTimeout(this.dollTimer);
+      this.dollTimer = setTimeout(() => this.dollhouse.rebuild(this.store.plan), 150);
+    }
     this.axisAngle = primaryAxis(plan);
     this.editTool?.validate();
     this.dimTool?.validate();
@@ -831,6 +944,7 @@ export class PlannerApp {
     // The anchor system may re-parent the plan root; keep our transform as its local pose.
     this.applyTransform();
     this.checkAnchor();
+    this.updateSection();
 
     if (inXR) {
       const tool = this.tools[this.toolName];
@@ -860,6 +974,7 @@ export class PlannerApp {
     if (!inXR) this.sessionT0 = -1;
     updateSurfaceOcclusion(world);
     this.view.updateLabels(world.camera);
+    this.dollhouse?.update();
     this.updateToast();
   }
 
