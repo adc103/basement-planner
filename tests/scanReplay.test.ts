@@ -105,7 +105,10 @@ describe('scan recording and replay', () => {
       for (const f of real) vol.integrate(f);
       const fit = refineStructure(res, surfaceFromMeshes(vol.meshDirty()));
       for (let i = 0; i < fit.walls.length; i++) for (let j = i + 1; j < fit.walls.length; j++) expect(sameWall(fit.walls[i], fit.walls[j])).toBe(false);
-      expect(fit.walls.length).toBeLessThanOrEqual(12);
+      // Walls offered as found (guessed ones start switched off): a few rooms' worth, no stubs.
+      const shown = fit.walls.filter((w) => w.evidence !== 'inferred');
+      expect(shown.length).toBeLessThanOrEqual(16);
+      for (const w of shown) expect(Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y)).toBeGreaterThanOrEqual(18);
     });
   }
 });

@@ -322,7 +322,7 @@ function cross(p: Vec2, d: Vec2, q: Vec2, e: Vec2): Vec2 | null {
  * supported, and keep corners and tees joined after walls move.
  */
 export function refineStructure(res: StructureResult, surf: Surface, known: Seg[] = []): StructureResult {
-  if (surf.pos.length < 300) return { ...res, walls: dedupeWalls(res.walls, known) };
+  if (surf.pos.length < 300) return { ...res, walls: pruneStubs(dedupeWalls(res.walls, known), known) };
   const idx = new SurfaceIndex(surf);
   const z0 = res.floorOffset ?? 0;
   const z1 = res.ceiling ?? z0 + 96;
@@ -391,7 +391,28 @@ export function refineStructure(res: StructureResult, surf: Surface, known: Seg[
     const p = cross(w.a, dirOf(w), o.a, dirOf(o));
     if (p && Math.hypot(p.x - w[j.end].x, p.y - w[j.end].y) < 8) w[j.end] = p;
   }
-  return { ...res, walls: dedupeWalls(walls, known) };
+  return { ...res, walls: pruneStubs(dedupeWalls(walls, known), known) };
+}
+
+/**
+ * Drop short wall stubs that aren't part of anything: under 3 ft, a piece must
+ * join walls at both ends (a jog or a closet return) to stay; under 18" it goes.
+ * Stray stubs come from door casings, furniture sides and scan noise.
+ */
+export function pruneStubs<W extends Seg>(walls: W[], known: Seg[] = []): W[] {
+  const segDist = (p: Vec2, s: Seg) => {
+    const L = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) || 1;
+    const t = Math.max(0, Math.min(L, ((p.x - s.a.x) * (s.b.x - s.a.x) + (p.y - s.a.y) * (s.b.y - s.a.y)) / L));
+    return Math.hypot(s.a.x + ((s.b.x - s.a.x) * t) / L - p.x, s.a.y + ((s.b.y - s.a.y) * t) / L - p.y);
+  };
+  return walls.filter((w) => {
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    if (L >= 36) return true;
+    if (L < 18) return false;
+    const others = [...walls.filter((o) => o !== w), ...known];
+    const joined = (p: Vec2) => others.some((o) => segDist(p, o) < (o.thickness ?? 4) / 2 + 3);
+    return joined(w.a) && joined(w.b);
+  });
 }
 
 /** A plan's walls as segments (to keep proposals from repeating them). */

@@ -391,7 +391,71 @@ export function findWalls(points: PP[], free: FreeLookup, o: FinderOptions): Fou
       openings: openings.map((op) => classifyOpening(op, at(center, (op.t0 + op.t1) / 2), z0, zHi)),
     });
   }
-  return walls;
+  return splitSeenThrough(walls, free, z0);
+}
+
+/**
+ * A wall can't be where you've looked straight through it. Walk each wall's
+ * centre line (inside the wall, behind the face you saw) and cut it wherever the
+ * depth rays passed through for longer than a wide doorway: that is what stretches
+ * a real wall across a room or merges two offset walls into one. Pieces shorter
+ * than 2 ft are dropped; openings stay with the piece they sit in.
+ */
+export function splitSeenThrough(walls: FoundWall[], free: FreeLookup, z0: number, maxGap = 60): FoundWall[] {
+  const out: FoundWall[] = [];
+  const STEP = 4;
+  for (const w of walls) {
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    const d = { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
+    const n = Math.ceil(L / STEP);
+    const seen: boolean[] = [];
+    for (let i = 0; i < n; i++) {
+      const t = (i + 0.5) * (L / n);
+      const x = w.a.x + d.x * t;
+      const y = w.a.y + d.y * t;
+      let hits = 0;
+      for (const z of [24, 40, 56, 72]) if (free.count(x, y, z0 + z) >= 2) hits++;
+      seen.push(hits >= 2);
+    }
+    // Cut at seen-through runs longer than maxGap.
+    const keep: Array<[number, number]> = [];
+    let s = 0;
+    let i = 0;
+    while (i < n) {
+      if (!seen[i]) {
+        i++;
+        continue;
+      }
+      let j = i;
+      while (j < n && seen[j]) j++;
+      if ((j - i) * (L / n) > maxGap) {
+        if (i > s) keep.push([s, i]);
+        s = j;
+      }
+      i = j;
+    }
+    if (s < n) keep.push([s, n]);
+    if (keep.length === 1 && keep[0][0] === 0 && keep[0][1] === n) {
+      out.push(w);
+      continue;
+    }
+    for (const [k0, k1] of keep) {
+      const t0 = k0 * (L / n);
+      const t1 = k1 * (L / n);
+      if (t1 - t0 < 24) continue;
+      const at = (p: Vec2, t: number): Vec2 => ({ x: p.x + d.x * t, y: p.y + d.y * t });
+      const tOf = (p: Vec2) => (p.x - w.a.x) * d.x + (p.y - w.a.y) * d.y;
+      out.push({
+        ...w,
+        a: at(w.a, t0),
+        b: at(w.a, t1),
+        faceA: at(w.faceA, t0),
+        faceB: at(w.faceA, t1),
+        openings: w.openings.filter((o) => tOf(o.center) - o.width / 2 >= t0 - 2 && tOf(o.center) + o.width / 2 <= t1 + 2),
+      });
+    }
+  }
+  return out;
 }
 
 function classifyOpening(op: { t0: number; t1: number; zb: number; zt: number }, center: Vec2, z0: number, zHi: number): FoundOpening {
