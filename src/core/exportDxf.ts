@@ -22,6 +22,7 @@ const LAYERS: Array<{ name: string; color: number; ltype?: string }> = [
   { name: 'DIMENSIONS', color: 140 },
   { name: 'SOFFITS', color: 30, ltype: 'DASHED' },
   { name: 'OBJECTS', color: 9 },
+  { name: 'BUILT-INS', color: 42 },
 ];
 
 export function exportDxf(plan: Plan): string {
@@ -205,6 +206,11 @@ export function exportDxf(plan: Plan): string {
   }
   for (const ob of plan.obstacles) {
     poly('OBJECTS', ob.poly);
+  }
+  for (const b of plan.boxes) {
+    poly('BUILT-INS', b.poly);
+    const c = b.poly.reduce((q, p) => ({ x: q.x + p.x / b.poly.length, y: q.y + p.y / b.poly.length }), { x: 0, y: 0 });
+    text('BUILT-INS', c, `${b.label} ${formatLength(b.z1)}`, 3);
   }
   g(0, 'ENDSEC');
   g(0, 'EOF');

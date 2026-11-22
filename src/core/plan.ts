@@ -164,6 +164,19 @@ export const SoffitSchema = z.object({
   ...elementFields,
 });
 export type Soffit = z.infer<typeof SoffitSchema>;
+
+/** A planned solid on the floor: bench, counter, cabinet run, closet, built-in. */
+export const BoxSchema = z.object({
+  id: z.string(),
+  label: z.string().default('Box'),
+  /** Footprint, plan inches (a rectangle from the box tool; push/pull keeps it one). */
+  poly: z.array(PointSchema),
+  /** Bottom and top above the floor, inches. */
+  z0: z.number().min(0).default(0),
+  z1: z.number().positive(),
+  ...elementFields,
+});
+export type Box = z.infer<typeof BoxSchema>;
 export type Room = z.infer<typeof RoomSchema>;
 
 /**
@@ -232,6 +245,7 @@ export const PlanSchema = z.object({
   measures: z.array(MeasureSchema).default([]),
   soffits: z.array(SoffitSchema).default([]),
   constraints: z.array(ConstraintSchema).default([]),
+  boxes: z.array(BoxSchema).default([]),
   /** Scanned floor area, cells in the room's axis frame (see core/footprint.ts). */
   footprint: z
     .object({ axis: z.number(), cell: z.number().positive(), rows: z.array(z.tuple([z.number(), z.number(), z.number()])) })

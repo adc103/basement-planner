@@ -87,6 +87,8 @@ export class PlanView {
   wallMeshes: Mesh[] = [];
   /** Utility pin meshes for raycasting, markerId in userData. */
   markerMeshes: Mesh[] = [];
+  /** Boxes and soffits for pointing at (push/pull); userData: { boxKind, boxId }. */
+  boxMeshes: Mesh[] = [];
 
   private matNew = new MeshStandardMaterial({ color: 0xf2efe8, roughness: 0.95, metalness: 0, side: DoubleSide });
   private matExisting = new MeshStandardMaterial({
@@ -162,7 +164,7 @@ export class PlanView {
 
   /** Materials that real-world depth should be able to hide (planned content only). */
   occludableMaterials(): Material[] {
-    return [this.matNew, this.matHover, this.matSelected, this.matHighlight, this.matLumber, this.matSoffit];
+    return [this.matNew, this.matHover, this.matSelected, this.matHighlight, this.matLumber, this.matSoffit, this.matBox, this.matBoxSel];
   }
 
   private applyMode(): void {
@@ -203,6 +205,7 @@ export class PlanView {
     this.refMarkers = [];
     this.wallMeshes = [];
     this.markerMeshes = [];
+    this.boxMeshes = [];
 
     const fps = computeFootprints(plan);
     for (const wall of plan.walls) {
@@ -215,6 +218,7 @@ export class PlanView {
     this.buildObstacles(plan);
     this.buildMarkers(plan);
     this.buildSoffits(plan);
+    this.buildBoxes(plan);
     if (plan.settings.showCeiling) this.buildCeilings(plan);
     this.framing = [];
     if (this.mode === 'xray') this.buildFraming(plan);
@@ -437,6 +441,43 @@ export class PlanView {
     this.content.add(mesh);
   }
 
+  private matBox = new MeshStandardMaterial({ color: 0xd8c3a0, roughness: 0.9, transparent: true, opacity: 0.85, side: DoubleSide });
+  private matBoxSel = new MeshStandardMaterial({ color: 0x7fb2ff, emissive: new Color(0x0d2a55), roughness: 0.9, transparent: true, opacity: 0.8, side: DoubleSide });
+  /** Box or soffit drawn as selected. */
+  private selectedBox: string | null = null;
+
+  setSelectedBox(id: string | null): void {
+    if (id === this.selectedBox) return;
+    this.selectedBox = id;
+    for (const m of this.boxMeshes) m.material = m.userData.boxId === id ? this.matBoxSel : m.userData.boxKind === 'box' ? this.matBox : this.matSoffit;
+  }
+
+  /** Benches, counters, cabinets and built-ins. */
+  private buildBoxes(plan: Plan): void {
+    for (const b of plan.boxes) {
+      if (b.poly.length < 3 || b.z1 <= b.z0) continue;
+      const pos: number[] = [];
+      appendPrism(pos, b.poly, b.z0, b.z1);
+      const geo = new BufferGeometry();
+      geo.setAttribute('position', new Float32BufferAttribute(pos, 3));
+      geo.computeVertexNormals();
+      const mesh = new Mesh(geo, b.id === this.selectedBox ? this.matBoxSel : this.matBox);
+      mesh.userData.boxKind = 'box';
+      mesh.userData.boxId = b.id;
+      mesh.renderOrder = 2;
+      this.content.add(mesh);
+      this.boxMeshes.push(mesh);
+      const edges = new LineSegments(new EdgesGeometry(geo, 25), this.edgeMat);
+      edges.raycast = () => {};
+      this.content.add(edges);
+      const c = b.poly.reduce((acc, p) => ({ x: acc.x + p.x / b.poly.length, y: acc.y + p.y / b.poly.length }), { x: 0, y: 0 });
+      const l = new TextLabel(`${b.label} ${formatLength(b.z1)}${b.locked ? ' (locked)' : ''}`, { height: 0.035, bg: 'rgba(120,85,40,0.88)' });
+      planToLocal(c, b.z1 + 3, l.sprite.position);
+      this.content.add(l.sprite);
+      this.extraLabels.push(l);
+    }
+  }
+
   private matSoffit = new MeshStandardMaterial({ color: 0xecebff, roughness: 0.95, transparent: true, opacity: 0.55, side: DoubleSide });
   private ceilingMats = new Map<CeilingType, MeshBasicMaterial>();
 
@@ -459,8 +500,10 @@ export class PlanView {
       const geo = new BufferGeometry();
       geo.setAttribute('position', new Float32BufferAttribute(pos, 3));
       geo.computeVertexNormals();
-      const mesh = new Mesh(geo, this.matSoffit);
-      mesh.raycast = () => {};
+      const mesh = new Mesh(geo, sf.id === this.selectedBox ? this.matBoxSel : this.matSoffit);
+      mesh.userData.boxKind = 'soffit';
+      mesh.userData.boxId = sf.id;
+      this.boxMeshes.push(mesh);
       mesh.renderOrder = 2;
       this.content.add(mesh);
       const edges = new LineSegments(new EdgesGeometry(geo, 25), this.edgeMat);

@@ -51,6 +51,7 @@ import { CameraProbe, PROBE_KEY } from './cameraProbe.js';
 import { registerWebMcp } from './webmcp.js';
 import { DimensionTool } from './tools/dimensionTool.js';
 import { Dollhouse } from './dollhouse.js';
+import { BoxTool, BOX_PRESETS, type BoxPreset } from './tools/boxTool.js';
 import { SectionTool, type SectionCut } from './tools/sectionTool.js';
 import { checkPlan, type WallCheck } from '../core/fit.js';
 import { CommandBus, type CommandName, type ParamsOf, type ResultOf } from '../core/commands.js';
@@ -98,6 +99,7 @@ const TOOL_LABEL: Record<ToolName, string> = {
   soffit: 'Soffit',
   review: 'Review scan',
   section: 'Section',
+  box: 'Box',
   dimension: 'Dimension',
 };
 
@@ -279,6 +281,7 @@ export class PlannerApp {
         anchorReferences: () => this.anchorReferences(),
       }),
       soffit: new SoffitTool(ctx, () => this.axisAngle),
+      box: new BoxTool(ctx, () => this.axisAngle, () => this.boxPreset),
       review: new ScanReviewTool(ctx, this.scan),
     };
 
@@ -346,7 +349,7 @@ export class PlannerApp {
       selectionText: () => this.editTool.describe(),
       selectionKind: () => {
         const k = this.editTool.selection?.kind;
-        return k === 'wall' || k === 'opening' || k === 'marker' ? k : null;
+        return k === 'wall' || k === 'opening' || k === 'marker' || k === 'box' ? k : null;
       },
       selectedStud: () => this.editTool.selectedWall()?.framing.studSize ?? null,
       editLength: () => this.editTool.typeLength(),
@@ -447,6 +450,17 @@ export class PlannerApp {
       roomMesh: () => this.scan.mesh.shown,
       hasSection: () => !!this.section,
       dollhouse: () => this.dollhouse.shown,
+      boxPresets: () => BOX_PRESETS.map((p) => p.label),
+      boxPreset: () => this.boxPreset.label,
+      setBoxPreset: (label) => {
+        this.boxPreset = BOX_PRESETS.find((p) => p.label === label) ?? this.boxPreset;
+        this.refreshUi();
+      },
+      editBoxHeight: () => this.editTool.typeBoxHeight(),
+      selectedBoxKind: () => {
+        const s = this.editTool.selection;
+        return s?.kind === 'box' ? s.boxKind : null;
+      },
       dollAction: (a) => {
         const d = this.dollhouse;
         if (a === 'toggle') this.toast(d.toggle(this.store.plan) ? 'Dollhouse: the whole plan, small. The red marker is you.' : 'Dollhouse hidden', 4);
@@ -545,6 +559,7 @@ export class PlannerApp {
   }
 
   // --------------------------------------------------------------- section ---
+  boxPreset: BoxPreset = BOX_PRESETS[0];
   dollhouse!: Dollhouse;
   private dollTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1260,6 +1275,8 @@ export class PlannerApp {
     fine: false,
     pressing: false,
     eye: { x: 0, y: 0 },
+    ray: { o: { x: 0, y: 0, z: 0 }, d: { x: 0, y: 0, z: -1 } },
+    box: null,
   };
 
   /** Build the aim for a hand. The returned object is reused; tools must not keep it. */
@@ -1298,6 +1315,22 @@ export class PlannerApp {
         z: lp.y / INCH_M,
         distM: hit.distance,
       };
+    }
+    a.ray = { o: { x: o.x / INCH_M, y: o.z / INCH_M, z: o.y / INCH_M }, d: { x: d.x, y: d.z, z: d.y } };
+    a.box = null;
+    if (this.view.boxMeshes.length) {
+      const bh = this.raycaster.intersectObjects(this.view.boxMeshes, false)[0];
+      if (bh && bh.face && (!a.wall || bh.distance <= a.wall.distM + 0.02)) {
+        const lp = root.worldToLocal(this.tmpV3.copy(bh.point));
+        const n = bh.face.normal; // mesh-local = plan-root local (meters, y up)
+        a.box = {
+          kind: bh.object.userData.boxKind,
+          id: bh.object.userData.boxId,
+          p: { x: lp.x / INCH_M, y: lp.z / INCH_M, z: lp.y / INCH_M },
+          n: { x: n.x, y: n.z, z: n.y },
+          distM: bh.distance,
+        };
+      }
     }
     a.marker = null;
     if (this.view.markerMeshes.length) {

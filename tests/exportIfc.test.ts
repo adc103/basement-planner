@@ -20,6 +20,7 @@ function sample() {
   b.run('opening.add', { wallId: ids[2], type: 'window', offset: 60, width: 36, height: 24, sill: 54 });
   b.run('wall.setDemolish', { id: ids[1], demolish: true });
   b.run('room.add', { seed: { x: 60, y: 70 }, name: 'Office' });
+  b.run('box.add', { poly: [{ x: 150, y: 100 }, { x: 198, y: 100 }, { x: 198, y: 118 }, { x: 150, y: 118 }], z1: 18, label: 'Bench' });
   b.run('soffit.add', { poly: [{ x: 10, y: 10 }, { x: 100, y: 10 }, { x: 100, y: 22 }, { x: 10, y: 22 }], bottom: 84 });
   return b.store.plan;
 }
@@ -44,6 +45,7 @@ describe('IFC export', () => {
     expect(count(WebIFC.IFCOPENINGELEMENT)).toBe(2);
     expect(count(WebIFC.IFCSPACE)).toBe(1);
     expect(count(WebIFC.IFCBUILDINGSTOREY)).toBe(1);
+    expect(count(WebIFC.IFCBUILDINGELEMENTPROXY)).toBe(2); // the soffit and the bench
     // Every wall, door and window turns into triangles.
     let meshes = 0;
     let tris = 0;

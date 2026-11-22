@@ -26,6 +26,10 @@ export interface AimHit {
   pressing: boolean;
   /** Eye position in plan space (for hints). */
   eye: Vec2;
+  /** The aim ray in plan inches (x, y on the floor, z up), d unit length. */
+  ray: { o: { x: number; y: number; z: number }; d: { x: number; y: number; z: number } };
+  /** Box or soffit under the ray: hit point and face normal, plan inches (z up). */
+  box: { kind: 'box' | 'soffit'; id: string; p: { x: number; y: number; z: number }; n: { x: number; y: number; z: number }; distM: number } | null;
 }
 
 export interface ToolContext {

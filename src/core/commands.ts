@@ -70,8 +70,8 @@ const Inches = (what: string) => z.number().positive().describe(`${what}, inches
 
 // --- Lookups that refuse missing or locked elements ------------------------------
 
-type Coll = 'walls' | 'openings' | 'markers' | 'soffits' | 'rooms' | 'obstacles' | 'measures';
-const COLLS: Coll[] = ['walls', 'openings', 'markers', 'soffits', 'rooms', 'obstacles', 'measures'];
+type Coll = 'walls' | 'openings' | 'markers' | 'soffits' | 'rooms' | 'obstacles' | 'measures' | 'boxes';
+const COLLS: Coll[] = ['walls', 'openings', 'markers', 'soffits', 'rooms', 'obstacles', 'measures', 'boxes'];
 const NOUN: Record<Coll, string> = {
   walls: 'wall',
   openings: 'opening',
@@ -80,6 +80,7 @@ const NOUN: Record<Coll, string> = {
   rooms: 'room',
   obstacles: 'object',
   measures: 'measurement',
+  boxes: 'box',
 };
 
 function find(d: Draft<Plan>, id: string): { coll: Coll; el: { id: string; locked?: boolean } } | null {
@@ -363,6 +364,44 @@ export const COMMANDS = {
       return id;
     },
   }),
+  'soffit.update': def({
+    title: 'Change soffit',
+    description: 'Change a soffit\u2019s footprint (push/pull a side) or underside height.',
+    params: z.object({ id: Id, poly: z.array(Vec).min(3).optional(), bottom: Inches('Underside height').optional() }),
+    run(d, p) {
+      const s = editable(d, 'soffits', p.id);
+      if (p.poly) s.poly = p.poly.map((q) => ({ x: q.x, y: q.y }));
+      if (p.bottom !== undefined) {
+        if (p.bottom >= d.settings.wallHeight) throw new CommandError('A soffit has to hang below the ceiling');
+        s.bottom = p.bottom;
+      }
+    },
+  }),
+  'box.add': def({
+    title: 'Add box',
+    label: (p) => `Add ${p.label.toLowerCase()}`,
+    description: 'Add a planned solid on the floor (bench, counter, cabinet run, closet, built-in): floor polygon, bottom and top heights. Returns the id.',
+    params: z.object({ poly: z.array(Vec).min(3), z0: z.number().min(0).default(0), z1: Inches('Top height'), label: z.string().min(1).max(40).default('Box') }),
+    run(d, p) {
+      if (p.z1 <= p.z0) throw new CommandError('The top has to be above the bottom');
+      const id = newId('bx');
+      d.boxes.push({ id, label: p.label, poly: p.poly.map((q) => ({ x: q.x, y: q.y })), z0: p.z0, z1: p.z1, locked: false });
+      return id;
+    },
+  }),
+  'box.update': def({
+    title: 'Change box',
+    description: 'Change a box: footprint (push/pull a side), bottom or top height, or name.',
+    params: z.object({ id: Id, poly: z.array(Vec).min(3).optional(), z0: z.number().min(0).optional(), z1: Inches('Top height').optional(), label: z.string().min(1).max(40).optional() }),
+    run(d, p) {
+      const b = editable(d, 'boxes', p.id);
+      if (p.poly) b.poly = p.poly.map((q) => ({ x: q.x, y: q.y }));
+      if (p.z0 !== undefined) b.z0 = p.z0;
+      if (p.z1 !== undefined) b.z1 = p.z1;
+      if (p.label !== undefined) b.label = p.label;
+      if (b.z1 - b.z0 < 0.5) throw new CommandError('Too thin');
+    },
+  }),
   'soffit.setBottom': def({
     title: 'Soffit height',
     description: 'Set a soffit’s underside height.',
@@ -488,6 +527,7 @@ export const COMMANDS = {
       else if (f.coll === 'soffits') deleteSoffit(d, p.id);
       else if (f.coll === 'rooms') deleteRoom(d, p.id);
       else if (f.coll === 'measures') deleteMeasure(d, p.id);
+      else if (f.coll === 'boxes') d.boxes = d.boxes.filter((b) => b.id !== p.id);
       else d.obstacles = d.obstacles.filter((o) => o.id !== p.id);
       return f.coll;
     },
@@ -715,6 +755,7 @@ export function describePlan(plan: Plan): unknown {
     pins: plan.markers.map((m) => ({ id: m.id, type: m.type, x: r(m.x), y: r(m.y), z: r(m.z), wallId: m.wallId })),
     soffits: plan.soffits.map((s) => ({ id: s.id, bottom: s.bottom, poly: s.poly.map((q) => ({ x: r(q.x), y: r(q.y) })) })),
     objects: plan.obstacles.map((o) => ({ id: o.id, label: o.label, height: o.height })),
+    boxes: plan.boxes.map((b) => ({ id: b.id, label: b.label, z0: b.z0, z1: b.z1, poly: b.poly.map((q) => ({ x: r(q.x), y: r(q.y) })) })),
     locks: plan.constraints.map((c) => ({ id: c.id, type: c.type, a: c.a, ...(c.b ? { b: c.b } : {}), ...(c.value !== null ? { value: c.value } : {}), ...(c.type === 'distance' ? { mode: c.mode } : {}) })),
   };
 }

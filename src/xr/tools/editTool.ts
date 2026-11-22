@@ -2,6 +2,7 @@ import { dist, type Vec2 } from '../../core/geom2d.js';
 import { locateOnWall, wallEnds, wallById, wallLength } from '../../core/ops.js';
 import type { Wall } from '../../core/plan.js';
 import { snap } from '../../core/snapping.js';
+import { edgeNormal, faceAt, pushSide, rayLineParam, rectSize, type Face, type Vec3 } from '../../core/pushPull.js';
 import { formatLength } from '../../core/units.js';
 import { widthText } from '../planView.js';
 import type { AimHit, Tool, ToolContext } from './tool.js';
@@ -10,7 +11,8 @@ export type Target =
   | { kind: 'node'; id: string }
   | { kind: 'wall'; id: string }
   | { kind: 'opening'; id: string; wallId: string }
-  | { kind: 'marker'; id: string };
+  | { kind: 'marker'; id: string }
+  | { kind: 'box'; id: string; boxKind: 'box' | 'soffit' };
 
 interface Drag {
   target: Target;
@@ -19,6 +21,8 @@ interface Drag {
   /** Wall drags: the wall's normal and the corners' starting positions. */
   normal?: Vec2;
   orig?: Array<{ id: string; x: number; y: number }>;
+  /** Box push/pull: the face, the box as it started, and the line the drag reads along. */
+  push?: { face: Face; poly: Vec2[]; z0: number; z1: number; p: Vec3; u: Vec3; s0: number };
 }
 
 /**
@@ -53,12 +57,16 @@ export class EditTool implements Tool {
     if (h?.kind === 'opening') return 'Drag to slide, tap to select';
     if (h?.kind === 'marker') return 'Drag to move this pin';
     if (h?.kind === 'wall') return 'Tap to select, drag to slide this wall';
+    if (h?.kind === 'box') return 'Drag a face to push or pull it, tap to select';
     return this.selection ? 'Edit the selection in the menu' : 'Point at a corner, wall, door or pin';
   }
 
   /** What is under the aim, in priority order. */
   private pick(aim: AimHit): Target | null {
     const plan = this.ctx.store.plan;
+    // A box or soffit you point at directly comes first (it can stand over corners).
+    if (aim.box && (!aim.floor || aim.box.distM < aim.floorDistM - 0.02) && (!aim.wall || aim.box.distM <= aim.wall.distM + 0.02))
+      return { kind: 'box', id: aim.box.id, boxKind: aim.box.kind };
     if (aim.floor) {
       const tol = Math.max(4, this.ctx.snapOptions(aim).tolerance * 1.5);
       let best: Target | null = null;
@@ -114,6 +122,24 @@ export class EditTool implements Tool {
     }
     const start = aim.floor ?? aim.wall?.point ?? { x: 0, y: 0 };
     this.dragging = { target: t, start, moved: false };
+    if (t.kind === 'box' && aim.box) {
+      const el = this.boxEl(t);
+      if (!el) {
+        this.dragging = null;
+        return;
+      }
+      const face = faceAt(el.poly, el.z0, el.z1, aim.box.p);
+      const p = { ...aim.box.p };
+      const u = typeof face === 'object' ? (() => {
+        const n = edgeNormal(el.poly, face.side);
+        return { x: n.x, y: n.y, z: 0 };
+      })() : { x: 0, y: 0, z: 1 };
+      const s0 = rayLineParam(aim.ray.o, aim.ray.d, p, u) ?? 0;
+      this.dragging.push = { face, poly: el.poly.map((q) => ({ ...q })), z0: el.z0, z1: el.z1, p, u, s0 };
+      if (face === 'top' && t.boxKind === 'soffit') this.dragging.push = undefined; // its top is the ceiling
+      this.ctx.store.begin('Push/pull');
+      return;
+    }
     if (t.kind === 'wall') {
       const plan = this.ctx.store.plan;
       const w = wallById(plan, t.id);
@@ -184,6 +210,38 @@ export class EditTool implements Tool {
           pv.showHint(`${off >= 0 ? 'Moved' : 'Moved'} ${formatLength(Math.abs(off))}`, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, 60);
         }
       }
+    } else if (d.target.kind === 'box' && d.push) {
+      const pp = d.push;
+      const s = rayLineParam(aim.ray.o, aim.ray.d, pp.p, pp.u);
+      if (s !== null) {
+        const step = aim.fine ? 0.125 : 0.5;
+        const delta = Math.round((s - pp.s0) / step) * step;
+        if (d.moved || Math.abs(delta) >= 0.5) {
+          d.moved = true;
+          const t = d.target;
+          const isBox = t.boxKind === 'box';
+          let text = '';
+          if (typeof pp.face === 'object') {
+            const poly = pushSide(pp.poly, pp.face.side, delta);
+            if (poly) {
+              if (isBox) this.ctx.cmd.run('box.update', { id: t.id, poly });
+              else this.ctx.cmd.run('soffit.update', { id: t.id, poly });
+              const sz = rectSize(poly);
+              text = `${formatLength(Math.round(sz.w * 8) / 8)} x ${formatLength(Math.round(sz.d * 8) / 8)}`;
+            }
+          } else if (pp.face === 'top' && isBox) {
+            const z1 = Math.max(pp.z0 + 0.5, pp.z1 + delta);
+            this.ctx.cmd.run('box.update', { id: t.id, z1 });
+            text = `${formatLength(z1 - pp.z0)} tall`;
+          } else if (pp.face === 'bottom') {
+            const z0 = Math.max(0, Math.min(pp.z1 - 0.5, pp.z0 + delta));
+            if (isBox) this.ctx.cmd.run('box.update', { id: t.id, z0 });
+            else this.ctx.cmd.run('soffit.update', { id: t.id, bottom: z0 });
+            text = isBox ? `${formatLength(z0)} off the floor` : `Bottom at ${formatLength(z0)}`;
+          }
+          if (text) pv.showHint(`${delta >= 0 ? '+' : ''}${formatLength(Math.abs(delta))}${delta < 0 ? ' in' : ''}: ${text}`, { x: pp.p.x, y: pp.p.y }, pp.p.z + 8);
+        }
+      }
     } else if (d.target.kind === 'opening') {
       const op = plan.openings.find((o) => o.id === (d.target as { id: string }).id);
       const wall = op && wallById(plan, op.wallId);
@@ -238,6 +296,7 @@ export class EditTool implements Tool {
     this.selection = t;
     const wallId = t?.kind === 'wall' ? t.id : t?.kind === 'opening' ? t.wallId : null;
     this.ctx.view.setSelected(wallId);
+    this.ctx.view.setSelectedBox(t?.kind === 'box' ? t.id : null);
     this.ctx.refreshUi();
   }
 
@@ -253,7 +312,9 @@ export class EditTool implements Tool {
           ? plan.openings.some((o) => o.id === s.id)
           : s.kind === 'marker'
             ? plan.markers.some((m) => m.id === s.id)
-            : false;
+            : s.kind === 'box'
+              ? !!this.boxEl(s)
+              : false;
     if (!exists) this.select(null);
     else if (s.kind === 'wall' || s.kind === 'opening') this.ctx.view.setSelected(s.kind === 'wall' ? s.id : s.wallId);
   }
@@ -281,6 +342,15 @@ export class EditTool implements Tool {
       return o
         ? `${o.type === 'door' ? 'Door' : o.type === 'window' ? 'Window' : 'Opening'}${o.locked ? ' (locked)' : ''}: ${widthText(o.width)} x ${formatLength(o.height)}${o.sill > 0 ? `, sill ${formatLength(o.sill)}` : ''}`
         : '';
+    }
+    if (s.kind === 'box') {
+      const el = this.boxEl(s);
+      if (!el) return '';
+      const sz = rectSize(el.poly);
+      const r = (v: number) => formatLength(Math.round(v * 8) / 8);
+      return s.boxKind === 'box'
+        ? `${el.label}: ${r(sz.w)} x ${r(sz.d)}, ${r(el.z1 - el.z0)} tall. Drag a face to push/pull`
+        : `Soffit: ${r(sz.w)} x ${r(sz.d)}, bottom at ${r(el.z0)}. Drag a face to push/pull`;
     }
     if (s.kind === 'marker') {
       const m = plan.markers.find((x) => x.id === s.id);
@@ -335,8 +405,30 @@ export class EditTool implements Tool {
   isLocked(t: Target): boolean {
     const plan = this.ctx.store.plan;
     if (t.kind === 'node') return plan.walls.some((w) => (w.a === t.id || w.b === t.id) && w.locked);
+    if (t.kind === 'box') return !!(t.boxKind === 'box' ? plan.boxes : plan.soffits).find((x) => x.id === t.id)?.locked;
     const coll = t.kind === 'wall' ? plan.walls : t.kind === 'opening' ? plan.openings : plan.markers;
     return !!coll.find((x) => x.id === t.id)?.locked;
+  }
+
+  /** A box or soffit as a box: footprint, bottom and top. */
+  boxEl(t: { id: string; boxKind: 'box' | 'soffit' }): { poly: Vec2[]; z0: number; z1: number; label: string } | null {
+    const plan = this.ctx.store.plan;
+    if (t.boxKind === 'box') {
+      const b = plan.boxes.find((x) => x.id === t.id);
+      return b ? { poly: b.poly, z0: b.z0, z1: b.z1, label: b.label } : null;
+    }
+    const s = plan.soffits.find((x) => x.id === t.id);
+    return s ? { poly: s.poly, z0: s.bottom, z1: plan.settings.wallHeight, label: 'Soffit' } : null;
+  }
+
+  /** Type the selected box's height, or the soffit's bottom. */
+  typeBoxHeight(): void {
+    const s = this.selection;
+    if (s?.kind !== 'box') return;
+    const el = this.boxEl(s);
+    if (!el) return;
+    if (s.boxKind === 'box') this.ctx.openKeypad(`${el.label} height`, el.z1 - el.z0, (h) => this.ctx.act('box.update', { id: s.id, z1: el.z0 + h }));
+    else this.ctx.openKeypad('Soffit bottom', el.z0, (h) => this.ctx.act('soffit.update', { id: s.id, bottom: h }));
   }
 
   /** Lock or unlock the selection. */

@@ -4,7 +4,7 @@ import type { IconName } from './icons.js';
 import { chipRenderer, roundRenderer, SpatialPanel, tabRenderer, textRenderer, tileRenderer, THEME } from './spatialPanel.js';
 
 export type TabName = 'build' | 'edit' | 'measure' | 'rooms' | 'pins' | 'ceiling' | 'scan' | 'view';
-export type ToolName = 'walls' | 'doors' | 'capture' | 'edit' | 'delete' | 'measure' | 'align' | 'rooms' | 'pins' | 'soffit' | 'review' | 'dimension' | 'section';
+export type ToolName = 'walls' | 'doors' | 'capture' | 'edit' | 'delete' | 'measure' | 'align' | 'rooms' | 'pins' | 'soffit' | 'review' | 'dimension' | 'section' | 'box';
 
 /** Everything the menu needs from the app. */
 export interface MenuApi {
@@ -32,7 +32,12 @@ export interface MenuApi {
   setCaptureThickness(t: number): void;
   // edit
   selectionText(): string;
-  selectionKind(): 'wall' | 'opening' | 'marker' | null;
+  selectionKind(): 'wall' | 'opening' | 'marker' | 'box' | null;
+  boxPresets(): string[];
+  boxPreset(): string;
+  setBoxPreset(label: string): void;
+  editBoxHeight(): void;
+  selectedBoxKind(): 'box' | 'soffit' | null;
   selectedStud(): '2x4' | '2x6' | null;
   editLength(): void;
   editHeight(): void;
@@ -258,6 +263,7 @@ export class MainMenu {
           const span = chip.span ?? 1;
           if (chip.col !== undefined) col = chip.col;
           const w = span * COL_W + (span - 1) * GAP;
+          if (CX0 + col * (COL_W + GAP) + w > CX1 + 0.001) this.overflow.push(`${t.name} chip ${chip.id} past the right edge`);
           this.panel.add({
             id: chip.id,
             x: CX0 + col * (COL_W + GAP) + w / 2,
@@ -309,7 +315,8 @@ export class MainMenu {
     const wallsOnly = () => a.tool() === 'walls';
     const doorsOnly = () => a.tool() === 'doors';
     const captureOnly = () => a.tool() === 'capture';
-    const sel = (k: 'wall' | 'opening' | 'marker') => () => a.selectionKind() === k;
+    const sel = (k: 'wall' | 'opening' | 'marker' | 'box') => () => a.selectionKind() === k;
+    const boxOnly = () => a.tool() === 'box';
     const tabs: ExtraTab[] = [
       {
         name: 'build',
@@ -320,6 +327,7 @@ export class MainMenu {
           { id: 'walls', icon: 'walls', label: () => 'Walls', tool: 'walls' },
           { id: 'doors', icon: 'door', label: () => 'Doors', tool: 'doors' },
           { id: 'capture', icon: 'capture', label: () => 'Capture', tool: 'capture' },
+          { id: 'box', icon: 'build', label: () => 'Box', tool: 'box' },
         ],
         text: () =>
           a.tool() === 'walls'
@@ -328,7 +336,9 @@ export class MainMenu {
               ? 'Door size'
               : a.tool() === 'capture'
                 ? 'Thickness of captured walls'
-                : '',
+                : a.tool() === 'box'
+                  ? 'Bench, desk, counter or cabinet: drag it out on the floor'
+                  : '',
         rows: [
           [
             { id: 'finish', label: () => 'Finish', icon: 'flag', onClick: () => a.finishChain(), enabled: () => a.drawing(), visible: wallsOnly },
@@ -342,15 +352,24 @@ export class MainMenu {
                 ['door', 36, '36"'],
                 ['opening', 36, 'Open 36"'],
               ] as const
-            ).map(([type, w, label]) => ({
+            ).map(([type, w, label], i) => ({
               id: `preset-${type}-${w}`,
+              col: i,
               label: () => label,
               onClick: () => a.setPreset(type, w),
               active: () => a.preset().type === type && a.preset().width === w,
               visible: doorsOnly,
             })),
-            { id: 'cap-45', label: () => 'Stud 4 1/2"', span: 2, onClick: () => a.setCaptureThickness(4.5), active: () => a.captureThickness() === 4.5, visible: captureOnly },
-            { id: 'cap-8', label: () => 'Block 8"', span: 2, onClick: () => a.setCaptureThickness(8), active: () => a.captureThickness() === 8, visible: captureOnly },
+            ...['Bench', 'Desk', 'Counter', 'Tall cabinet'].map((label, i) => ({
+              id: `box-${i}`,
+              col: i,
+              label: () => (label === 'Tall cabinet' ? 'Tall' : label),
+              onClick: () => a.setBoxPreset(label),
+              active: () => a.boxPreset() === label,
+              visible: boxOnly,
+            })),
+            { id: 'cap-45', label: () => 'Stud 4 1/2"', span: 2, col: 0, onClick: () => a.setCaptureThickness(4.5), active: () => a.captureThickness() === 4.5, visible: captureOnly },
+            { id: 'cap-8', label: () => 'Block 8"', span: 2, col: 2, onClick: () => a.setCaptureThickness(8), active: () => a.captureThickness() === 8, visible: captureOnly },
           ],
           [
             {
@@ -398,6 +417,7 @@ export class MainMenu {
             { id: 'e-2x4', label: () => '2x4', col: 2, onClick: () => a.editStud('2x4'), active: () => a.selectedStud() === '2x4', visible: sel('wall') },
             { id: 'e-2x6', label: () => '2x6', col: 3, onClick: () => a.editStud('2x6'), active: () => a.selectedStud() === '2x6', visible: sel('wall') },
             { id: 'e-w', label: () => 'Width', icon: 'keypad', col: 0, onClick: () => a.editWidth(), visible: sel('opening') },
+            { id: 'e-bh', label: () => (a.selectedBoxKind() === 'soffit' ? 'Bottom' : 'Height'), icon: 'height', span: 2, col: 0, onClick: () => a.editBoxHeight(), visible: sel('box') },
             { id: 'e-oh', label: () => 'Height', icon: 'height', col: 1, onClick: () => a.edit('openingHeight'), visible: sel('opening') },
             { id: 'e-type', label: () => a.openingType(), col: 2, onClick: () => a.edit('openingType'), visible: sel('opening') },
             { id: 'e-flip', label: () => 'Flip', col: 3, onClick: () => a.edit('flip'), visible: () => a.selectionKind() === 'opening' && a.openingType() === 'Door' },

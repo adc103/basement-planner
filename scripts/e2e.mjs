@@ -431,6 +431,57 @@ try {
     await clickButton(menu, 'btn:tab-build');
   }
 
+  // Box tool and push/pull: make a bench, then drag its end face out with the Select tool.
+  {
+    check(await clickButton(menu, 'btn:tab-build'), 'Build tab for boxes');
+    check(await clickButton(menu, 'btn:tool-box'), 'Box tool tile');
+    check(await clickButton(menu, 'btn:box-0'), 'Bench preset');
+    const id = await page.evaluate(() =>
+      window.basementPlanner.cmd.run('box.add', { poly: [{ x: 120, y: 100 }, { x: 168, y: 100 }, { x: 168, y: 118 }, { x: 120, y: 118 }], z1: 18, label: 'Bench' }),
+    );
+    check(!!id, 'bench added');
+    check(await clickButton(menu, 'btn:tab-edit'), 'Edit tab for push/pull');
+    check(await clickButton(menu, 'btn:tool-edit'), 'Select tool');
+    // Aim the right controller at a point on the bench's end face (plan x = 168), from 0.7 m out.
+    const aimAt = (px, py, pz) =>
+      page.evaluate(({ px, py, pz }) => {
+        const r = window.basementPlanner.view.root;
+        r.updateWorldMatrix(true, false);
+        const e = r.matrixWorld.elements;
+        const lx = px * 0.0254, ly = pz * 0.0254, lz = py * 0.0254;
+        const t = { x: e[0] * lx + e[4] * ly + e[8] * lz + e[12], y: e[1] * lx + e[5] * ly + e[9] * lz + e[13], z: e[2] * lx + e[6] * ly + e[10] * lz + e[14] };
+        const ex = 168 * 0.0254 + 0.7, ey = 0.9, ez = 109 * 0.0254; // fixed controller spot (plan-local, root has no rotation here)
+        const o = { x: e[0] * ex + e[4] * ey + e[8] * ez + e[12], y: e[1] * ex + e[5] * ey + e[9] * ez + e[13], z: e[2] * ex + e[6] * ey + e[10] * ez + e[14] };
+        const c = window.__dev.controllers.right;
+        c.position.set(o.x, o.y, o.z);
+        const d = { x: t.x - o.x, y: t.y - o.y, z: t.z - o.z };
+        const l = Math.hypot(d.x, d.y, d.z);
+        const v = [d.x / l, d.y / l, d.z / l];
+        // Rotate -z onto v.
+        const ax = v[1], ay = -v[0], w = 1 - v[2];
+        const n = Math.hypot(ax, ay, w);
+        c.quaternion.set(ax / n, ay / n, 0, w / n);
+      }, { px, py, pz });
+    await aimAt(168, 109, 9);
+    await frames(6);
+    const hit = await page.evaluate(() => window.basementPlanner.editTool.hovered?.kind ?? null);
+    check(hit === 'box', `the ray hits the bench (${hit ?? 'nothing'})`);
+    await page.evaluate(() => window.__dev.controllers.right.updateButtonValue('trigger', 1));
+    await frames(4);
+    for (let i = 1; i <= 6; i++) {
+      await aimAt(168 + i * 2, 109, 9);
+      await frames(2);
+    }
+    await page.evaluate(() => window.__dev.controllers.right.updateButtonValue('trigger', 0));
+    await frames(4);
+    const b = await page.evaluate((id) => window.basementPlanner.store.plan.boxes.find((x) => x.id === id), id);
+    const w = Math.max(...b.poly.map((p) => p.x)) - Math.min(...b.poly.map((p) => p.x));
+    check(w > 54 && w < 64 && Math.min(...b.poly.map((p) => p.x)) === 120, `pulling the end face makes the bench longer, far end stays (${w.toFixed(2)}" long)`);
+    const und = await page.evaluate(() => window.basementPlanner.store.undoLabel);
+    check(und === 'Push/pull', `push/pull is one undo step (${und})`);
+    await page.evaluate((id) => window.basementPlanner.cmd.run('element.delete', { id }), id);
+  }
+
   // Tape measure: two floor points 1 m apart.
   {
     check(await clickButton(menu, 'btn:tab-measure'), 'Measure tab opens');

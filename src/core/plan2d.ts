@@ -113,6 +113,12 @@ export function renderPlanSvg(plan: Plan, opts: PlanSvgOptions = {}): string {
     const fill = showFinish && r ? FINISH_COLORS[r.room.finish] : FINISH_COLORS.none;
     out.push(`<polygon points="${pts(face.inner)}" fill="${fill}" stroke="none"/>`);
   }
+  // Built-ins: benches, counters, cabinets.
+  for (const bx of plan.boxes) {
+    out.push(`<polygon points="${pts(bx.poly)}" fill="#efe3cf" stroke="#8a6a3a" stroke-width="0.8"/>`);
+    const c = centroid(bx.poly);
+    out.push(`<text x="${f(c.x)}" y="${f(c.y)}" font-size="${f(text * 0.8)}" text-anchor="middle" dominant-baseline="middle" fill="#6b4f25">${esc(bx.label)}</text>`);
+  }
   // Scanned objects.
   for (const o of plan.obstacles) {
     out.push(`<polygon points="${pts(o.poly)}" fill="#f3ece1" stroke="#a08a6a" stroke-width="0.8" stroke-dasharray="3 2"/>`);

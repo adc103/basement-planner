@@ -10,14 +10,18 @@ import type { AimHit, Tool, ToolContext } from './tool.js';
  * soffit height. Tap an existing soffit's footprint to delete it.
  */
 export class SoffitTool implements Tool {
-  readonly name = 'Soffit';
+  readonly name: string = 'Soffit';
   private start: Vec2 | null = null;
   private moved = false;
 
   constructor(
-    private ctx: ToolContext,
+    protected c: ToolContext,
     private axisAngle: () => number,
   ) {}
+
+  private get ctx(): ToolContext {
+    return this.c;
+  }
 
   activate(): void {}
   deactivate(): void {
@@ -44,6 +48,10 @@ export class SoffitTool implements Tool {
       { x: 0, y: d.y },
     ];
     return corners.map((c) => add(a, rotate(c, ang)));
+  }
+
+  protected pointOf(aim: AimHit): Vec2 | null {
+    return this.point(aim);
   }
 
   private point(aim: AimHit): Vec2 | null {
@@ -85,10 +93,7 @@ export class SoffitTool implements Tool {
     const p = this.point(aim);
     if (!start || !p) return;
     if (!this.moved) {
-      const over = this.ctx.store.plan.soffits.find((s) => pointInPolygon(p, s.poly));
-      if (over) {
-        if (this.ctx.act('element.delete', { id: over.id })) this.ctx.toast('Soffit deleted');
-      }
+      this.tapped(p);
       return;
     }
     const r = this.rect(start, p);
@@ -98,6 +103,17 @@ export class SoffitTool implements Tool {
       this.ctx.toast('Drag a bigger rectangle (at least 3" each way)');
       return;
     }
+    this.finish(r, w, h);
+  }
+
+  /** A tap (no drag): on a soffit, deletes it. */
+  protected tapped(p: Vec2): void {
+    const over = this.ctx.store.plan.soffits.find((s) => pointInPolygon(p, s.poly));
+    if (over && this.ctx.act('element.delete', { id: over.id })) this.ctx.toast('Soffit deleted');
+  }
+
+  /** A rectangle was dragged out. */
+  protected finish(r: Vec2[], w: number, h: number): void {
     const bottom = this.ctx.store.plan.settings.soffitBottom;
     if (!this.ctx.act('soffit.add', { poly: r, bottom })) return;
     this.ctx.toast(`Soffit ${formatLength(w)} x ${formatLength(h)}, bottom at ${formatLength(bottom)}`);

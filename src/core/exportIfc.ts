@@ -165,6 +165,14 @@ export function exportIfc(plan: Plan, opts: { now?: Date } = {}): string {
     contained.push(el);
   }
 
+  for (const b of plan.boxes) {
+    if (b.poly.length < 3 || b.z1 <= b.z0) continue;
+    const pl = placeAt(stPl, b.poly[0], 0);
+    const el = e(`IFCBUILDINGELEMENTPROXY('${ifcGuid('box:' + b.id)}',${oh},${str(b.label)},$,${str(b.label)},${pl},${shape([extrude(profile(b.poly, b.poly[0], { x: 1, y: 0 }), b.z0, b.z1 - b.z0)])},${str(b.id)},.NOTDEFINED.)`);
+    contained.push(el);
+    props.push({ obj: el, set: 'BasementPlanner', values: { Phase: 'new', Height_in: b.z1 - b.z0 } });
+  }
+
   // Rooms as spaces ---------------------------------------------------------------
   const spaces: string[] = [];
   const faces = findRoomFaces(plan);
