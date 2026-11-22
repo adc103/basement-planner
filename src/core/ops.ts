@@ -353,7 +353,7 @@ export function deleteRoom(d: Draft<Plan>, id: string): void {
 
 export function addMeasure(d: Draft<Plan>, a: Measure['a'], b: Measure['b']): string {
   const id = newId('ms');
-  d.measures.push({ id, a: { ...a }, b: { ...b } });
+  d.measures.push({ id, a: { ...a }, b: { ...b }, truth: null });
   return id;
 }
 

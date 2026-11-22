@@ -839,6 +839,18 @@ try {
     });
     check(await clickButton(menu, 'btn:scan-depth'), 'Scan button stops the scan');
     const rec = await page.evaluate(() => ({ n: window.basementPlanner.scan.recorder.count, depth: window.basementPlanner.scan.depthOk }));
+    {
+      const cap = await page.evaluate(() => {
+        const app = window.basementPlanner;
+        app.toggleDetailedCapture();
+        const on = app.scan.sampler.width;
+        const ex = app.captureExtras();
+        app.toggleDetailedCapture();
+        return { on, off: app.scan.sampler.width, keys: Object.keys(ex), version: ex.app.version, walls: ex.plan.walls.length };
+      });
+      check(cap.on === 160 && cap.off === 80, `Detailed capture switches depth to 160x120 and back (${cap.on} / ${cap.off})`);
+      check(['app', 'device', 'plan', 'proposals', 'spaceSetup', 'journal'].every((k) => cap.keys.includes(k)) && cap.version && cap.version !== 'dev', `review capture carries the app state (${cap.keys.join(', ')}, version ${cap.version})`);
+    }
     check(rec.depth ? rec.n > 0 : rec.n === 0, `scan recording follows depth (${rec.n} frames, depth ${rec.depth ? 'on' : 'off in the emulator'})`);
     await page.waitForFunction(() => window.basementPlanner.scan.reviewing, null, { timeout: 15000 }).catch(() => {});
     const found = await page.evaluate(() => window.basementPlanner.scan.count());

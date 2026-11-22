@@ -1,5 +1,6 @@
 import { planFromJson, planToJson } from './core/persistence.js';
 import { createEmptyPlan } from './core/plan.js';
+import { exportPly } from './core/exportPly';
 import { exportDxf } from './core/exportDxf.js';
 import { exportIfc } from './core/exportIfc.js';
 import { FINISH_NAMES, renderPlanSvg, roomSummaries } from './core/plan2d.js';
@@ -67,7 +68,7 @@ export function mountDom(app: PlannerApp): void {
     <div class="card" id="bp-rec-card" style="display:none">
       <div class="head">
         <h2>Scan recording</h2>
-        <div class="row"><button class="small" id="bp-rec">Save scan recording</button></div>
+        <div class="row"><button class="small" id="bp-rec">Save scan recording</button><button class="small" id="bp-ply">Point cloud (.ply)</button></div>
       </div>
       <p class="sub" id="bp-rec-info"></p>
     </div>
@@ -207,7 +208,7 @@ export function mountDom(app: PlannerApp): void {
     if (!active) renderRec();
   });
   $('bp-rec').onclick = async () => {
-    const blob = await app.scan?.recorder.toFile();
+    const blob = await app.captureFile?.();
     if (!blob) return msg('Nothing recorded yet');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -227,6 +228,11 @@ export function mountDom(app: PlannerApp): void {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  $('bp-ply').onclick = () => {
+    const sc = app.scan;
+    if (!sc?.map.size) return msg('Nothing scanned yet');
+    download(exportPly(sc.map.points(2)), 'application/octet-stream', 'ply');
   };
   $('bp-dxf').onclick = () => download(exportDxf(app.store.plan), 'application/dxf', 'dxf');
   $('bp-ifc').onclick = () => download(exportIfc(app.store.plan, { now: new Date() }), 'application/x-step', 'ifc');

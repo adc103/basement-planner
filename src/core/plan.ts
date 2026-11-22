@@ -198,7 +198,13 @@ export const ConstraintSchema = z.object({
 export type Constraint = z.infer<typeof ConstraintSchema>;
 
 /** A saved tape-measure line, plan inches (z = height). */
-export const MeasureSchema = z.object({ id: z.string(), a: Point3Schema, b: Point3Schema });
+export const MeasureSchema = z.object({
+  id: z.string(),
+  a: Point3Schema,
+  b: Point3Schema,
+  /** What a real tape measure says for this distance (for checking accuracy), inches. */
+  truth: z.number().positive().nullable().default(null),
+});
 export type Measure = z.infer<typeof MeasureSchema>;
 
 /** Plan-wide settings and defaults. */

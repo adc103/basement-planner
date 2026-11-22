@@ -5,11 +5,22 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import { execSync } from 'node:child_process';
 import { iwsdkDev } from '@iwsdk/vite-plugin-dev';
 import { defineConfig } from 'vite';
 
+/** Which build this is, saved into review captures. */
+const version = (() => {
+  try {
+    return execSync('git rev-parse --short HEAD').toString().trim();
+  } catch {
+    return 'dev';
+  }
+})();
+
 export default defineConfig({
   plugins: [iwsdkDev()],
+  define: { __APP_VERSION__: JSON.stringify(version), __BUILD_TIME__: JSON.stringify(new Date().toISOString()) },
   server: { host: '0.0.0.0', port: 8081, open: false },
   build: {
     outDir: 'dist',

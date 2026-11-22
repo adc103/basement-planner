@@ -14,8 +14,8 @@ import {
 import { unprojectDepth } from '../core/scanMap.js';
 
 /** Depth readback grid (per sample). Low resolution is plenty for walls and ceilings. */
-const W = 80;
-const H = 60;
+const W0 = 80;
+const H0 = 60;
 /** Trust range of the headset depth, meters. */
 const MIN_M = 0.35;
 const MAX_M = 4.5;
@@ -26,11 +26,13 @@ const MAX_M = 4.5;
  * world-space points. Depth is packed into 8-bit RGBA so it works on any GPU.
  */
 export class DepthSampler {
-  private rt = new WebGLRenderTarget(W, H);
+  private w = W0;
+  private h = H0;
+  private rt = new WebGLRenderTarget(W0, H0);
   private scene = new Scene();
   private cam = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private mat: ShaderMaterial;
-  private buf = new Uint8Array(W * H * 4);
+  private buf = new Uint8Array(W0 * H0 * 4);
   private viewM = new Matrix4();
   private tmp = new Vector3();
   lastError: string | null = null;
@@ -70,16 +72,30 @@ export class DepthSampler {
   }
 
   /** Readback size, for consumers of {@link readMeters}. */
-  readonly width = W;
-  readonly height = H;
+  get width(): number {
+    return this.w;
+  }
+  get height(): number {
+    return this.h;
+  }
+
+  /** Change the readback grid (e.g. 160x120 for a detailed capture). */
+  setResolution(w: number, h: number): void {
+    if (w === this.w && h === this.h) return;
+    this.w = w;
+    this.h = h;
+    this.rt.dispose();
+    this.rt = new WebGLRenderTarget(w, h);
+    this.buf = new Uint8Array(w * h * 4);
+  }
 
   /**
-   * Read the current depth image as meters (row 0 = bottom), W x H.
+   * Read the current depth image as meters (row 0 = bottom), this.w x this.h.
    * Returns false when depth isn't available this frame.
    */
   readMeters(out: Float32Array): boolean {
     if (!this.renderPass()) return false;
-    for (let i = 0, k = 0; i < W * H; i++, k += 4) out[i] = (this.buf[k] * 256 + this.buf[k + 1]) / 1000;
+    for (let i = 0, k = 0; i < this.w * this.h; i++, k += 4) out[i] = (this.buf[k] * 256 + this.buf[k + 1]) / 1000;
     return true;
   }
 
@@ -105,7 +121,7 @@ export class DepthSampler {
       r.xr.enabled = false;
       r.setRenderTarget(this.rt);
       r.render(this.scene, this.cam);
-      r.readRenderTargetPixels(this.rt, 0, 0, W, H, this.buf);
+      r.readRenderTargetPixels(this.rt, 0, 0, this.w, this.h, this.buf);
     } catch (e) {
       this.lastError = (e as Error).message;
       return false;
@@ -126,8 +142,8 @@ export class DepthSampler {
     if (!frame || !ref) return null;
     const view = frame.getViewerPose(ref)?.views[0];
     if (!view || !this.renderPass()) return null;
-    const depthMM = new Uint16Array(W * H);
-    for (let i = 0, k = 0; i < W * H; i++, k += 4) depthMM[i] = this.buf[k] * 256 + this.buf[k + 1];
+    const depthMM = new Uint16Array(this.w * this.h);
+    for (let i = 0, k = 0; i < this.w * this.h; i++, k += 4) depthMM[i] = this.buf[k] * 256 + this.buf[k + 1];
     return { depthMM, proj: new Float32Array(view.projectionMatrix), viewWorld: new Float32Array(view.transform.matrix) };
   }
 
@@ -166,7 +182,7 @@ export class DepthSampler {
       r.xr.enabled = false; // render our small pass with our own camera
       r.setRenderTarget(this.rt);
       r.render(this.scene, this.cam);
-      r.readRenderTargetPixels(this.rt, 0, 0, W, H, this.buf);
+      r.readRenderTargetPixels(this.rt, 0, 0, this.w, this.h, this.buf);
     } catch (e) {
       this.lastError = (e as Error).message;
       return -1;
@@ -178,12 +194,12 @@ export class DepthSampler {
     this.viewM.fromArray(view.transform.matrix);
     const P = view.projectionMatrix;
     let n = 0;
-    for (let j = 0; j < H; j += stride) {
-      for (let i = 0; i < W; i += stride) {
-        const k = (j * W + i) * 4;
+    for (let j = 0; j < this.h; j += stride) {
+      for (let i = 0; i < this.w; i += stride) {
+        const k = (j * this.w + i) * 4;
         const m = (this.buf[k] * 256 + this.buf[k + 1]) / 1000;
         if (m < MIN_M || m > MAX_M) continue;
-        const p = unprojectDepth((i + 0.5) / W, (j + 0.5) / H, m, P);
+        const p = unprojectDepth((i + 0.5) / this.w, (j + 0.5) / this.h, m, P);
         this.tmp.set(p.x, p.y, p.z).applyMatrix4(this.viewM);
         emit(this.tmp.x, this.tmp.y, this.tmp.z);
         n++;

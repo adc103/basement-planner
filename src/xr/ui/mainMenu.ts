@@ -54,6 +54,8 @@ export interface MenuApi {
   dim(action: 'type' | 'keep' | 'mode' | 'square' | 'parallel' | 'reset'): void;
   checkWalls(): void;
   hasRoomMesh(): boolean;
+  detailedCapture(): boolean;
+  toggleDetailedCapture(): void;
   selectedLocked(): boolean;
   selectedDemolish(): boolean;
   openingType(): string;
@@ -63,6 +65,8 @@ export interface MenuApi {
   lastMeasure(): string;
   measureCount(): number;
   clearMeasures(): void;
+  /** Type what a real tape measure says for the last measurement. */
+  measureTruth(): void;
   // scan
   scanStatus(): string;
   importScan(): void;
@@ -468,6 +472,15 @@ export class MainMenu {
               onClick: () => a.clearMeasures(),
               enabled: () => a.measureCount() > 0,
             },
+            {
+              id: 'm-truth',
+              label: () => 'Tape says...',
+              icon: 'keypad',
+              span: 2,
+              col: 2,
+              onClick: () => a.measureTruth(),
+              enabled: () => a.measureCount() > 0,
+            },
           ],
         ],
       },
@@ -510,7 +523,8 @@ export class MainMenu {
             },
           ],
           [
-            { id: 'scan-check', label: () => 'Check walls against scan', icon: 'scan', span: 4, col: 0, onClick: () => a.checkWalls(), enabled: () => a.hasRoomMesh() && !a.scanning(), visible: () => !a.scanReviewing() },
+            { id: 'scan-detail', label: () => 'Detailed', span: 1, col: 3, onClick: () => a.toggleDetailedCapture(), active: () => a.detailedCapture(), visible: () => !a.scanReviewing() },
+            { id: 'scan-check', label: () => 'Check walls', icon: 'scan', span: 3, col: 0, onClick: () => a.checkWalls(), enabled: () => a.hasRoomMesh() && !a.scanning(), visible: () => !a.scanReviewing() },
           ],
         ],
       },

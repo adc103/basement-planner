@@ -412,6 +412,16 @@ export class PlannerApp {
       deselect: () => this.editTool.select(null),
       lastMeasure: () => (this.measureTool.last ? `Last: ${this.measureTool.last}` : ''),
       measureCount: () => this.store.plan.measures.length,
+      measureTruth: () => {
+        const m = this.store.plan.measures.at(-1);
+        if (!m) return;
+        const app = Math.hypot(m.a.x - m.b.x, m.a.y - m.b.y, m.a.z - m.b.z);
+        this.openKeypad('Real tape measure', m.truth ?? Math.round(app * 8) / 8, (v) => {
+          if (!this.act('measure.setTruth', { id: m.id, truth: v })) return;
+          const err = app - v;
+          this.toast(`Headset ${formatLength(Math.round(app * 8) / 8)}, tape ${formatLength(v)}: ${Math.abs(err) < 0.0625 ? 'spot on' : `${formatLength(Math.round(Math.abs(err) * 8) / 8)} ${err > 0 ? 'long' : 'short'}`}`, 5);
+        });
+      },
       clearMeasures: () =>
         this.act('measure.clear', {}),
       scanStatus: () => this.scanStatus(),
@@ -482,6 +492,8 @@ export class PlannerApp {
       sectionAction: (a) => (a === 'flip' ? this.flipSection() : a === 'clear' ? this.setSection(null) : this.toggleCutHeight()),
       checkWalls: () => this.checkWalls(),
       hasRoomMesh: () => this.scan.mesh.triangles > 0,
+      detailedCapture: () => this.detailedCapture,
+      toggleDetailedCapture: () => this.toggleDetailedCapture(),
       toggleRoomMesh: () => {
         const m = this.scan.mesh;
         m.setShown(!m.shown);
@@ -1613,6 +1625,74 @@ export class PlannerApp {
   }
 
   /** Read Space Setup walls, floor, ceiling and objects. `auto` skips unchanged scans. */
+  // -------------------------------------------------------- review capture ---
+  /** Detailed capture: 160x120 depth and photos, for reviewing the scanner off the headset. */
+  detailedCapture = false;
+
+  toggleDetailedCapture(): void {
+    this.detailedCapture = !this.detailedCapture;
+    const s = this.scan.sampler;
+    if (this.detailedCapture) s.setResolution(160, 120);
+    else s.setResolution(80, 60);
+    this.toast(this.detailedCapture ? 'Detailed capture on: scans record 4x the depth detail plus photos. Save the recording from the flat page.' : 'Detailed capture off', 5);
+    this.refreshUi();
+  }
+
+  /**
+   * Everything about the app's side of a scan, saved into the recording so it
+   * can be reviewed off the headset: the plan, what the scanner last proposed,
+   * the headset's own Space Setup planes and meshes, and the app version.
+   */
+  captureExtras(): Record<string, unknown> {
+    const root = this.view.root;
+    root.updateWorldMatrix(true, false);
+    const toPlan = (o: Object3D, x: number, y: number, z: number) => {
+      const w = o.localToWorld(new Vector3(x, y, z));
+      const l = root.worldToLocal(w);
+      return [Math.round((l.x / INCH_M) * 10) / 10, Math.round((l.z / INCH_M) * 10) / 10, Math.round((l.y / INCH_M) * 10) / 10];
+    };
+    const planes: unknown[] = [];
+    for (const e of this.planeQuery?.() ?? []) {
+      const raw = e.getValue(XRPlane, '_plane') as unknown as { semanticLabel?: string; polygon?: DOMPointReadOnly[] };
+      const obj = e.object3D;
+      if (!raw || !obj) continue;
+      obj.updateWorldMatrix(true, false);
+      planes.push({ label: raw.semanticLabel ?? '', polygon: (raw.polygon ?? []).map((p) => toPlan(obj, p.x, p.y, p.z)) });
+    }
+    const meshes: unknown[] = [];
+    let budget = 60_000;
+    for (const e of this.meshQuery?.() ?? []) {
+      const obj = e.object3D;
+      if (!obj) continue;
+      obj.updateWorldMatrix(true, false);
+      const raw = e.getValue(XRMesh, '_mesh') as unknown as { vertices?: Float32Array; indices?: Uint32Array } | undefined;
+      const v = raw?.vertices;
+      const verts: number[][] = [];
+      if (v && budget > 0) {
+        const step = Math.max(1, Math.ceil(v.length / 3 / budget));
+        for (let i = 0; i < v.length; i += 3 * step) verts.push(toPlan(obj, v[i], v[i + 1], v[i + 2]));
+        budget -= verts.length;
+      }
+      meshes.push({ label: (e.getValue(XRMesh, 'semanticLabel') as string) ?? '', bounded: !!e.getValue(XRMesh, 'isBounded3D'), vertices: verts });
+    }
+    const sc = this.scan;
+    return {
+      app: { version: __APP_VERSION__, builtAt: __BUILD_TIME__ },
+      device: { userAgent: navigator.userAgent, depth: `${sc.sampler.width}x${sc.sampler.height}`, camera: sc.photos.label, detailed: this.detailedCapture },
+      plan: JSON.parse(JSON.stringify(this.store.plan)),
+      proposals: sc.proposals ?? sc.live ?? null,
+      roomMesh: { bricks: sc.mesh.bricks, triangles: sc.mesh.triangles },
+      spaceSetup: { planes, meshes },
+      transform: this.transform,
+      journal: this.cmd.journal.slice(-200),
+    };
+  }
+
+  /** The recording plus everything above, gzipped, for "Save scan recording". */
+  async captureFile(): Promise<Blob | null> {
+    return this.scan.recorder.toFile(this.captureExtras());
+  }
+
   importScan(auto: boolean): void {
     if (auto && !this.store.plan.settings.autoImportScan) return;
     const planes: ScanPlane[] = [];

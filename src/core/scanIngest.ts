@@ -134,9 +134,11 @@ export interface RecordingHeader {
   frames: number;
   createdAt: string;
   userAgent?: string;
+  /** Review captures: the app's state and the headset's own scene data (see captureExtras). */
+  extras?: Record<string, unknown>;
 }
 
-export function encodeRecording(frames: DepthFrame[], meta: { userAgent?: string } = {}, photos: ScanPhoto[] = []): Uint8Array {
+export function encodeRecording(frames: DepthFrame[], meta: { userAgent?: string; extras?: Record<string, unknown> } = {}, photos: ScanPhoto[] = []): Uint8Array {
   const w = frames[0]?.w ?? 0;
   const h = frames[0]?.h ?? 0;
   const header: RecordingHeader = { format: MAGIC, version: photos.length ? 3 : 1, w, h, frames: frames.length, createdAt: new Date().toISOString(), ...meta, ...(photos.length ? { photos: photos.length } : {}) };

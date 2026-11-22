@@ -647,7 +647,7 @@ export class PlanView {
       tape.raycast = () => {};
       tape.userData.shared = true;
       this.content.add(tape);
-      const label = new TextLabel(measureLabel(m.a, m.b), { height: 0.045, bg: 'rgba(120,95,0,0.9)' });
+      const label = new TextLabel(`${measureLabel(m.a, m.b)}${m.truth ? ` (tape ${formatLength(m.truth)})` : ''}`, { height: 0.045, bg: 'rgba(120,95,0,0.9)' });
       label.sprite.position.copy(A).add(B).multiplyScalar(0.5);
       label.sprite.position.y += 0.05;
       this.content.add(label.sprite);

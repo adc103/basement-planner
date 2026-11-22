@@ -65,9 +65,9 @@ export class ScanRecorder {
   }
 
   /** The recording as a gzipped file to download. */
-  async toFile(): Promise<Blob | null> {
+  async toFile(extras?: Record<string, unknown>): Promise<Blob | null> {
     if (!this.frames.length) return null;
-    const raw = encodeRecording(this.frames, { userAgent: navigator.userAgent }, this.photos);
+    const raw = encodeRecording(this.frames, { userAgent: navigator.userAgent, extras }, this.photos);
     return gzipBlob(raw);
   }
 }

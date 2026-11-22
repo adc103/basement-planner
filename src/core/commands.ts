@@ -419,6 +419,16 @@ export const COMMANDS = {
       return addMeasure(d, p.a, p.b);
     },
   }),
+  'measure.setTruth': def({
+    title: 'Tape says',
+    description: 'Record what a real tape measure reads for a saved measurement (inches), to check accuracy; null clears it.',
+    params: z.object({ id: Id, truth: z.number().positive().nullable() }),
+    run(d, p) {
+      const m = d.measures.find((x) => x.id === p.id);
+      if (!m) throw new CommandError(`No measurement ${p.id}`);
+      m.truth = p.truth;
+    },
+  }),
   'measure.clear': def({
     title: 'Clear measurements',
     description: 'Remove every saved measurement.',
