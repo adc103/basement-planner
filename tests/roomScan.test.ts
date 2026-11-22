@@ -49,4 +49,28 @@ describe('wallsFromScan', () => {
   it('returns nothing when there are no walls', () => {
     expect(wallsFromScan([], toPlan, 8).walls).toHaveLength(0);
   });
+
+  it('turns two rooms sharing a wall into one wall with its real thickness and door', () => {
+    // Room A: x 0..3 m, room B: x 3.13..6 m (a 13 cm = ~5" wall between), both 0..3 m deep.
+    const floor = (x0: number, x1: number): ScanPlane => ({ label: 'floor', points: [{ x: x0, y: 0, z: 0 }, { x: x1, y: 0, z: 0 }, { x: x1, y: 0, z: 3 }, { x: x0, y: 0, z: 3 }] });
+    const two: ScanPlane[] = [
+      wall(0, 0, 3, 0), wall(3, 0, 3, 3), wall(3, 3, 0, 3), wall(0, 3, 0, 0), floor(0, 3),
+      wall(3.13, 0, 6, 0), wall(6, 0, 6, 3), wall(6, 3, 3.13, 3), wall(3.13, 3, 3.13, 0), floor(3.13, 6),
+      // An 82 cm wide, 2.03 m tall door frame in the shared wall, seen from room A.
+      { label: 'door frame', points: [{ x: 3, y: 0, z: 1.0 }, { x: 3, y: 0, z: 1.82 }, { x: 3, y: 2.03, z: 1.82 }, { x: 3, y: 2.03, z: 1.0 }] },
+    ];
+    const res = wallsFromScan(two, toPlan, 8);
+    const inch = 1 / 0.0254;
+    const shared = res.walls.filter((w) => Math.abs(w.a.x - w.b.x) < 1 && w.a.x > 2.9 * inch && w.a.x < 3.2 * inch);
+    expect(shared).toHaveLength(1);
+    expect(shared[0].thickness).toBeCloseTo(0.13 * inch, 0);
+    expect(shared[0].a.x).toBeCloseTo(3.065 * inch, 0);
+    expect(shared[0].openings).toHaveLength(1);
+    const door = shared[0].openings![0];
+    expect(door.type).toBe('door');
+    expect(door.width).toBeCloseTo(0.82 * inch, 0);
+    expect(door.height).toBeCloseTo(2.03 * inch, 0);
+    // The outside walls are still single faces pushed out by half the foundation.
+    expect(res.walls).toHaveLength(7);
+  });
 });

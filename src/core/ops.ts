@@ -258,7 +258,12 @@ export function deleteOpening(d: Draft<Plan>, id: string): void {
 /** Replace all 'existing' walls (e.g. a fresh room-scan import). */
 export function replaceExistingWalls(
   d: Draft<Plan>,
-  segments: Array<{ a: Vec2; b: Vec2 }>,
+  segments: Array<{
+    a: Vec2;
+    b: Vec2;
+    thickness?: number;
+    openings?: Array<{ type: 'door' | 'window'; offset: number; width: number; height: number; sill: number }>;
+  }>,
   height: number,
 ): number {
   // Only scanned walls are replaced; captured walls and everything you drew stay.
@@ -267,11 +272,15 @@ export function replaceExistingWalls(
   for (const s of segments) {
     const id = addWallBetween(d, s.a, s.b, {
       height,
-      thickness: d.settings.foundationThickness,
+      thickness: s.thickness ?? d.settings.foundationThickness,
       kind: 'existing',
       source: 'scan',
     });
-    if (id) count++;
+    if (!id) continue;
+    count++;
+    for (const o of s.openings ?? []) {
+      addOpening(d, { wallId: id, type: o.type, offset: o.offset, width: o.width, height: Math.min(o.height, height - o.sill), sill: o.sill, hinge: 'a', swing: 'left', kind: 'existing', evidence: 'measured' });
+    }
   }
   return count;
 }

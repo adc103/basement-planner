@@ -20,6 +20,7 @@ import { createEmptyPlan } from '../src/core/plan';
 import { decodeRecording, ingestFrame } from '../src/core/scanIngest';
 import { ScanMap } from '../src/core/scanMap';
 import { findStructure } from '../src/core/structure';
+import { wallsFromScan } from '../src/core/roomScan';
 import { TsdfVolume } from '../src/core/tsdf';
 
 type V = { x: number; y: number };
@@ -132,7 +133,18 @@ for (const file of files) {
       ` (${ms.toFixed(0)} ms)`,
   );
 
-  // Picture: grey points, green Space Setup, red shown, orange guessed, purple path.
+  // What the app's Space Setup import makes of the same planes (walls with thickness and openings).
+  const imported = (ex.spaceSetup?.planes ?? []).length
+    ? wallsFromScan(
+        ex.spaceSetup.planes.map((p: any) => ({ label: p.label, points: p.polygon.map((q: number[]) => ({ x: q[0], y: q[2] * IN, z: q[1] })) })),
+        (w) => ({ p: { x: w.x, y: w.z }, y: w.y }),
+        8,
+      ).walls
+    : [];
+  if (imported.length) {
+    console.log(`  Space Setup import: ${imported.length} walls (thickness ${imported.map((w) => w.thickness).join(', ')}), ${imported.reduce((n, w) => n + (w.openings?.length ?? 0), 0)} openings: ${imported.flatMap((w) => (w.openings ?? []).map((o) => `${o.type} ${o.width}"`)).join(', ')}`);
+  }
+  // Picture: grey points, green Space Setup, blue its import, red shown, orange guessed, purple path.
   const pts = map.points(2);
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const p of pts) [x0, x1, y0, y1] = [Math.min(x0, p.x), Math.max(x1, p.x), Math.min(y0, p.y), Math.max(y1, p.y)];
@@ -154,6 +166,11 @@ for (const file of files) {
   const z0 = res.floorOffset ?? 0;
   for (const p of pts) if (p.z - z0 > 6 && p.z - z0 < (res.ceiling ?? 96) - 6) put(p.x, p.y, [190, 190, 190]);
   for (const s of ssWalls) line(s.a, s.b, [0, 170, 0], 3);
+  for (const w of imported) {
+    line(w.a, w.b, [40, 90, 230], 1);
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    for (const o of w.openings ?? []) put(w.a.x + ((w.b.x - w.a.x) * o.offset) / L, w.a.y + ((w.b.y - w.a.y) * o.offset) / L, [0, 190, 220], 5);
+  }
   for (const w of res.walls) if (w.evidence === 'inferred') line(w.a, w.b, [255, 170, 0], 0);
   for (const w of shown) line(w.a, w.b, [220, 0, 0], 1);
   for (const f of frames) put(f.head[0] / IN, f.head[2] / IN, [120, 0, 200], 1);

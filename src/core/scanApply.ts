@@ -3,6 +3,7 @@ import { mergeFootprints } from './footprint.js';
 import type { Vec2 } from './geom2d.js';
 import { addOpening, addSoffit, addWallBetween, replaceExistingWalls, setObstacles, setWallHeight, splitAtNodes, type ObstacleInput } from './ops.js';
 import { newId, ObstacleSchema, type Plan } from './plan.js';
+import type { ScanWall } from './roomScan.js';
 import type { StructureResult } from './structure.js';
 
 /**
@@ -37,7 +38,7 @@ export function applyScan(d: Draft<Plan>, res: StructureResult): void {
 
 /** Quest Space Setup import: walls from the room planes, objects from its boxes. */
 export interface RoomScanImport {
-  walls: Array<{ a: Vec2; b: Vec2 }>;
+  walls: ScanWall[];
   objects: ObstacleInput[];
   /** Floor-to-ceiling, inches, when trustworthy. */
   ceiling: number | null;
