@@ -118,12 +118,16 @@ export interface ScanPhoto {
   viewToRoot: Float32Array;
   /** The depth view's projection (the camera's own isn't exposed; calibration relates the two). */
   proj: Float32Array;
+  /** When the camera captured the image, seconds on the scan clock (NaN if the browser didn't say). */
+  captured?: number;
+  /** Head (left view) poses around the photo: t (scan clock) and view -> plan-root, for exact timing. */
+  track?: Array<{ t: number; m: Float32Array }>;
 }
 
 export interface RecordingHeader {
   format: typeof MAGIC;
-  /** 1 = depth frames; 2 = plus camera photos after them. */
-  version: 1 | 2;
+  /** 1 = depth frames; 2 = plus camera photos; 3 = photos with capture time and a pose track. */
+  version: 1 | 2 | 3;
   photos?: number;
   w: number;
   h: number;
@@ -135,12 +139,13 @@ export interface RecordingHeader {
 export function encodeRecording(frames: DepthFrame[], meta: { userAgent?: string } = {}, photos: ScanPhoto[] = []): Uint8Array {
   const w = frames[0]?.w ?? 0;
   const h = frames[0]?.h ?? 0;
-  const header: RecordingHeader = { format: MAGIC, version: photos.length ? 2 : 1, w, h, frames: frames.length, createdAt: new Date().toISOString(), ...meta, ...(photos.length ? { photos: photos.length } : {}) };
+  const header: RecordingHeader = { format: MAGIC, version: photos.length ? 3 : 1, w, h, frames: frames.length, createdAt: new Date().toISOString(), ...meta, ...(photos.length ? { photos: photos.length } : {}) };
   const hb = new TextEncoder().encode(JSON.stringify(header));
   const hPad = Math.ceil((4 + hb.length) / 4) * 4;
   const per = FLOATS * 4 + w * h * 2;
   // Photos: 33 floats (t, viewToRoot, proj), u32 length, JPEG bytes padded to 4.
-  const photoBytes = photos.reduce((s, p) => s + 33 * 4 + 4 + Math.ceil(p.jpeg.length / 4) * 4, 0);
+  // v3 adds: f32 captured, u32 track length, track entries of 17 floats.
+  const photoBytes = photos.reduce((s, p) => s + 33 * 4 + 4 + Math.ceil(p.jpeg.length / 4) * 4 + 8 + (p.track?.length ?? 0) * 17 * 4, 0);
   const out = new Uint8Array(hPad + per * frames.length + photoBytes);
   new DataView(out.buffer).setUint32(0, hb.length, true);
   out.set(hb, 4);
@@ -171,6 +176,14 @@ export function encodeRecording(frames: DepthFrame[], meta: { userAgent?: string
     o += 4;
     out.set(p.jpeg, o);
     o += Math.ceil(p.jpeg.length / 4) * 4;
+    dv.setFloat32(o, p.captured ?? NaN, true);
+    dv.setUint32(o + 4, p.track?.length ?? 0, true);
+    o += 8;
+    for (const e of p.track ?? []) {
+      dv.setFloat32(o, e.t, true);
+      out.set(new Uint8Array(e.m.buffer, e.m.byteOffset, 64), o + 4);
+      o += 68;
+    }
   }
   return out;
 }
@@ -179,7 +192,7 @@ export function decodeRecording(bytes: Uint8Array): { header: RecordingHeader; f
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const hl = dv.getUint32(0, true);
   const header = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + hl))) as RecordingHeader;
-  if (header.format !== MAGIC || (header.version !== 1 && header.version !== 2)) throw new Error('Not a basement scan recording');
+  if (header.format !== MAGIC || ![1, 2, 3].includes(header.version)) throw new Error('Not a basement scan recording');
   const { w, h } = header;
   let o = Math.ceil((4 + hl) / 4) * 4;
   const frames: DepthFrame[] = [];
@@ -207,8 +220,19 @@ export function decodeRecording(bytes: Uint8Array): { header: RecordingHeader; f
     o += 33 * 4;
     const len = dv.getUint32(o, true);
     o += 4;
-    photos.push({ t: pf[0], viewToRoot: pf.slice(1, 17), proj: pf.slice(17, 33), jpeg: bytes.slice(o, o + len) });
+    const photo: ScanPhoto = { t: pf[0], viewToRoot: pf.slice(1, 17), proj: pf.slice(17, 33), jpeg: bytes.slice(o, o + len) };
     o += Math.ceil(len / 4) * 4;
+    if (header.version >= 3) {
+      photo.captured = dv.getFloat32(o, true);
+      const n = dv.getUint32(o + 4, true);
+      o += 8;
+      photo.track = [];
+      for (let k = 0; k < n; k++) {
+        photo.track.push({ t: dv.getFloat32(o, true), m: new Float32Array(bytes.slice(o + 4, o + 68).buffer) });
+        o += 68;
+      }
+    }
+    photos.push(photo);
   }
   return { header, frames, photos };
 }

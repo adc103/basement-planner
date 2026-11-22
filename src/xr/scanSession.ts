@@ -170,22 +170,52 @@ export class ScanSession {
     this.recorder.add(f);
   }
 
+  /** Head (left view) pose every frame while scanning, for photo timing. */
+  private poseRing = Array.from({ length: 90 }, () => ({ ms: 0, m: new Float32Array(16) }));
+  private poseAt = 0;
+  /** Scan clock (seconds) minus performance.now() seconds. */
+  private clockOffset = 0;
+  private ringM = new Matrix4();
+
+  private recordPose(time: number): void {
+    const frame = this.world.xrFrame;
+    const ref = this.world.xrReferenceSpace;
+    const view = frame && ref ? frame.getViewerPose(ref)?.views[0] : undefined;
+    if (!view) return;
+    const now = performance.now();
+    this.clockOffset = time - now / 1000;
+    this.root.updateWorldMatrix(true, false);
+    this.rootInv.copy(this.root.matrixWorld).invert();
+    this.ringM.fromArray(view.transform.matrix).premultiply(this.rootInv);
+    const e = this.poseRing[this.poseAt];
+    this.poseAt = (this.poseAt + 1) % this.poseRing.length;
+    e.ms = now;
+    e.m.set(this.ringM.elements);
+  }
+
   /** Per frame while in XR. */
   tick(time: number): void {
     this.mesh.tick(time);
     if (!this.scanning) return;
+    if (this.photos.state === 'on') this.recordPose(time);
     if (time - this.lastSample >= SAMPLE_EVERY) {
       this.lastSample = time;
       const f = this.captureFrame(time);
       this.depthOk = !!f;
       if (f) {
         this.ingest(f);
-        // A camera photo with this frame's pose, about once a second.
-        if (time - this.lastPhoto >= 1 && this.photos.state === 'on') {
+        // A camera photo about once a second, with the head poses around it so the exact
+        // pose at the camera's capture time can be worked out later.
+        if (time - this.lastPhoto >= 1 && this.photos.ready) {
           this.lastPhoto = time;
           const pose = { t: f.t, viewToRoot: f.viewToRoot, proj: f.proj };
-          void this.photos.snap().then((jpeg) => {
-            if (jpeg) this.recorder.addPhoto({ ...pose, jpeg });
+          void this.photos.snap().then((r) => {
+            if (!r) return;
+            const toScan = (ms: number) => ms / 1000 + this.clockOffset - this.scanT0;
+            const captured = Number.isFinite(r.capturedMs) ? toScan(r.capturedMs) : NaN;
+            // Poses from 0.6 s before to now (the photo was taken a moment ago).
+            const track = this.poseRing.filter((e) => e.ms > 0 && toScan(e.ms) > pose.t - 0.6).map((e) => ({ t: toScan(e.ms), m: Float32Array.from(e.m) }));
+            this.recorder.addPhoto({ ...pose, jpeg: r.jpeg, captured, track });
           });
         }
       }

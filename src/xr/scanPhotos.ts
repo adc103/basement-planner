@@ -10,6 +10,8 @@ export class ScanPhotos {
   private canvas = document.createElement('canvas');
   private busy = false;
   state: 'off' | 'starting' | 'on' | 'unavailable' = 'off';
+  /** When the newest video frame was captured (performance.now ms), from the browser's frame metadata. */
+  private lastCaptureMs = NaN;
   label = '';
 
   constructor(private world: World) {
@@ -37,6 +39,7 @@ export class ScanPhotos {
         const st = e.getValue(CameraSource, 'state');
         if (st === CameraState.Active) {
           this.state = 'on';
+          this.watchFrames();
           return;
         }
         if (st === CameraState.Error) break;
@@ -56,17 +59,36 @@ export class ScanPhotos {
     if (this.state !== 'unavailable') this.state = 'off';
   }
 
-  /** A 640x480 JPEG of the current camera frame, or null. */
-  async snap(): Promise<Uint8Array | null> {
-    if (this.state !== 'on' || !this.entity || this.busy) return null;
-    const frame = CameraUtils.captureFrame(this.entity);
+  /** Follow video frames to know when the current one was captured. */
+  private watchFrames(): void {
+    type Meta = { captureTime?: number; expectedDisplayTime?: number; presentationTime?: number };
+    const v = this.entity?.getValue(CameraSource, 'videoElement') as (HTMLVideoElement & { requestVideoFrameCallback?: (cb: (now: number, m: Meta) => void) => number }) | null;
+    if (!v?.requestVideoFrameCallback) return;
+    const cb = (_now: number, m: Meta) => {
+      if (!this.entity) return;
+      this.lastCaptureMs = m.captureTime ?? m.presentationTime ?? NaN;
+      v.requestVideoFrameCallback!(cb);
+    };
+    v.requestVideoFrameCallback(cb);
+  }
+
+  /** Ready to take a photo now? */
+  get ready(): boolean {
+    return this.state === 'on' && !!this.entity && !this.busy;
+  }
+
+  /** A 640x480 JPEG of the current camera frame and when it was captured (performance.now ms), or null. */
+  async snap(): Promise<{ jpeg: Uint8Array; capturedMs: number } | null> {
+    if (!this.ready) return null;
+    const frame = CameraUtils.captureFrame(this.entity!);
     if (!frame) return null;
+    const capturedMs = this.lastCaptureMs;
     this.busy = true;
     try {
       const ctx = this.canvas.getContext('2d')!;
       ctx.drawImage(frame, 0, 0, 640, 480);
       const blob = await new Promise<Blob | null>((r) => this.canvas.toBlob(r, 'image/jpeg', 0.82));
-      return blob ? new Uint8Array(await blob.arrayBuffer()) : null;
+      return blob ? { jpeg: new Uint8Array(await blob.arrayBuffer()), capturedMs } : null;
     } finally {
       this.busy = false;
     }

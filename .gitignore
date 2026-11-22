@@ -47,3 +47,6 @@ pids/
 # Test output
 artifacts/
 .scratch/
+
+# Real scan recordings contain photos of the home: never commit them
+tests/scans/
