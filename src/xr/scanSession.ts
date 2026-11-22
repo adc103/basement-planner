@@ -30,6 +30,7 @@ import { ingestFrame, type DepthFrame } from '../core/scanIngest.js';
 import { ScanRecorder } from './scanRecorder.js';
 import { refineStructure } from '../core/fit.js';
 import { RoomMesh } from './roomMesh.js';
+import { ScanPhotos } from './scanPhotos.js';
 
 const STORE_KEY = 'scan-map:v1';
 const FREE_KEY = 'scan-free:v1';
@@ -73,6 +74,9 @@ export class ScanSession {
   private tmp = new Vector3();
   /** Every depth frame of the scan, kept so a real scan can be saved and replayed. */
   readonly recorder = new ScanRecorder();
+  /** Camera photos taken while scanning (for coloring the mesh once calibrated). */
+  readonly photos: ScanPhotos;
+  private lastPhoto = 0;
   /** The live 3D mesh of the room, fused from the same frames. */
   readonly mesh: RoomMesh;
   private col = new Color();
@@ -84,6 +88,7 @@ export class ScanSession {
   ) {
     this.sampler = new DepthSampler(world);
     this.mesh = new RoomMesh(root);
+    this.photos = new ScanPhotos(world);
     const g = new BufferGeometry();
     g.setAttribute('position', new BufferAttribute(this.dotPos, 3));
     g.setAttribute('color', new BufferAttribute(this.dotCol, 3));
@@ -131,12 +136,14 @@ export class ScanSession {
     this.clearGhosts();
     this.scanning = true;
     this.mesh.setActive(true);
+    void this.photos.start();
     this.depthOk = null;
     this.group.visible = true;
   }
 
   stop(): void {
     this.scanning = false;
+    this.photos.stop();
     this.mesh.setActive(false);
     this.mesh.save();
     void idbSet(STORE_KEY, this.map.serialize());
@@ -173,6 +180,14 @@ export class ScanSession {
       this.depthOk = !!f;
       if (f) {
         this.ingest(f);
+        // A camera photo with this frame's pose, about once a second.
+        if (time - this.lastPhoto >= 1 && this.photos.state === 'on') {
+          this.lastPhoto = time;
+          const pose = { t: f.t, viewToRoot: f.viewToRoot, proj: f.proj };
+          void this.photos.snap().then((jpeg) => {
+            if (jpeg) this.recorder.addPhoto({ ...pose, jpeg });
+          });
+        }
       }
     }
     if (time - this.lastShowT > 0.6) {

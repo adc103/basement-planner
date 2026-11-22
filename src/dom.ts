@@ -200,7 +200,7 @@ export function mountDom(app: PlannerApp): void {
     const rec = app.scan?.recorder;
     const n = rec?.count ?? 0;
     $('bp-rec-card').style.display = n ? '' : 'none';
-    if (rec) $('bp-rec-info').textContent = `${n} depth frames (${Math.round(rec.seconds / 6) / 10} min of scanning). Stays on this headset unless you save it. Clear the scan in the Room tab to start over.`;
+    if (rec) $('bp-rec-info').textContent = `${n} depth frames (${Math.round(rec.seconds / 6) / 10} min of scanning), ${rec.photos.length} camera photos. Stays on this headset unless you save it. Clear the scan in the Room tab to start over.`;
   };
   setTimeout(renderRec, 1500);
   app.onSession((active) => {

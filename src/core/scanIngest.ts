@@ -109,9 +109,22 @@ export function ingestFrame(f: DepthFrame, map: ScanMap, free: FreeGrid | null, 
 const MAGIC = 'basement-planner-scan';
 const FLOATS = 42;
 
+/** A camera photo taken during the scan, with the depth view's pose at that moment. */
+export interface ScanPhoto {
+  t: number;
+  /** JPEG bytes (640x480 from the passthrough camera). */
+  jpeg: Uint8Array;
+  /** The depth view's view -> plan-root transform when the photo was taken. */
+  viewToRoot: Float32Array;
+  /** The depth view's projection (the camera's own isn't exposed; calibration relates the two). */
+  proj: Float32Array;
+}
+
 export interface RecordingHeader {
   format: typeof MAGIC;
-  version: 1;
+  /** 1 = depth frames; 2 = plus camera photos after them. */
+  version: 1 | 2;
+  photos?: number;
   w: number;
   h: number;
   frames: number;
@@ -119,14 +132,16 @@ export interface RecordingHeader {
   userAgent?: string;
 }
 
-export function encodeRecording(frames: DepthFrame[], meta: { userAgent?: string } = {}): Uint8Array {
+export function encodeRecording(frames: DepthFrame[], meta: { userAgent?: string } = {}, photos: ScanPhoto[] = []): Uint8Array {
   const w = frames[0]?.w ?? 0;
   const h = frames[0]?.h ?? 0;
-  const header: RecordingHeader = { format: MAGIC, version: 1, w, h, frames: frames.length, createdAt: new Date().toISOString(), ...meta };
+  const header: RecordingHeader = { format: MAGIC, version: photos.length ? 2 : 1, w, h, frames: frames.length, createdAt: new Date().toISOString(), ...meta, ...(photos.length ? { photos: photos.length } : {}) };
   const hb = new TextEncoder().encode(JSON.stringify(header));
   const hPad = Math.ceil((4 + hb.length) / 4) * 4;
   const per = FLOATS * 4 + w * h * 2;
-  const out = new Uint8Array(hPad + per * frames.length);
+  // Photos: 33 floats (t, viewToRoot, proj), u32 length, JPEG bytes padded to 4.
+  const photoBytes = photos.reduce((s, p) => s + 33 * 4 + 4 + Math.ceil(p.jpeg.length / 4) * 4, 0);
+  const out = new Uint8Array(hPad + per * frames.length + photoBytes);
   new DataView(out.buffer).setUint32(0, hb.length, true);
   out.set(hb, 4);
   let o = hPad;
@@ -144,14 +159,27 @@ export function encodeRecording(frames: DepthFrame[], meta: { userAgent?: string
     out.set(new Uint8Array(f.depthMM.buffer, f.depthMM.byteOffset, w * h * 2), o);
     o += w * h * 2;
   }
+  const pf = new Float32Array(33);
+  const dv = new DataView(out.buffer);
+  for (const p of photos) {
+    pf[0] = p.t;
+    pf.set(p.viewToRoot, 1);
+    pf.set(p.proj, 17);
+    out.set(new Uint8Array(pf.buffer), o);
+    o += 33 * 4;
+    dv.setUint32(o, p.jpeg.length, true);
+    o += 4;
+    out.set(p.jpeg, o);
+    o += Math.ceil(p.jpeg.length / 4) * 4;
+  }
   return out;
 }
 
-export function decodeRecording(bytes: Uint8Array): { header: RecordingHeader; frames: DepthFrame[] } {
+export function decodeRecording(bytes: Uint8Array): { header: RecordingHeader; frames: DepthFrame[]; photos: ScanPhoto[] } {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const hl = dv.getUint32(0, true);
   const header = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + hl))) as RecordingHeader;
-  if (header.format !== MAGIC || header.version !== 1) throw new Error('Not a basement scan recording');
+  if (header.format !== MAGIC || (header.version !== 1 && header.version !== 2)) throw new Error('Not a basement scan recording');
   const { w, h } = header;
   let o = Math.ceil((4 + hl) / 4) * 4;
   const frames: DepthFrame[] = [];
@@ -173,5 +201,14 @@ export function decodeRecording(bytes: Uint8Array): { header: RecordingHeader; f
       handR: [fl[39], fl[40], fl[41]],
     });
   }
-  return { header, frames };
+  const photos: ScanPhoto[] = [];
+  for (let i = 0; i < (header.photos ?? 0); i++) {
+    const pf = new Float32Array(bytes.slice(o, o + 33 * 4).buffer);
+    o += 33 * 4;
+    const len = dv.getUint32(o, true);
+    o += 4;
+    photos.push({ t: pf[0], viewToRoot: pf.slice(1, 17), proj: pf.slice(17, 33), jpeg: bytes.slice(o, o + len) });
+    o += Math.ceil(len / 4) * 4;
+  }
+  return { header, frames, photos };
 }

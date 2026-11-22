@@ -62,6 +62,20 @@ describe('scan recording and replay', () => {
     console.log(fit.walls.map((w) => `${w.evidence} t${w.thickness} ${w.a.x.toFixed(2)},${w.a.y.toFixed(2)} [${w.openings.map((o) => `${o.type}${o.width} ${o.evidence}`).join(', ')}]`).join('\n'));
   }, 60_000);
 
+  it('carries camera photos with their poses (format v2)', () => {
+    const some = frames.slice(0, 3);
+    const jpeg = new Uint8Array([0xff, 0xd8, 1, 2, 3, 0xff, 0xd9]); // odd length: tests the padding
+    const photos = [0, 1].map((i) => ({ t: i, jpeg, viewToRoot: some[i].viewToRoot, proj: some[i].proj }));
+    const r = decodeRecording(encodeRecording(some, {}, photos));
+    expect(r.header.version).toBe(2);
+    expect(r.frames).toHaveLength(3);
+    expect(r.photos).toHaveLength(2);
+    expect(Array.from(r.photos[1].jpeg)).toEqual(Array.from(jpeg));
+    expect(Array.from(r.photos[1].viewToRoot)).toEqual(Array.from(some[1].viewToRoot));
+    // Version 1 files (no photos) still open.
+    expect(decodeRecording(encodeRecording(some)).photos).toHaveLength(0);
+  });
+
   it('round-trips through the file format exactly', () => {
     const some = frames.slice(0, 20);
     const back = decodeRecording(encodeRecording(some)).frames;
