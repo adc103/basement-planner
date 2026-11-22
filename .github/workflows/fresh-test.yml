@@ -1,0 +1,21 @@
+name: Test fresh
+
+# Checks the fresh-start branch; when it passes, the Pages workflow on main
+# rebuilds the site with it under /next/.
+on:
+  push:
+    branches: [fresh]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

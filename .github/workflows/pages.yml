@@ -1,8 +1,14 @@
 name: Test and deploy to GitHub Pages
 
+# The site carries both apps: the current one (main) at the root and the
+# fresh start (branch "fresh") under /next/. Deploys run from main (Pages only
+# accepts main): on a push to main, and after "Test fresh" passes on a push to fresh.
 on:
   push:
     branches: [main]
+  workflow_run:
+    workflows: ['Test fresh']
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -16,21 +22,36 @@ concurrency:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: current
+      - uses: actions/checkout@v4
+        with:
+          ref: fresh
+          path: next
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+      - name: Build the current app (main)
+        working-directory: current
+        run: npm ci && npm run typecheck && npm test && npm run build
+      - name: Build the fresh start (fresh)
+        working-directory: next
+        run: npm ci && npm run typecheck && npm test && npm run build
+      - name: Put them together
+        run: |
+          mkdir site
+          cp -r current/dist/. site/
+          mkdir site/next
+          cp -r next/dist/. site/next/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: site
 
   deploy:
     needs: build
