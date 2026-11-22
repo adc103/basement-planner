@@ -32,9 +32,11 @@
     "@iwsdk/vite-plugin-dev": "1.1.0",
     "@meta-quest/metavr": "^1.8.1",
     "@types/three": "^0.185.0",
+    "dxf-parser": "^1.1.2",
     "typescript": "^5.5.0",
     "vite": "^7.1.4",
-    "vitest": "^3.2.7"
+    "vitest": "^3.2.7",
+    "web-ifc": "^0.0.80"
   },
   "overrides": {
     "sharp": "0.35.4",

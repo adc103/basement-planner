@@ -1,5 +1,7 @@
 import { planFromJson, planToJson } from './core/persistence.js';
 import { createEmptyPlan } from './core/plan.js';
+import { exportDxf } from './core/exportDxf.js';
+import { exportIfc } from './core/exportIfc.js';
 import { FINISH_NAMES, renderPlanSvg, roomSummaries } from './core/plan2d.js';
 import { PROBE_KEY, type ProbeResult } from './xr/cameraProbe.js';
 import type { PlannerApp } from './xr/app.js';
@@ -75,6 +77,8 @@ export function mountDom(app: PlannerApp): void {
         <div class="row">
           <button class="small" id="bp-print">Print / save PDF</button>
           <button class="small" id="bp-svg">Download SVG</button>
+          <button class="small" id="bp-dxf" title="CAD drawing for AutoCAD, SketchUp, Fusion, LibreCAD">Download DXF</button>
+          <button class="small" id="bp-ifc" title="3D building model for Revit, ArchiCAD, BlenderBIM and BIM viewers">Download IFC</button>
         </div>
       </div>
       <div class="plan-wrap" id="bp-plan"></div>
@@ -213,6 +217,19 @@ export function mountDom(app: PlannerApp): void {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   };
+
+  const download = (data: BlobPart, type: string, ext: string) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([data], { type }));
+    const name = (app.store.plan.name || 'basement').replace(/[^\w-]+/g, '-').toLowerCase();
+    a.download = `${name}-${new Date().toISOString().slice(0, 10)}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  $('bp-dxf').onclick = () => download(exportDxf(app.store.plan), 'application/dxf', 'dxf');
+  $('bp-ifc').onclick = () => download(exportIfc(app.store.plan, { now: new Date() }), 'application/x-step', 'ifc');
 
   $('bp-print').onclick = () => window.print();
   $('bp-svg').onclick = () => {
