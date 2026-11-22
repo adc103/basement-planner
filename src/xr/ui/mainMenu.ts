@@ -4,7 +4,7 @@ import type { IconName } from './icons.js';
 import { chipRenderer, roundRenderer, SpatialPanel, tabRenderer, textRenderer, tileRenderer, THEME } from './spatialPanel.js';
 
 export type TabName = 'build' | 'edit' | 'measure' | 'rooms' | 'pins' | 'ceiling' | 'scan' | 'view';
-export type ToolName = 'walls' | 'doors' | 'capture' | 'edit' | 'delete' | 'measure' | 'align' | 'rooms' | 'pins' | 'soffit' | 'review';
+export type ToolName = 'walls' | 'doors' | 'capture' | 'edit' | 'delete' | 'measure' | 'align' | 'rooms' | 'pins' | 'soffit' | 'review' | 'dimension';
 
 /** Everything the menu needs from the app. */
 export interface MenuApi {
@@ -39,7 +39,13 @@ export interface MenuApi {
   editStud(s: '2x4' | '2x6'): void;
   editWidth(): void;
   deleteSelection(): void;
-  edit(action: 'thickness' | 'split' | 'kind' | 'openingHeight' | 'openingType' | 'flip' | 'lock' | 'demolish' | 'fit'): void;
+  edit(action: 'thickness' | 'split' | 'kind' | 'openingHeight' | 'openingType' | 'flip' | 'lock' | 'demolish' | 'fit' | 'keepLength'): void;
+  selectedKeptLength(): boolean;
+  dimText(): string;
+  dimState(): 'none' | 'one' | 'parallel' | 'angle';
+  dimKept(type: 'distance' | 'parallel' | 'perpendicular'): boolean;
+  dimMode(): 'clear' | 'center';
+  dim(action: 'type' | 'keep' | 'mode' | 'square' | 'parallel' | 'reset'): void;
   checkWalls(): void;
   hasRoomMesh(): boolean;
   selectedLocked(): boolean;
@@ -366,9 +372,20 @@ export class MainMenu {
         tiles: [
           { id: 'edit', icon: 'edit', label: () => 'Select', tool: 'edit' },
           { id: 'delete', icon: 'trash', label: () => 'Delete', tool: 'delete' },
+          { id: 'dimension', icon: 'dimension', label: () => 'Dimension', tool: 'dimension' },
         ],
-        text: () => (a.tool() === 'edit' ? a.selectionText() || 'Nothing selected' : 'Point and pinch to delete'),
+        text: () => (a.tool() === 'edit' ? a.selectionText() || 'Nothing selected' : a.tool() === 'dimension' ? a.dimText() : 'Point and pinch to delete'),
         rows: [
+          [
+            { id: 'd-type', label: () => 'Type distance', icon: 'keypad', span: 2, col: 0, onClick: () => a.dim('type'), visible: () => a.tool() === 'dimension' && a.dimState() === 'parallel' },
+            { id: 'd-keep', label: () => (a.dimKept('distance') ? 'Unkeep' : 'Keep'), span: 1, col: 2, onClick: () => a.dim('keep'), active: () => a.dimKept('distance'), visible: () => a.tool() === 'dimension' && a.dimState() === 'parallel' },
+            { id: 'd-mode', label: () => (a.dimMode() === 'clear' ? 'Clear' : 'Center'), span: 1, col: 3, onClick: () => a.dim('mode'), visible: () => a.tool() === 'dimension' && a.dimState() === 'parallel' },
+            { id: 'd-square', label: () => (a.dimKept('perpendicular') ? 'Unsquare' : 'Make square'), span: 2, col: 0, onClick: () => a.dim('square'), active: () => a.dimKept('perpendicular'), visible: () => a.tool() === 'dimension' && a.dimState() === 'angle' },
+            { id: 'd-par', label: () => (a.dimKept('parallel') ? 'Unparallel' : 'Make parallel'), span: 2, col: 2, onClick: () => a.dim('parallel'), active: () => a.dimKept('parallel'), visible: () => a.tool() === 'dimension' && a.dimState() === 'angle' },
+          ],
+          [
+            { id: 'd-again', label: () => 'Pick again', span: 4, col: 0, onClick: () => a.dim('reset'), visible: () => a.tool() === 'dimension' && a.dimState() !== 'none' },
+          ],
           [
             { id: 'e-len', label: () => 'Length', icon: 'keypad', onClick: () => a.editLength(), visible: sel('wall') },
             { id: 'e-h', label: () => 'Height', icon: 'height', onClick: () => a.editHeight(), visible: sel('wall') },
@@ -385,7 +402,8 @@ export class MainMenu {
             { id: 'e-kind', label: () => (a.selectedIsReal() ? 'Make planned' : 'Make real'), span: 2, col: 2, onClick: () => a.edit('kind'), visible: sel('wall') },
           ],
           [
-            { id: 'e-fit', label: () => 'Fit to scan', icon: 'scan', span: 4, col: 0, onClick: () => a.edit('fit'), enabled: () => a.hasRoomMesh(), visible: () => a.selectionKind() === 'wall' && a.selectedIsReal() },
+            { id: 'e-keeplen', label: () => (a.selectedKeptLength() ? 'Unkeep length' : 'Keep length'), span: 2, col: 0, onClick: () => a.edit('keepLength'), active: () => a.selectedKeptLength(), visible: sel('wall') },
+            { id: 'e-fit', label: () => 'Fit to scan', icon: 'scan', span: 2, col: 2, onClick: () => a.edit('fit'), enabled: () => a.hasRoomMesh(), visible: () => a.selectionKind() === 'wall' && a.selectedIsReal() },
           ],
           [
             {

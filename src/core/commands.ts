@@ -27,7 +27,9 @@ import {
   wallLength,
   wallsAtNode,
 } from './ops.js';
-import { CEILING_TYPES, FINISHES, MARKER_TYPES, SettingsSchema, type Plan, type Wall } from './plan.js';
+import { CEILING_TYPES, CONSTRAINT_TYPES, FINISHES, MARKER_TYPES, newId, SettingsSchema, type Constraint, type Plan, type Wall } from './plan.js';
+import { solveConstraints, wallGap } from './solver.js';
+import { formatLength } from './units.js';
 import { applyRoomScan, applyScan, type RoomScanImport } from './scanApply.js';
 import type { StructureResult } from './structure.js';
 import type { PlanStore } from './store.js';
@@ -159,6 +161,8 @@ export const COMMANDS = {
     run(d, p) {
       const w = editable(d, 'walls', p.id);
       editableNode(d, p.keep === 'a' ? w.b : w.a);
+      // Typing a length on a kept wall changes what it keeps.
+      for (const c of d.constraints) if (c.type === 'length' && c.a === p.id) c.value = p.length;
       if (!setWallLength(d, p.id, p.length, p.keep)) throw new CommandError("Can't set that length");
     },
   }),
@@ -394,6 +398,78 @@ export const COMMANDS = {
     },
   }),
 
+  // Locks between walls (CAD constraints) ------------------------------------------
+  'constraint.add': def({
+    title: 'Add lock',
+    label: (p) => `Keep ${p.type === 'distance' ? 'distance' : p.type === 'length' ? 'length' : p.type === 'perpendicular' ? 'square' : p.type}`,
+    description:
+      "Keep a relationship true through every later edit. length: wall a stays `value` inches (default: its current length). distance: walls a and b stay parallel and `value` apart (mode 'clear' = face to face, 'center' = centerlines; default: the current gap). parallel, perpendicular (square), collinear (in line): between a and b. Returns the lock id.",
+    params: z.object({ type: z.enum(CONSTRAINT_TYPES), a: Id, b: Id.nullable().default(null), value: z.number().nullable().default(null), mode: z.enum(['clear', 'center']).default('clear') }),
+    run(d, p) {
+      if (!d.walls.some((w) => w.id === p.a)) throw new CommandError(`No wall ${p.a}`);
+      if (p.type !== 'length') {
+        if (!p.b || !d.walls.some((w) => w.id === p.b)) throw new CommandError('Pick a second wall');
+        if (p.b === p.a) throw new CommandError('Pick two different walls');
+      }
+      let value = p.value;
+      if (p.type === 'length' && value === null) value = wallLength(d, d.walls.find((w) => w.id === p.a)! as Wall);
+      if (p.type === 'distance') {
+        const g = wallGap(d, p.a, p.b!)!;
+        if (g.angle > 0.2) throw new CommandError('Those walls aren\u2019t parallel: a distance needs parallel walls');
+        if (value === null) value = Math.round((p.mode === 'clear' ? g.clear : g.center) * 8) / 8;
+        if (p.mode === 'clear' && value < 0) throw new CommandError('Walls would overlap');
+      }
+      if (p.type === 'length' && value !== null && value < 1) throw new CommandError('Too short');
+      // One lock of a kind per wall pair: a new one replaces the old.
+      const same = (c: Constraint) => c.type === p.type && ((c.a === p.a && c.b === p.b) || (c.a === p.b && c.b === p.a));
+      d.constraints = d.constraints.filter((c) => !same(c));
+      const id = newId('k');
+      d.constraints.push({ id, type: p.type, a: p.a, b: p.type === 'length' ? null : p.b, value, mode: p.mode });
+      return id;
+    },
+  }),
+  'constraint.delete': def({
+    title: 'Remove lock',
+    description: 'Remove a lock between walls.',
+    params: z.object({ id: Id }),
+    run(d, p) {
+      if (!d.constraints.some((c) => c.id === p.id)) throw new CommandError(`No lock ${p.id}`);
+      d.constraints = d.constraints.filter((c) => c.id !== p.id);
+    },
+  }),
+  'dimension.set': def({
+    title: 'Set distance',
+    description:
+      "Move wall b (sideways, staying parallel) so it is `distance` inches from wall a: 'clear' = face to face (default), 'center' = centerlines. keep = also lock that distance. Walls joined to b follow.",
+    params: z.object({ a: Id, b: Id, distance: z.number().min(0), mode: z.enum(['clear', 'center']).default('clear'), keep: z.boolean().default(false) }),
+    run(d, p) {
+      editable(d, 'walls', p.b);
+      const g = wallGap(d, p.a, p.b);
+      if (!g) throw new CommandError('Pick two walls');
+      if (g.angle > 0.09) throw new CommandError('Those walls aren\u2019t parallel');
+      const A = d.walls.find((w) => w.id === p.a)!;
+      const B = d.walls.find((w) => w.id === p.b)!;
+      editableNode(d, B.a);
+      editableNode(d, B.b);
+      const node = (id: string) => d.nodes.find((n) => n.id === id)!;
+      const a0 = node(A.a);
+      const a1 = node(A.b);
+      const L = Math.hypot(a1.x - a0.x, a1.y - a0.y) || 1;
+      const na = { x: -(a1.y - a0.y) / L, y: (a1.x - a0.x) / L };
+      const b0 = node(B.a);
+      const b1 = node(B.b);
+      const s = ((b0.x + b1.x) / 2 - a0.x) * na.x + ((b0.y + b1.y) / 2 - a0.y) * na.y;
+      const want = (s >= 0 ? 1 : -1) * (p.distance + (p.mode === 'clear' ? (A.thickness + B.thickness) / 2 : 0));
+      if (p.mode === 'clear' && p.distance < 0.01) throw new CommandError('Walls would touch');
+      moveWall(d, B.id, { x: na.x * (want - s), y: na.y * (want - s) });
+      const existing = d.constraints.find((c) => c.type === 'distance' && ((c.a === p.a && c.b === p.b) || (c.a === p.b && c.b === p.a)));
+      if (existing) {
+        existing.value = p.distance;
+        existing.mode = p.mode;
+      } else if (p.keep) d.constraints.push({ id: newId('k'), type: 'distance', a: p.a, b: p.b, value: p.distance, mode: p.mode });
+    },
+  }),
+
   // Any element ------------------------------------------------------------------
   'element.delete': def({
     title: 'Delete',
@@ -486,6 +562,34 @@ export interface ToolSpec {
   inputSchema: unknown;
 }
 
+/** In words, for "that would break ..." messages. */
+export function describeConstraint(c: Constraint): string {
+  if (c.type === 'length') return `the kept ${formatLength(c.value ?? 0)} wall length`;
+  if (c.type === 'distance') return `the kept ${formatLength(c.value ?? 0)} ${c.mode === 'clear' ? 'clear ' : ''}distance`;
+  if (c.type === 'perpendicular') return 'a square corner lock';
+  if (c.type === 'parallel') return 'a parallel lock';
+  return 'an in-line lock';
+}
+
+/**
+ * After a command changes the plan, re-solve the locks. Corners the command
+ * moved on purpose stay where it put them; everything else gives way. If the
+ * locks can't all hold, the command is refused and nothing changes.
+ */
+function settle(d: Draft<Plan>, before: Map<string, number>): void {
+  if (!d.constraints.length) return;
+  const pinned = new Set<string>();
+  for (const n of d.nodes) {
+    const b = before.get(n.id);
+    if (b !== undefined && b !== n.x * 1e6 + n.y) pinned.add(n.id);
+  }
+  const r = solveConstraints(d as unknown as Plan, pinned);
+  if (!r.ok) {
+    const c = d.constraints.find((x) => x.id === r.worstId);
+    throw new CommandError(`That would break ${c ? describeConstraint(c as Constraint) : 'a lock'} (off by ${formatLength(Math.round(r.worst * 8) / 8)}). Remove the lock to do this.`);
+  }
+}
+
 function parse<N extends CommandName>(name: N, params: unknown): z.infer<Commands[N]['params']> {
   const c = COMMANDS[name];
   if (!c) throw new CommandError(`Unknown command ${String(name)}`);
@@ -512,7 +616,12 @@ export class CommandBus {
       const p = parse(name, params);
       const c = COMMANDS[name] as unknown as Def<z.ZodType, ResultOf<N>>;
       const label = c.label?.(p) ?? c.title;
-      const value = this.store.edit(label, (d) => c.run(d, p, { source }));
+      const value = this.store.edit(label, (d) => {
+        const before = new Map(d.nodes.map((n) => [n.id, n.x * 1e6 + n.y]));
+        const v = c.run(d, p, { source });
+        settle(d, before);
+        return v;
+      });
       out = { ok: true, value };
     } catch (e) {
       if (!(e instanceof CommandError)) throw e;
@@ -548,7 +657,9 @@ export class CommandBus {
       const c = COMMANDS[name] as unknown as Def<z.ZodType, ResultOf<N>>;
       let value!: ResultOf<N>;
       const plan = produce(this.store.plan, (d) => {
+        const before = new Map(d.nodes.map((n) => [n.id, n.x * 1e6 + n.y]));
         value = c.run(d, p, { source: 'assistant' });
+        settle(d, before);
       });
       return { ok: true, plan, value };
     } catch (e) {
@@ -604,5 +715,6 @@ export function describePlan(plan: Plan): unknown {
     pins: plan.markers.map((m) => ({ id: m.id, type: m.type, x: r(m.x), y: r(m.y), z: r(m.z), wallId: m.wallId })),
     soffits: plan.soffits.map((s) => ({ id: s.id, bottom: s.bottom, poly: s.poly.map((q) => ({ x: r(q.x), y: r(q.y) })) })),
     objects: plan.obstacles.map((o) => ({ id: o.id, label: o.label, height: o.height })),
+    locks: plan.constraints.map((c) => ({ id: c.id, type: c.type, a: c.a, ...(c.b ? { b: c.b } : {}), ...(c.value !== null ? { value: c.value } : {}), ...(c.type === 'distance' ? { mode: c.mode } : {}) })),
   };
 }

@@ -28,6 +28,7 @@ import { SoffitTool } from './tools/soffitTool.js';
 import { RefAnchors } from './refAnchors.js';
 import { CameraProbe, PROBE_KEY } from './cameraProbe.js';
 import { registerWebMcp } from './webmcp.js';
+import { DimensionTool } from './tools/dimensionTool.js';
 import { checkPlan, type WallCheck } from '../core/fit.js';
 import { CommandBus, type CommandName, type ParamsOf, type ResultOf } from '../core/commands.js';
 import { planToLocal } from './planView.js';
@@ -60,7 +61,7 @@ interface SavedTransform extends PlanTransform {
 }
 
 /** Thumbstick-flick order for controllers. */
-const TOOL_CYCLE: ToolName[] = ['walls', 'doors', 'edit', 'measure', 'rooms', 'pins', 'capture', 'delete'];
+const TOOL_CYCLE: ToolName[] = ['walls', 'doors', 'edit', 'dimension', 'measure', 'rooms', 'pins', 'capture', 'delete'];
 const TOOL_LABEL: Record<ToolName, string> = {
   walls: 'Walls',
   doors: 'Doors',
@@ -73,6 +74,7 @@ const TOOL_LABEL: Record<ToolName, string> = {
   pins: 'Pins',
   soffit: 'Soffit',
   review: 'Review scan',
+  dimension: 'Dimension',
 };
 
 export interface AppStatus {
@@ -102,6 +104,7 @@ export class PlannerApp {
   wallTool!: WallTool;
   editTool!: EditTool;
   measureTool!: MeasureTool;
+  dimTool!: DimensionTool;
   roomsTool!: RoomsTool;
   pinsTool!: PinsTool;
   captureTool!: CaptureTool;
@@ -229,6 +232,7 @@ export class PlannerApp {
     this.wallTool = new WallTool(ctx);
     this.editTool = new EditTool(ctx);
     this.measureTool = new MeasureTool(ctx);
+    this.dimTool = new DimensionTool(ctx);
     this.roomsTool = new RoomsTool(ctx);
     this.pinsTool = new PinsTool(ctx);
     this.tools = {
@@ -240,6 +244,7 @@ export class PlannerApp {
       edit: this.editTool,
       delete: new DeleteTool(ctx),
       measure: this.measureTool,
+      dimension: this.dimTool,
       align: new AlignTool(ctx, {
         getTransform: () => this.transform,
         setTransform: (t) => this.setTransform(t),
@@ -332,12 +337,35 @@ export class PlannerApp {
         else if (action === 'lock') t.toggleLock();
         else if (action === 'demolish') t.toggleDemolish();
         else if (action === 'fit') this.fitSelectedToScan();
+        else if (action === 'keepLength') t.toggleKeepLength();
       },
       selectedLocked: () => {
         const s = this.editTool.selection;
         return !!s && s.kind !== 'node' && this.editTool.isLocked(s);
       },
       selectedDemolish: () => !!this.editTool.selectedWall()?.demolish,
+      selectedKeptLength: () => {
+        const w = this.editTool.selectedWall();
+        return !!w && this.store.plan.constraints.some((c) => c.type === 'length' && c.a === w.id);
+      },
+      dimText: () => this.dimTool.hint(),
+      dimState: () => {
+        const d = this.dimTool;
+        if (!d.a) return 'none';
+        const g = d.gap();
+        return !g ? 'one' : g.parallel ? 'parallel' : 'angle';
+      },
+      dimKept: (type) => !!this.dimTool.lock(type),
+      dimMode: () => this.dimTool.mode,
+      dim: (action) => {
+        const d = this.dimTool;
+        if (action === 'type') d.typeDistance();
+        else if (action === 'keep') d.toggleKeep();
+        else if (action === 'mode') d.toggleMode();
+        else if (action === 'square') d.toggleAngle('perpendicular');
+        else if (action === 'parallel') d.toggleAngle('parallel');
+        else d.reset();
+      },
       openingType: () => {
         const o = this.editTool.selectedOpening();
         return o?.type === 'door' ? 'Door' : o?.type === 'window' ? 'Window' : 'Opening';
@@ -734,6 +762,7 @@ export class PlannerApp {
     this.view.rebuild(plan);
     this.axisAngle = primaryAxis(plan);
     this.editTool?.validate();
+    this.dimTool?.validate();
     this.roomsTool?.validate();
     this.scheduleSave();
     this.refreshUi();

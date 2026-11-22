@@ -8,6 +8,7 @@ export type IconName =
   | 'edit'
   | 'trash'
   | 'measure'
+  | 'dimension'
   | 'rooms'
   | 'pin'
   | 'scan'
@@ -91,6 +92,13 @@ export function drawIcon(ctx: CanvasRenderingContext2D, name: IconName, cx: numb
       line([9, 9, 12, 12]);
       line([12, 6, 14, 8]);
       line([15, 3, 18, 6]);
+      break;
+    case 'dimension':
+      line([3, 3, 3, 21]);
+      line([21, 3, 21, 21]);
+      line([6, 12, 18, 12]);
+      line([9, 9, 6, 12, 9, 15]);
+      line([15, 9, 18, 12, 15, 15]);
       break;
     case 'rooms':
       line([3, 3, 21, 3, 21, 21, 3, 21, 3, 3]);

@@ -368,6 +368,65 @@ try {
     }
   }
 
+  // Dimension tool: pick two parallel walls, type the hall width, keep it, then edit and check it holds.
+  {
+    check(await clickButton(menu, 'btn:tab-edit'), 'Edit tab for dimensions');
+    check(await clickButton(menu, 'btn:tool-dimension'), 'Dimension tool tile');
+    const ids = await page.evaluate(() => {
+      const app = window.basementPlanner;
+      const w1 = app.cmd.run('wall.add', { a: { x: 2000, y: 2000 }, b: { x: 2120, y: 2000 } });
+      const w2 = app.cmd.run('wall.add', { a: { x: 2000, y: 2040 }, b: { x: 2120, y: 2040 } });
+      app.dimTool.a = w1;
+      app.dimTool.b = w2;
+      app.menu.panel.refresh();
+      return { w1, w2 };
+    });
+    await frames(3);
+    check(await clickButton(menu, 'btn:d-type'), 'Type distance chip shows for parallel walls');
+    await clickButton(keypad, 'btn:kclr');
+    for (const k of ['3', '6']) await clickButton(keypad, `btn:k${k}`);
+    await clickButton(keypad, 'btn:kok');
+    const gap = () =>
+      page.evaluate(({ w1, w2 }) => {
+        // Clear distance from each end of wall 2 to wall 1's line (equal when parallel).
+        const p = window.basementPlanner.store.plan;
+        const ends = (id) => {
+          const w = p.walls.find((x) => x.id === id);
+          return [p.nodes.find((n) => n.id === w.a), p.nodes.find((n) => n.id === w.b), w.thickness];
+        };
+        const [a0, a1, ta] = ends(w1);
+        const [b0, b1, tb] = ends(w2);
+        const L = Math.hypot(a1.x - a0.x, a1.y - a0.y);
+        const off = (q) => Math.abs((q.x - a0.x) * -(a1.y - a0.y) / L + (q.y - a0.y) * (a1.x - a0.x) / L) - (ta + tb) / 2;
+        return { clear: off(b0), clear2: off(b1), slope: b1.y - b0.y };
+      }, ids);
+    let g = await gap();
+    check(Math.abs(g.clear - 36) < 0.01, `typed 36 sets the clear distance (${g.clear.toFixed(3)}")`);
+    check(await clickButton(menu, 'btn:d-keep'), 'Keep chip');
+    const nKeep = await page.evaluate(() => window.basementPlanner.store.plan.constraints.length);
+    check(nKeep === 1, 'the distance is kept as a lock');
+    // Drag one end of the first wall: the second follows.
+    await page.evaluate(({ w1 }) => {
+      const app = window.basementPlanner;
+      const n = app.store.plan.walls.find((w) => w.id === w1).b;
+      app.cmd.run('node.move', { id: n, x: 2120, y: 1990 });
+    }, ids);
+    g = await gap();
+    check(Math.abs(g.clear - 36) < 0.02 && Math.abs(g.clear2 - 36) < 0.02 && g.slope < -9, `the kept 36" holds when a wall moves (${g.clear.toFixed(3)}" and ${g.clear2.toFixed(3)}" at the two ends)`);
+    const why = await page.evaluate(({ w1, w2 }) => {
+      const app = window.basementPlanner;
+      app.cmd.run('element.setLocked', { id: w2, locked: true });
+      const n = app.store.plan.walls.find((w) => w.id === w1).a;
+      const r = app.cmd.exec('node.move', { id: n, x: 2000, y: 1980 });
+      app.cmd.run('element.delete', { id: w1 });
+      app.cmd.run('element.setLocked', { id: w2, locked: false });
+      app.cmd.run('element.delete', { id: w2 });
+      return r;
+    }, ids);
+    check(!why.ok && /3' 0"/.test(why.error), `an edit that breaks the lock is refused with the reason (${why.error})`);
+    await clickButton(menu, 'btn:tab-build');
+  }
+
   // Tape measure: two floor points 1 m apart.
   {
     check(await clickButton(menu, 'btn:tab-measure'), 'Measure tab opens');

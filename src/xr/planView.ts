@@ -46,6 +46,7 @@ import { findRoomFaces, insetPolygon, resolveRooms } from '../core/rooms.js';
 import { openFloorRects } from '../core/footprint.js';
 import { primaryAxis } from '../core/snapping.js';
 import { surfaceOccludable } from './surfaceOcclusion.js';
+import { lockMarks } from '../core/lockGeom.js';
 import { formatLength, INCH_M } from '../core/units.js';
 import { computeFootprints, wallPrisms, type WallFootprint } from '../core/wallGeometry.js';
 import { TextLabel } from './labels.js';
@@ -217,6 +218,7 @@ export class PlanView {
     this.framing = [];
     if (this.mode === 'xray') this.buildFraming(plan);
     this.buildMeasures(plan);
+    this.buildLocks(plan);
 
     if (plan.reference) {
       const { r1, r2 } = plan.reference;
@@ -526,6 +528,35 @@ export class PlanView {
     }
   }
 
+  private lockMat = new MeshBasicMaterial({ color: 0x38bdf8 });
+
+  /** Locks between walls: dimension lines for kept distances, tags for the rest. */
+  private buildLocks(plan: Plan): void {
+    const A = new Vector3();
+    const B = new Vector3();
+    const Z = new Vector3(0, 0, 1);
+    for (const m of lockMarks(plan)) {
+      if (m.line) {
+        planToLocal(m.line[0], 40, A);
+        planToLocal(m.line[1], 40, B);
+        const l = A.distanceTo(B);
+        if (l > 1e-3) {
+          const bar = new Mesh(this.tapeGeo, this.lockMat);
+          bar.position.copy(A);
+          bar.quaternion.setFromUnitVectors(Z, B.clone().sub(A).normalize());
+          bar.scale.set(1.4, 1.4, l);
+          bar.raycast = () => {};
+          bar.userData.shared = true;
+          this.content.add(bar);
+        }
+      }
+      const label = new TextLabel(m.text, { height: 0.04, bg: 'rgba(8,80,120,0.9)' });
+      planToLocal(m.at, m.line ? 44 : 60, label.sprite.position);
+      this.content.add(label.sprite);
+      this.extraLabels.push(label);
+    }
+  }
+
   private buildMeasures(plan: Plan): void {
     const A = new Vector3();
     const B = new Vector3();
@@ -589,7 +620,8 @@ export class PlanView {
 
     {
       const { a, b } = wallEnds(plan, wall);
-      const text = `${demolish ? 'Demolish ' : ''}${formatLength(fp.length)}${wall.locked ? ' (locked)' : ''}`;
+      const kept = plan.constraints.some((c) => c.type === 'length' && c.a === wall.id);
+      const text = `${demolish ? 'Demolish ' : ''}${formatLength(fp.length)}${kept ? ', kept' : ''}${wall.locked ? ' (locked)' : ''}`;
       const label = new TextLabel(text, demolish ? { height: 0.045, bg: 'rgba(150,40,30,0.9)' } : existing ? { height: 0.045, bg: 'rgba(60,72,88,0.85)' } : { height: 0.055 });
       this.content.add(label.sprite);
       this.labels.push({

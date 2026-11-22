@@ -1,3 +1,4 @@
+import { lockMarks } from './lockGeom.js';
 import { add, norm, perp, scale, sub, type Vec2 } from './geom2d.js';
 import { roomCeiling, wallEnds } from './ops.js';
 import type { CeilingType, Finish, MarkerType, Plan, Room } from './plan.js';
@@ -139,6 +140,13 @@ export function renderPlanSvg(plan: Plan, opts: PlanSvgOptions = {}): string {
       if (p.z0 > 0.01) continue;
       out.push(`<polygon points="${pts(p.poly)}" fill="#2b3440" stroke="#2b3440" stroke-width="0.3"/>`);
     }
+  }
+  // Kept distances: a dimension line with ticks.
+  for (const m of lockMarks(plan)) {
+    if (!m.line) continue;
+    const [p, q] = m.line;
+    out.push(`<line x1="${f(p.x)}" y1="${f(p.y)}" x2="${f(q.x)}" y2="${f(q.y)}" stroke="#0e7490" stroke-width="0.8"/>`);
+    out.push(`<text x="${f(m.at.x)}" y="${f(m.at.y)}" font-size="${f(text * 0.8)}" text-anchor="middle" dominant-baseline="middle" fill="#0e7490">${esc(m.text)}</text>`);
   }
   // Door swings and window marks.
   for (const o of plan.openings) {

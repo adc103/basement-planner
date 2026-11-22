@@ -166,6 +166,24 @@ export const SoffitSchema = z.object({
 export type Soffit = z.infer<typeof SoffitSchema>;
 export type Room = z.infer<typeof RoomSchema>;
 
+/**
+ * A lock between walls that every edit keeps true (CAD-style constraints).
+ * length: wall stays `value` long. distance: walls b and a stay parallel,
+ * `value` apart (clear = face to face, center = centerline to centerline).
+ * parallel / perpendicular / collinear: between walls a and b.
+ */
+export const CONSTRAINT_TYPES = ['length', 'distance', 'parallel', 'perpendicular', 'collinear'] as const;
+export type ConstraintType = (typeof CONSTRAINT_TYPES)[number];
+export const ConstraintSchema = z.object({
+  id: z.string(),
+  type: z.enum(CONSTRAINT_TYPES),
+  a: z.string(),
+  b: z.string().nullable().default(null),
+  value: z.number().nullable().default(null),
+  mode: z.enum(['clear', 'center']).default('clear'),
+});
+export type Constraint = z.infer<typeof ConstraintSchema>;
+
 /** A saved tape-measure line, plan inches (z = height). */
 export const MeasureSchema = z.object({ id: z.string(), a: Point3Schema, b: Point3Schema });
 export type Measure = z.infer<typeof MeasureSchema>;
@@ -213,6 +231,7 @@ export const PlanSchema = z.object({
   rooms: z.array(RoomSchema).default([]),
   measures: z.array(MeasureSchema).default([]),
   soffits: z.array(SoffitSchema).default([]),
+  constraints: z.array(ConstraintSchema).default([]),
   /** Scanned floor area, cells in the room's axis frame (see core/footprint.ts). */
   footprint: z
     .object({ axis: z.number(), cell: z.number().positive(), rows: z.array(z.tuple([z.number(), z.number(), z.number()])) })
@@ -277,6 +296,7 @@ export function parsePlan(json: unknown): Plan {
   plan.walls = plan.walls.filter((w) => nodeIds.has(w.a) && nodeIds.has(w.b) && w.a !== w.b);
   const wallIds = new Set(plan.walls.map((w) => w.id));
   plan.openings = plan.openings.filter((o) => wallIds.has(o.wallId));
+  plan.constraints = plan.constraints.filter((c) => wallIds.has(c.a) && (c.b === null || wallIds.has(c.b)));
   for (const m of plan.markers) if (m.wallId && !wallIds.has(m.wallId)) m.wallId = null;
   if (!plan.levels.length) plan.levels.push({ id: DEFAULT_LEVEL, name: 'Basement', elevation: 0 });
   return plan;

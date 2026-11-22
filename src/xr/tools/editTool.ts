@@ -347,6 +347,16 @@ export class EditTool implements Tool {
     if (this.ctx.act('element.setLocked', { id: s.id, locked: next })) this.ctx.toast(next ? 'Locked: nothing can change it until you unlock it' : 'Unlocked');
   }
 
+  /** Keep the selected wall's length through later edits (or stop). */
+  toggleKeepLength(): void {
+    const w = this.selectedWall();
+    if (!w) return;
+    const k = this.ctx.store.plan.constraints.find((c) => c.type === 'length' && c.a === w.id);
+    if (k) {
+      if (this.ctx.act('constraint.delete', { id: k.id })) this.ctx.toast('Length no longer kept');
+    } else if (this.ctx.act('constraint.add', { type: 'length', a: w.id })) this.ctx.toast(`Keeping ${formatLength(wallLength(this.ctx.store.plan, w))}`);
+  }
+
   /** Mark the selected real wall for demolition, or keep it. */
   toggleDemolish(): void {
     const w = this.selectedWall();

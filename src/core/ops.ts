@@ -89,6 +89,12 @@ export function splitWall(d: Draft<Plan>, wallId: string, t: number): string {
   } as Wall;
   w.b = node.id;
   d.walls.push(second);
+  // Locks on the wall carry over to both halves; a kept length no longer applies.
+  d.constraints = d.constraints.filter((c) => !(c.type === 'length' && c.a === w.id));
+  for (const c of [...d.constraints]) {
+    if (c.a === w.id) d.constraints.push({ ...c, id: newId('k'), a: second.id });
+    else if (c.b === w.id) d.constraints.push({ ...c, id: newId('k'), b: second.id });
+  }
   for (const o of d.openings) {
     if (o.wallId !== w.id) continue;
     if (o.offset > cut) {
@@ -179,6 +185,7 @@ export function deleteWall(d: Draft<Plan>, wallId: string): void {
   if (idx < 0) return;
   d.walls.splice(idx, 1);
   d.openings = d.openings.filter((o) => o.wallId !== wallId);
+  d.constraints = d.constraints.filter((c) => c.a !== wallId && c.b !== wallId);
   for (const m of d.markers) if (m.wallId === wallId) m.wallId = null;
   pruneNodes(d);
 }
