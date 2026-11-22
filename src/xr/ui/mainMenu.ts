@@ -80,6 +80,8 @@ export interface MenuApi {
   acceptScan(): void;
   discardScan(): void;
   clearScan(): void;
+  startOver(): void;
+  startOverArmed(): boolean;
   hasScanMap(): boolean;
   autoImport(): boolean;
   toggleAutoImport(): void;
@@ -513,12 +515,14 @@ export class MainMenu {
             })),
             { id: 'scan-clear', col: 0, label: () => 'Clear scan', icon: 'trash', tone: 'danger', span: 2, onClick: () => a.clearScan(), enabled: () => a.hasScanMap() && !a.scanning(), visible: () => !a.scanReviewing() },
             {
-              id: 'camtest',
-              label: () => (a.cameraTestRunning() ? 'Testing camera...' : 'Camera test'),
-              icon: 'eye',
+              id: 'start-over',
+              col: 2,
+              label: () => (a.startOverArmed() ? 'Tap again to erase' : 'Start over'),
+              icon: 'trash',
+              tone: 'danger',
               span: 2,
-              onClick: () => a.cameraTest(),
-              enabled: () => !a.cameraTestRunning(),
+              onClick: () => a.startOver(),
+              enabled: () => !a.scanning(),
               visible: () => !a.scanReviewing(),
             },
           ],

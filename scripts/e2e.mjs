@@ -716,7 +716,7 @@ try {
   // Camera test (Chrome's fake camera stands in for the passthrough camera).
   {
     check(await clickButton(menu, 'btn:tab-scan'), 'Room tab opens');
-    check(await clickButton(menu, 'btn:camtest'), 'Camera test button');
+    check(await page.evaluate(() => { window.basementPlanner.runCameraTest(); return true; }), 'Camera test starts (moved off the menu)');
     const r = await page
       .waitForFunction(() => JSON.parse(localStorage.getItem('basement-planner:camera-probe:v1') || 'null'), null, { timeout: 25000 })
       .then((h) => h.jsonValue())
@@ -933,6 +933,26 @@ try {
   const stats = await page.locator('#bp-stats').innerText();
   check(new RegExp(`${after.walls.length}\\s*new walls`, 'i').test(stats.replace(/\n/g, ' ')), 'flat page shows plan stats');
   await page.screenshot({ path: 'artifacts/e2e-page.png' });
+
+  // Start over erases the plan and every part of the scan, and it stays erased after a reload.
+  {
+    const state = () =>
+      page.evaluate(() => {
+        const app = window.basementPlanner;
+        return { walls: app.store.plan.walls.length, map: app.scan.map.size, tris: app.scan.mesh.triangles, rec: app.scan.recorder.count };
+      });
+    const before = await state();
+    page.once('dialog', (d) => d.accept());
+    await page.click('#bp-new');
+    await page.waitForTimeout(800);
+    const now = await state();
+    await page.reload();
+    await page.waitForSelector('#planner-dom');
+    await page.waitForTimeout(1500);
+    const later = await state();
+    const empty = (x) => x.walls === 0 && x.map === 0 && x.tris === 0 && x.rec === 0;
+    check(before.walls > 0 && empty(now) && empty(later), `Start over erases plan and scan, also after reload (before ${JSON.stringify(before)}, after ${JSON.stringify(now)}, reloaded ${JSON.stringify(later)})`);
+  }
 } catch (e) {
   console.error(e);
   failures++;

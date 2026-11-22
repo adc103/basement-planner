@@ -301,9 +301,10 @@ export function mountDom(app: PlannerApp): void {
   };
 
   $('bp-new').onclick = () => {
-    if (!confirm('Delete this plan and start over? Export it first if you want to keep it.')) return;
-    app.loadPlan(createEmptyPlan());
-    msg('Started a new plan');
+    if (!confirm('Erase the plan, all walls, the scan and the scan recording? Export first if you want to keep them.')) return;
+    app.startOver(true);
+    renderRec();
+    msg('Started over: plan and scan erased');
   };
 
   function esc(t: string): string {

@@ -22,7 +22,7 @@ import {
 } from '@iwsdk/core';
 import { IDENTITY, type PlanTransform } from '../core/alignment.js';
 import { loadSavedPlan, savePlan } from '../core/persistence.js';
-import type { Plan } from '../core/plan.js';
+import { createEmptyPlan, type Plan } from '../core/plan.js';
 import { obstaclesFromScan, scanSignature, wallsFromScan, type P3, type ScanBox, type ScanPlane } from '../core/roomScan.js';
 import { defaultSnapOptions, primaryAxis, type SnapOptions } from '../core/snapping.js';
 import { PlanStore } from '../core/store.js';
@@ -443,7 +443,9 @@ export class PlannerApp {
         this.scan.clear();
         this.toast('Scan cleared');
       },
-      hasScanMap: () => this.scan.hasMap,
+      hasScanMap: () => this.scan.hasMap || this.scan.mesh.triangles > 0 || this.scan.recorder.count > 0,
+      startOver: () => this.startOver(),
+      startOverArmed: () => this.time - this.startOverAt < 4,
       autoImport: () => this.store.plan.settings.autoImportScan,
       toggleAutoImport: () =>
         this.act('settings.set', { values: { autoImportScan: !this.store.plan.settings.autoImportScan } }),
@@ -1817,6 +1819,24 @@ export class PlannerApp {
     this.world.launchXR(
       this.largeSpace ? undefined : { referenceSpace: { type: 'local-floor' as never, required: false, fallbackOrder: ['local' as never, 'viewer' as never] } },
     );
+  }
+
+  private startOverAt = -1e9;
+
+  /** Erase the plan, the scan, the room mesh and the recording. Takes two taps in the headset. */
+  startOver(confirmed = false): void {
+    if (!confirmed && this.time - this.startOverAt > 4) {
+      this.startOverAt = this.time;
+      this.toast('Tap Start over again to erase the plan, walls, scan and recording. Export first to keep them.', 4);
+      this.refreshUi();
+      return;
+    }
+    this.startOverAt = -1e9;
+    this.endReview();
+    this.scan.hide();
+    this.scan.clear();
+    this.loadPlan(createEmptyPlan());
+    this.toast('Started over: plan and scan erased');
   }
 
   loadPlan(plan: Plan): void {
