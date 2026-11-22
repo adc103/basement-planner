@@ -1,10 +1,14 @@
 name: Test and deploy to GitHub Pages
 
 # The site carries both apps: the current one (main) at the root and the
-# fresh start (branch "fresh") under /next/. A push to either rebuilds both.
+# fresh start (branch "fresh") under /next/. Deploys run from main (Pages only
+# accepts main): on a push to main, and after "Test fresh" passes on a push to fresh.
 on:
   push:
-    branches: [main, fresh]
+    branches: [main]
+  workflow_run:
+    workflows: ['Test fresh']
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -18,6 +22,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
