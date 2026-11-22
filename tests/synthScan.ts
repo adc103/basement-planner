@@ -1,3 +1,4 @@
+import type { DepthFrame } from '../src/core/scanIngest';
 import { FreeGrid } from '../src/core/freeSpace';
 import { ScanMap } from '../src/core/scanMap';
 
@@ -93,4 +94,61 @@ export function scanScene(scene: { boxes: Box[]; eyes: Array<[number, number]> }
     }
   }
   return { map, free };
+}
+
+/**
+ * A virtual headset: depth frames (80x60, ~90 degree view) looking around from
+ * each eye, built the way the real sampler builds them. Replaying them through
+ * ingestFrame exercises the same path as a live scan.
+ */
+export function depthFramesFor(scene: { boxes: Box[]; eyes: Array<[number, number]> }, opts: { yawStep?: number; pitches?: number[] } = {}): DepthFrame[] {
+  const W = 80;
+  const H = 60;
+  const IN = 0.0254;
+  const P0 = 1 / Math.tan((90 * Math.PI) / 360);
+  const P5 = 1 / Math.tan((72 * Math.PI) / 360);
+  const proj = new Float32Array(16);
+  proj[0] = P0;
+  proj[5] = P5;
+  proj[10] = -1;
+  proj[11] = -1;
+  proj[14] = -0.2;
+  let seed = 7;
+  const noise = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 0.01; // +-5 mm
+  const frames: DepthFrame[] = [];
+  let t = 0;
+  for (const [ex, ey] of scene.eyes) {
+    const eye = [ex * IN, 64 * IN, ey * IN]; // root meters: x, up, z
+    for (const pitchDeg of opts.pitches ?? [-30, 0, 25]) {
+      for (let yawDeg = 0; yawDeg < 360; yawDeg += opts.yawStep ?? 30) {
+        const a = (yawDeg * Math.PI) / 180;
+        const e = (pitchDeg * Math.PI) / 180;
+        const f = [Math.cos(e) * Math.cos(a), Math.sin(e), Math.cos(e) * Math.sin(a)];
+        const rl = Math.hypot(f[2], f[0]);
+        const r = [-f[2] / rl, 0, f[0] / rl];
+        const u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
+        const M = new Float32Array([r[0], r[1], r[2], 0, u[0], u[1], u[2], 0, -f[0], -f[1], -f[2], 0, eye[0], eye[1], eye[2], 1]);
+        const depthMM = new Uint16Array(W * H);
+        const o = [ex, ey, 64];
+        for (let j = 0; j < H; j++) {
+          for (let i = 0; i < W; i++) {
+            const vx = ((i + 0.5) / W * 2 - 1) / P0;
+            const vy = ((j + 0.5) / H * 2 - 1) / P5;
+            const dr = [r[0] * vx + u[0] * vy + f[0], r[1] * vx + u[1] * vy + f[1], r[2] * vx + u[2] * vy + f[2]];
+            const vl = Math.hypot(vx, vy, 1);
+            const dl = Math.hypot(dr[0], dr[1], dr[2]);
+            const d = [dr[0] / dl, dr[2] / dl, dr[1] / dl]; // plan: x, y, height
+            let hitT = Infinity;
+            for (const b of scene.boxes) hitT = Math.min(hitT, hit(o, d, b));
+            if (!(hitT < 1e5)) continue;
+            const planar = (hitT * IN) / vl + noise();
+            depthMM[j * W + i] = Math.max(0, Math.min(65535, Math.round(planar * 1000)));
+          }
+        }
+        const back = [eye[0] - f[0] * 0.3, eye[1] - 0.5, eye[2] - f[2] * 0.3] as [number, number, number];
+        frames.push({ t: (t += 0.25), w: W, h: H, depthMM, proj, viewToRoot: M, head: eye as [number, number, number], handL: back, handR: back });
+      }
+    }
+  }
+  return frames;
 }

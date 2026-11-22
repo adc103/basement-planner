@@ -62,6 +62,13 @@ export function mountDom(app: PlannerApp): void {
       <h2>This plan</h2>
       <div class="stats" id="bp-stats"></div>
     </div>
+    <div class="card" id="bp-rec-card" style="display:none">
+      <div class="head">
+        <h2>Scan recording</h2>
+        <div class="row"><button class="small" id="bp-rec">Save scan recording</button></div>
+      </div>
+      <p class="sub" id="bp-rec-info"></p>
+    </div>
     <div class="card" id="bp-plan-card">
       <div class="head">
         <h2 id="bp-plan-title">Floor plan</h2>
@@ -183,6 +190,29 @@ export function mountDom(app: PlannerApp): void {
   app.onSession((active) => {
     if (!active) renderProbe();
   });
+
+  // The depth frames of your scan, as a file that replays through the scanner.
+  const renderRec = () => {
+    const rec = app.scan?.recorder;
+    const n = rec?.count ?? 0;
+    $('bp-rec-card').style.display = n ? '' : 'none';
+    if (rec) $('bp-rec-info').textContent = `${n} depth frames (${Math.round(rec.seconds / 6) / 10} min of scanning). Stays on this headset unless you save it. Clear the scan in the Room tab to start over.`;
+  };
+  setTimeout(renderRec, 1500);
+  app.onSession((active) => {
+    if (!active) renderRec();
+  });
+  $('bp-rec').onclick = async () => {
+    const blob = await app.scan?.recorder.toFile();
+    if (!blob) return msg('Nothing recorded yet');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `basement-scan-${new Date().toISOString().slice(0, 16).replace(':', '')}.bpscan.gz`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  };
 
   $('bp-print').onclick = () => window.print();
   $('bp-svg').onclick = () => {

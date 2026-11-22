@@ -587,6 +587,8 @@ try {
       }
     });
     check(await clickButton(menu, 'btn:scan-depth'), 'Scan button stops the scan');
+    const rec = await page.evaluate(() => ({ n: window.basementPlanner.scan.recorder.count, depth: window.basementPlanner.scan.depthOk }));
+    check(rec.depth ? rec.n > 0 : rec.n === 0, `scan recording follows depth (${rec.n} frames, depth ${rec.depth ? 'on' : 'off in the emulator'})`);
     await page.waitForFunction(() => window.basementPlanner.scan.reviewing, null, { timeout: 15000 }).catch(() => {});
     const found = await page.evaluate(() => window.basementPlanner.scan.count());
     check(found >= 4, `scan finds the walls (${found} items)`);

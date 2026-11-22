@@ -11,6 +11,7 @@ import {
   PointsMaterial,
   Shape,
   ShapeGeometry,
+  Matrix4,
   Vector3,
   type Object3D,
   type World,
@@ -25,6 +26,8 @@ import type { PP } from '../core/wallDetect.js';
 import { DepthSampler } from './depthSampler.js';
 import { FreeGrid } from '../core/freeSpace.js';
 import { idbGet, idbSet } from './idb.js';
+import { ingestFrame, type DepthFrame } from '../core/scanIngest.js';
+import { ScanRecorder } from './scanRecorder.js';
 
 const STORE_KEY = 'scan-map:v1';
 const FREE_KEY = 'scan-free:v1';
@@ -66,9 +69,8 @@ export class ScanSession {
   private lastShown = -1;
   private lastShowT = 0;
   private tmp = new Vector3();
-  private head = new Vector3();
-  private handL = new Vector3();
-  private handR = new Vector3();
+  /** Every depth frame of the scan, kept so a real scan can be saved and replayed. */
+  readonly recorder = new ScanRecorder();
   private col = new Color();
   private loaded: Promise<void>;
 
@@ -94,6 +96,7 @@ export class ScanSession {
       idbGet<{ keys: Float64Array; counts: Uint8Array }>(FREE_KEY).then((f) => {
         if (f && f.keys?.length) this.free.load(f);
       }),
+      this.recorder.load(),
     ]).then(() => {});
     try {
       this.worker = new Worker(new URL('./scanWorker.ts', import.meta.url), { type: 'module' });
@@ -130,9 +133,11 @@ export class ScanSession {
     this.scanning = false;
     void idbSet(STORE_KEY, this.map.serialize());
     void idbSet(FREE_KEY, this.free.serialize());
+    void this.recorder.save();
   }
 
   clear(): void {
+    this.recorder.clear();
     this.map.clear();
     this.free.clear();
     void idbSet(FREE_KEY, this.free.serialize());
@@ -147,51 +152,12 @@ export class ScanSession {
     if (!this.scanning) return;
     if (time - this.lastSample >= SAMPLE_EVERY) {
       this.lastSample = time;
-      const root = this.root;
-      root.updateWorldMatrix(true, false);
-      const tmp = this.tmp;
-      const map = this.map;
-      // Your own body and arms are in view while scanning: drop points near them.
-      const pl = this.world.player;
-      const hd = pl.head.getWorldPosition(this.head);
-      const hl = pl.gripSpaces.left.getWorldPosition(this.handL);
-      const hr = pl.gripSpaces.right.getWorldPosition(this.handR);
-      const nearArm = (x: number, y: number, z: number, h: Vector3) => {
-        // Distance to the segment from the shoulders (just below the head) to the hand.
-        const sx = hd.x;
-        const sy = hd.y - 0.25;
-        const sz = hd.z;
-        const dx = h.x - sx;
-        const dy = h.y - sy;
-        const dz = h.z - sz;
-        const L2 = dx * dx + dy * dy + dz * dz || 1;
-        const t = Math.max(0, Math.min(1, ((x - sx) * dx + (y - sy) * dy + (z - sz) * dz) / L2));
-        const ex = x - (sx + dx * t);
-        const ey = y - (sy + dy * t);
-        const ez = z - (sz + dz * t);
-        return ex * ex + ey * ey + ez * ez < 0.22 * 0.22;
-      };
-      // The eye in plan inches, for carving free space along each ray.
-      const eye = root.worldToLocal(this.eyeP.copy(hd));
-      const ex = eye.x / INCH_M;
-      const ey = eye.z / INCH_M;
-      const ez = eye.y / INCH_M;
-      const free = this.free;
-      let k = 0;
-      const n = this.sampler.sample((x, y, z) => {
-        const bx = x - hd.x;
-        const bz = z - hd.z;
-        if (bx * bx + bz * bz < 0.45 * 0.45 && y < hd.y + 0.2) return; // torso and legs
-        if (nearArm(x, y, z, hl) || nearArm(x, y, z, hr)) return;
-        tmp.set(x, y, z);
-        root.worldToLocal(tmp);
-        const px = tmp.x / INCH_M;
-        const py = tmp.z / INCH_M;
-        const pz = tmp.y / INCH_M;
-        map.add(px, py, pz);
-        if ((k++ & 1) === 0) free.carve(ex, ey, ez, px, py, pz);
-      });
-      this.depthOk = n >= 0;
+      const f = this.captureFrame(time);
+      this.depthOk = !!f;
+      if (f) {
+        ingestFrame(f, this.map, this.free);
+        this.recorder.add(f);
+      }
     }
     if (time - this.lastShowT > 0.6) {
       this.lastShowT = time;
@@ -210,6 +176,37 @@ export class ScanSession {
       this.live = res;
       this.showGhosts(res, plan, true);
     });
+  }
+
+  private rootInv = new Matrix4();
+  private viewM = new Matrix4();
+  private scanT0 = -1;
+
+  /** This frame's depth as a DepthFrame in the plan root's frame. */
+  private captureFrame(time: number): DepthFrame | null {
+    const c = this.sampler.capture();
+    if (!c) return null;
+    const root = this.root;
+    root.updateWorldMatrix(true, false);
+    this.rootInv.copy(root.matrixWorld).invert();
+    this.viewM.fromArray(c.viewWorld).premultiply(this.rootInv);
+    const pl = this.world.player;
+    const local = (o: Object3D): [number, number, number] => {
+      const v = root.worldToLocal(o.getWorldPosition(this.tmp));
+      return [v.x, v.y, v.z];
+    };
+    if (this.scanT0 < 0) this.scanT0 = time;
+    return {
+      t: time - this.scanT0,
+      w: this.sampler.width,
+      h: this.sampler.height,
+      depthMM: c.depthMM,
+      proj: c.proj,
+      viewToRoot: new Float32Array(this.viewM.elements),
+      head: local(pl.head),
+      handL: local(pl.gripSpaces.left),
+      handR: local(pl.gripSpaces.right),
+    };
   }
 
   /** Plan and eye for live previews (set by the app while scanning). */

@@ -117,6 +117,21 @@ export class DepthSampler {
   }
 
   /**
+   * Read the current depth image with its view: depth in mm (row 0 = bottom),
+   * projection, and the view's world transform. Null when depth isn't ready.
+   */
+  capture(): { depthMM: Uint16Array; proj: Float32Array; viewWorld: Float32Array } | null {
+    const frame = this.world.xrFrame;
+    const ref = this.world.xrReferenceSpace;
+    if (!frame || !ref) return null;
+    const view = frame.getViewerPose(ref)?.views[0];
+    if (!view || !this.renderPass()) return null;
+    const depthMM = new Uint16Array(W * H);
+    for (let i = 0, k = 0; i < W * H; i++, k += 4) depthMM[i] = this.buf[k] * 256 + this.buf[k + 1];
+    return { depthMM, proj: new Float32Array(view.projectionMatrix), viewWorld: new Float32Array(view.transform.matrix) };
+  }
+
+  /**
    * Sample the current frame. Calls `emit(x, y, z)` with world-space points.
    * Returns the number of points, or -1 when depth isn't available.
    */
