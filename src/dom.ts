@@ -57,7 +57,7 @@ export function mountDom(app: PlannerApp): void {
   </style>
   <main>
     <h1>Basement Planner</h1>
-    <p class="sub">Lay out walls and doors in your real basement with Meta Quest.</p>
+    <p class="sub">Lay out walls and doors in your real basement with Meta Quest. <span style="opacity:.6">Version ${__APP_VERSION__}</span></p>
     <div class="row"><button class="primary" id="bp-enter">Enter AR</button>
       <label class="check"><input type="checkbox" id="bp-large" /> Large space (no Quest boundary, walk the whole basement)</label></div>
     <p class="msg" id="bp-msg"></p>
@@ -174,7 +174,7 @@ export function mountDom(app: PlannerApp): void {
     img.style.display = r.thumb ? '' : 'none';
     if (r.thumb) img.src = r.thumb;
     $('bp-probe-copy').onclick = () => {
-      const text = [`Camera test ${r!.at}`, r!.userAgent, ...r!.rows.map((x) => `${mark(x.ok)} ${x.name}: ${x.detail}`)].join('\n');
+      const text = [`Camera test ${r!.at} (app ${__APP_VERSION__})`, r!.userAgent, ...r!.rows.map((x) => `${mark(x.ok)} ${x.name}: ${x.detail}`)].join('\n');
       const fallback = () => {
         const ta = document.createElement('textarea');
         ta.value = text;
