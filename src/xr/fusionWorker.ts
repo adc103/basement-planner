@@ -14,7 +14,7 @@ import { idbGet, idbSet } from './idb.js';
 export type FusionIn =
   | { type: 'frame'; frame: DepthFrame }
   | { type: 'mesh' }
-  | { type: 'color'; photo: ColorPhoto }
+  | { type: 'color'; id: number; photo: ColorPhoto }
   | { type: 'clear' }
   | { type: 'save' }
   | { type: 'load' }
@@ -26,7 +26,9 @@ export type FusionOut =
   | { type: 'stats'; bricks: number; frames: number; integrateMs: number }
   /** The wall under a ray; `fit` is that wall measured (both faces, thickness) when found. */
   | { type: 'pick'; id: number; result: PickResult; fit: WallFit | null; ms: number }
-  | { type: 'opening'; id: number; opening: FoundOpening | null };
+  | { type: 'opening'; id: number; opening: FoundOpening | null }
+  /** Where photo `id` was kept as a texture (null: not worth keeping), and its color gains. */
+  | { type: 'photoSlot'; id: number; slot: number | null; gain: [number, number, number] };
 
 const KEY = 'scan-tsdf:v1';
 const vol = new TsdfVolume();
@@ -63,7 +65,8 @@ self.onmessage = async (e: MessageEvent<FusionIn>) => {
     integrateMs = integrateMs * 0.9 + (performance.now() - t0) * 0.1;
     post({ type: 'stats', bricks: vol.brickCount, frames: vol.frames, integrateMs });
   } else if (m.type === 'color') {
-    vol.colorize(m.photo);
+    vol.colorize(m.photo, 4.5, true);
+    post({ type: 'photoSlot', id: m.id, slot: vol.lastSlot, gain: vol.lastGain });
   } else if (m.type === 'mesh') {
     if (!vol.dirty.size) return;
     const t0 = performance.now();

@@ -385,6 +385,38 @@ process.stdout.write(JSON.stringify(fr.map((f) => ({ t: f.t, w: f.w, h: f.h, d: 
     check(r.dev !== null && r.dev < 0.3, `that wall now sits on the scanned surface (${r.dev?.toFixed(2)}" off)`);
   }
   {
+    // Color: a camera photo of the scanned wall is kept as a texture and drawn sharp on it.
+    const r = await page.evaluate(async () => {
+      const app = window.basementPlanner;
+      const m = app.scan.mesh;
+      const w = 640, h = 480;
+      const rgba = new Uint8Array(w * h * 4);
+      // Stripes 16 px wide: detail far finer than the 4 cm voxels.
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) rgba.set((x >> 4) & 1 ? [200, 40, 40, 255] : [40, 40, 200, 255], (y * w + x) * 4);
+      const camToRoot = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 30, 1.5, 30, 1]);
+      m.colorize({ rgba, w, h, camToRoot, fx: 320, fy: 320, cx: 320, cy: 240 });
+      await new Promise((res) => setTimeout(res, 1500));
+      m.send({ type: 'mesh' });
+      await new Promise((res) => setTimeout(res, 2500));
+      let textured = 0;
+      for (const [, piece] of m.chunks()) {
+        const a = piece.geometry.getAttribute('photo');
+        for (let i = 0; i < a.count; i++) if (a.getX(i) !== 255) textured++;
+      }
+      const kept = !!m.photoU.photoTex.value;
+      // Draw it in color mode for a few frames (shader compiles, no GL errors).
+      const api = app.menuApi();
+      while (api.roomMeshMode() !== 'color') api.cycleRoomMesh();
+      return { textured, kept };
+    });
+    await frames(10);
+    check(r.kept && r.textured > 500, `a photo of the scanned wall is kept as its texture (${r.textured} vertices textured)`);
+    await page.evaluate(() => {
+      const api = window.basementPlanner.menuApi();
+      while (api.roomMeshMode() !== 'mesh') api.cycleRoomMesh();
+    });
+  }
+  {
     const cyc = await page.evaluate(() => {
       const app = window.basementPlanner;
       const api = app.menuApi();

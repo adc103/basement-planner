@@ -1,7 +1,14 @@
 import {
   BufferAttribute,
   BufferGeometry,
+  DataArrayTexture,
   DoubleSide,
+  LinearFilter,
+  Matrix4,
+  RGBAFormat,
+  UnsignedByteType,
+  Vector3,
+  Vector4,
   LessEqualDepth,
   Group,
   Mesh,
@@ -9,7 +16,7 @@ import {
   type Object3D,
 } from '@iwsdk/core';
 import type { DepthFrame } from '../core/scanIngest.js';
-import { brickCoords, type BrickMesh, type ColorPhoto } from '../core/tsdf.js';
+import { brickCoords, NO_SLOT, PHOTO_SLOTS, type BrickMesh, type ColorPhoto } from '../core/tsdf.js';
 import { surfaceFromMeshes, type Surface } from '../core/fit.js';
 import type { FusionIn, FusionOut } from './fusionWorker.js';
 import type { WallFit } from '../core/fit.js';
@@ -44,6 +51,57 @@ function pushBack<M extends MeshBasicMaterial>(m: M): M {
   m.customProgramCacheKey = () => 'room-mesh-push-back';
   return m;
 }
+
+/** Photo size kept as textures (the camera photos the scan takes). */
+const PW = 640;
+const PH = 480;
+
+/**
+ * The scan in color, sharp: each triangle shows the photo that saw it best (picked per
+ * voxel in the fusion worker), projected onto it here per pixel. Triangles whose
+ * corners picked different photos, or none, keep the averaged vertex color.
+ */
+function photoTextured(m: MeshBasicMaterial, u: { photoTex: { value: DataArrayTexture | null }; photoView: { value: Matrix4[] }; photoK: { value: Vector4[] }; photoGain: { value: Vector3[] } }): MeshBasicMaterial {
+  const base = m.onBeforeCompile;
+  m.onBeforeCompile = (sh, r) => {
+    base.call(m, sh, r);
+    Object.assign(sh.uniforms, u);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float photo;\nvarying float vPhoto;\nvarying vec3 vRootPos;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvPhoto = photo;\nvRootPos = position;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        precision highp sampler2DArray;
+        uniform sampler2DArray photoTex;
+        uniform mat4 photoView[${PHOTO_SLOTS}];
+        uniform vec4 photoK[${PHOTO_SLOTS}];
+        uniform vec3 photoGain[${PHOTO_SLOTS}];
+        varying float vPhoto;
+        varying vec3 vRootPos;`,
+      )
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+        if (vPhoto < ${NO_SLOT - 0.5} && abs(vPhoto - floor(vPhoto + 0.5)) < 0.02) {
+          int si = int(vPhoto + 0.5);
+          vec4 c = photoView[si] * vec4(vRootPos, 1.0);
+          float z = -c.z;
+          if (z > 0.05) {
+            vec2 uv = vec2(photoK[si].z + photoK[si].x * c.x / z, photoK[si].w - photoK[si].y * c.y / z);
+            if (uv.x > 0.0 && uv.y > 0.0 && uv.x < 1.0 && uv.y < 1.0)
+              diffuseColor.rgb = min(texture(photoTex, vec3(uv, float(si))).rgb * photoGain[si], vec3(1.0));
+          }
+        }
+        // Photo pixels and vertex colors are sRGB bytes: to linear, as the renderer expects
+        // (else the output encoding brightens them a second time and they look washed out).
+        diffuseColor.rgb = sRGBTransferEOTF(vec4(diffuseColor.rgb, 1.0)).rgb;`,
+      );
+  };
+  m.customProgramCacheKey = () => 'room-mesh-photo-textured';
+  return m;
+}
 const MESH_EVERY = 1; // s between mesh updates while scanning
 /** Bricks per render chunk edge: 4 x 32 cm = one draw call per ~1.3 m cube. */
 const CHUNK = 4;
@@ -69,7 +127,17 @@ export class RoomMesh {
   private mat = pushBack(new MeshBasicMaterial({ color: 0x8fd0ff, transparent: true, opacity: 0.3, depthWrite: false, depthFunc: LessEqualDepth, side: DoubleSide }));
   private matDepth = pushBack(new MeshBasicMaterial({ colorWrite: false, depthWrite: true, side: DoubleSide }));
   /** Photo colors, solid: the room as the camera saw it. */
-  private matColor = pushBack(new MeshBasicMaterial({ vertexColors: true, side: DoubleSide }));
+  /** Photos kept as textures, and where each was taken (root -> camera, intrinsics / size). */
+  private photoU = {
+    photoTex: { value: null as DataArrayTexture | null },
+    photoView: { value: Array.from({ length: PHOTO_SLOTS }, () => new Matrix4()) },
+    photoK: { value: Array.from({ length: PHOTO_SLOTS }, () => new Vector4()) },
+    photoGain: { value: Array.from({ length: PHOTO_SLOTS }, () => new Vector3(1, 1, 1)) },
+  };
+  private matColor = photoTextured(pushBack(new MeshBasicMaterial({ vertexColors: true, side: DoubleSide })), this.photoU);
+  /** Photos sent to the worker, waiting to hear whether they're kept as textures. */
+  private pendingPhotos = new Map<number, ColorPhoto>();
+  private photoId = 0;
   /** Show photo colors instead of the see-through blue. */
   colored = false;
   /** Bricks painted by at least one photo. */
@@ -119,7 +187,32 @@ export class RoomMesh {
   colorize(photo: ColorPhoto): void {
     if (!this.worker) return;
     const rgba = photo.rgba.slice();
-    this.send({ type: 'color', photo: { ...photo, rgba, camToRoot: Array.from(photo.camToRoot) } }, [rgba.buffer]);
+    const id = ++this.photoId;
+    this.pendingPhotos.set(id, { ...photo, rgba: photo.rgba.slice() });
+    this.send({ type: 'color', id, photo: { ...photo, rgba, camToRoot: Array.from(photo.camToRoot) } }, [rgba.buffer]);
+  }
+
+  /** Keep a photo the worker chose as a texture: upload it to its slot. */
+  private keepPhoto(id: number, slot: number | null, gain: [number, number, number]): void {
+    const ph = this.pendingPhotos.get(id);
+    this.pendingPhotos.delete(id);
+    if (!ph || slot === null || ph.w !== PW || ph.h !== PH) return;
+    let tex = this.photoU.photoTex.value;
+    if (!tex) {
+      tex = new DataArrayTexture(new Uint8Array(PW * PH * 4 * PHOTO_SLOTS), PW, PH, PHOTO_SLOTS);
+      tex.format = RGBAFormat;
+      tex.type = UnsignedByteType;
+      tex.minFilter = LinearFilter;
+      tex.magFilter = LinearFilter;
+      tex.generateMipmaps = false;
+      this.photoU.photoTex.value = tex;
+    }
+    (tex.image.data as Uint8Array).set(ph.rgba, slot * PW * PH * 4);
+    tex.addLayerUpdate(slot);
+    tex.needsUpdate = true;
+    this.photoU.photoView.value[slot].fromArray(Array.from(ph.camToRoot)).invert();
+    this.photoU.photoK.value[slot].set(ph.fx / PW, ph.fy / PH, ph.cx / PW, ph.cy / PH);
+    this.photoU.photoGain.value[slot].set(gain[0], gain[1], gain[2]);
   }
 
   setColored(on: boolean): void {
@@ -218,6 +311,10 @@ export class RoomMesh {
   }
 
   private onMessage(m: FusionOut): void {
+    if (m.type === 'photoSlot') {
+      this.keepPhoto(m.id, m.slot, m.gain);
+      return;
+    }
     if (m.type === 'opening') {
       this.openings.get(m.id)?.(m.opening);
       this.openings.delete(m.id);
@@ -296,6 +393,7 @@ export class RoomMesh {
     const nrm = new Float32Array(nv);
     // Vertex colors: grey where no photo has reached yet.
     const col = new Uint8Array(nv).fill(110);
+    const pho = new Uint8Array(nv / 3).fill(NO_SLOT);
     const idx = new Uint32Array(ni);
     let ov = 0;
     let oi = 0;
@@ -304,6 +402,7 @@ export class RoomMesh {
       pos.set(b.positions, ov);
       nrm.set(b.normals, ov);
       if (b.colors.length === b.positions.length) col.set(b.colors, ov);
+      if (b.photos.length * 3 === b.positions.length) pho.set(b.photos, ov / 3);
       const base = ov / 3;
       for (let i = 0; i < b.indices.length; i++) idx[oi + i] = b.indices[i] + base;
       ov += b.positions.length;
@@ -313,6 +412,7 @@ export class RoomMesh {
     g.setAttribute('position', new BufferAttribute(pos, 3));
     g.setAttribute('normal', new BufferAttribute(nrm, 3));
     g.setAttribute('color', new BufferAttribute(col, 3, true));
+    g.setAttribute('photo', new BufferAttribute(pho, 1));
     g.setIndex(new BufferAttribute(idx, 1));
     g.computeBoundingSphere();
     if (old) {

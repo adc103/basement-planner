@@ -132,6 +132,38 @@ describe('mesh coloring from photos', () => {
   });
 });
 
+describe('photos kept as textures', () => {
+  it('keeps a photo where it is the best view, not a repeat, and not one that disagrees', { timeout: 60_000 }, () => {
+    const scene = basementScene();
+    const frames = depthFramesFor(scene);
+    const vol = new TsdfVolume();
+    for (const f of frames) vol.integrate(f);
+    vol.meshDirty();
+    const w = 160;
+    const h = 120;
+    const shot = (f: (typeof frames)[number], color: [number, number, number]) => {
+      const rgba = new Uint8Array(w * h * 4);
+      for (let i = 0; i < w * h; i++) rgba.set([...color, 255], i * 4);
+      return { rgba, w, h, camToRoot: f.viewToRoot, fx: (f.proj[0] * w) / 2, fy: (f.proj[5] * h) / 2, cx: w / 2, cy: h / 2 };
+    };
+    const f = frames[Math.floor(frames.length / 2)];
+    vol.colorize(shot(f, [180, 160, 140]), 4.5, true);
+    expect(vol.lastSlot).toBe(0);
+    const meshes = vol.meshDirty();
+    const textured = meshes.reduce((n, m) => n + m.photos.filter((p) => p === 0).length, 0);
+    expect(textured).toBeGreaterThan(100);
+    // The same view again adds nothing better: not kept.
+    vol.colorize(shot(f, [180, 160, 140]), 4.5, true);
+    expect(vol.lastSlot).toBeNull();
+    // From a neighbouring view, a photo whose colors disagree with what was seen there
+    // (looking at something else) isn't used.
+    const g = frames[Math.floor(frames.length / 2) + 1];
+    vol.colorize(shot(g, [180, 160, 140]), 4.5, true);
+    vol.colorize(shot(g, [20, 200, 30]), 4.5, true);
+    expect(vol.lastSlot).toBeNull();
+  });
+});
+
 describe('saved colors', () => {
   it('keeps photo colors through save and load', () => {
     const vol = new TsdfVolume();

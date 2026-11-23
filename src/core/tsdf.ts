@@ -41,7 +41,14 @@ interface Brick {
   /** Color per voxel (rgb) and how many photos it averages, once a photo has reached it. */
   c?: Uint8Array;
   cw?: Uint8Array;
+  /** Texture: per voxel, the photo slot that sees it best (NO_SLOT: none) and how well (1-255). */
+  ps?: Uint8Array;
+  pq?: Uint8Array;
 }
+
+/** Photos kept as textures for the mesh (slots), and "no photo". */
+export const PHOTO_SLOTS = 32;
+export const NO_SLOT = 255;
 
 /** A camera photo placed in the room: for coloring the mesh. */
 export interface ColorPhoto {
@@ -66,6 +73,8 @@ export interface BrickMesh {
   indices: Uint32Array;
   /** rgb per vertex (0-255), empty when no photo has colored this brick yet. */
   colors: Uint8Array;
+  /** Photo slot per vertex to texture it from (NO_SLOT: none); empty when no photo has. */
+  photos: Uint8Array;
 }
 
 const key = (bx: number, by: number, bz: number) => ((bx + OFF) * 2048 + (by + OFF)) * 2048 + (bz + OFF);
@@ -95,6 +104,21 @@ export class TsdfVolume {
     this.bricks.clear();
     this.dirty.clear();
     this.frames = 0;
+    this.slotUse.fill(0);
+  }
+
+  /** Voxels each photo slot is the best view of. */
+  private slotUse = new Int32Array(PHOTO_SLOTS);
+
+  /** Signed distance at a global voxel, or NaN where nothing is known. */
+  private sdf(gx: number, gy: number, gz: number): number {
+    const kx = Math.floor(gx / BRICK);
+    const ky = Math.floor(gy / BRICK);
+    const kz = Math.floor(gz / BRICK);
+    const b = this.bricks.get(key(kx, ky, kz));
+    if (!b) return NaN;
+    const vi = ((gz - kz * BRICK) * BRICK + (gy - ky * BRICK)) * BRICK + (gx - kx * BRICK);
+    return b.w[vi] ? b.d[vi] : NaN;
   }
 
   private brick(k: number, create: boolean): Brick | undefined {
@@ -203,7 +227,18 @@ export class TsdfVolume {
    * keeps only the nearest surface at each pixel. Colors average over photos.
    * Returns the number of bricks colored (they are marked for re-meshing).
    */
-  colorize(ph: ColorPhoto, maxDist = 4.5): number {
+  /** The slot the last colorize() put its photo in (to upload as a texture), or null. */
+  lastSlot: number | null = null;
+  /**
+   * RGB gains for that photo: the camera's exposure and white balance change from shot to
+   * shot, so a wall looks warm in one photo and cool in the next. Scaling each photo to
+   * the colors all photos agree on keeps neighbouring triangles from different photos
+   * the same color (a simple form of Waechter et al.'s seam leveling).
+   */
+  lastGain: [number, number, number] = [1, 1, 1];
+
+  colorize(ph: ColorPhoto, maxDist = 4.5, texture = false): number {
+    this.lastSlot = null;
     const { voxel: vs, minWeight } = this.o;
     const M = ph.camToRoot;
     const tx = M[12], ty = M[13], tz = M[14];
@@ -246,8 +281,10 @@ export class TsdfVolume {
       }
     }
     const colored = new Set<number>();
+    const seen: typeof hits = [];
     for (const h of hits) {
       if (h.z > zb[(h.v >> 2) * ZW + (h.u >> 2)] + 0.06) continue; // behind something nearer
+      seen.push(h);
       const b = h.b;
       if (!b.c) {
         b.c = new Uint8Array(B3 * 3);
@@ -260,8 +297,111 @@ export class TsdfVolume {
       if (n < 20) b.cw![h.vi] = n + 1;
       colored.add(h.k);
     }
+    if (texture) this.placePhoto(ph, seen, colored);
     for (const k of colored) this.dirty.add(k);
     return colored.size;
+  }
+
+  /**
+   * Keep the photo as a texture where it is the best view yet: seen square-on, close,
+   * near the middle of the picture (Waechter et al.'s view selection, per voxel). It
+   * takes a free slot, or the one that is best for the fewest voxels, if it improves
+   * more than that one holds.
+   */
+  private placePhoto(ph: ColorPhoto, seen: Array<{ b: Brick; k: number; vi: number; u: number; v: number; z: number }>, colored: Set<number>): void {
+    const M = ph.camToRoot;
+    const vs = this.o.voxel;
+    const better: Array<{ b: Brick; k: number; vi: number; q: number }> = [];
+    const sumP = [0, 0, 0];
+    const sumA = [0, 0, 0];
+    const rx = ph.w / 2;
+    const ry = ph.h / 2;
+    for (const h of seen) {
+      const [bx, by, bz] = brickCoords(h.k);
+      const x = h.vi % BRICK;
+      const y = Math.floor(h.vi / BRICK) % BRICK;
+      const zz = Math.floor(h.vi / (BRICK * BRICK));
+      const gx = bx * BRICK + x;
+      const gy = by * BRICK + y;
+      const gz = bz * BRICK + zz;
+      // Surface normal (toward free space) from the distance field around the voxel.
+      const nx = this.sdf(gx + 1, gy, gz) - this.sdf(gx - 1, gy, gz);
+      const ny = this.sdf(gx, gy + 1, gz) - this.sdf(gx, gy - 1, gz);
+      const nz = this.sdf(gx, gy, gz + 1) - this.sdf(gx, gy, gz - 1);
+      const nl = Math.hypot(nx, ny, nz);
+      if (!(nl > 1e-6)) continue;
+      // Toward the camera.
+      const px = (gx + 0.5) * vs;
+      const py = (gy + 0.5) * vs;
+      const pz = (gz + 0.5) * vs;
+      const dx = M[12] - px;
+      const dy = M[13] - py;
+      const dz = M[14] - pz;
+      const dl = Math.hypot(dx, dy, dz);
+      const cos = (nx * dx + ny * dy + nz * dz) / (nl * dl);
+      if (cos < 0.3) continue;
+      const r2 = ((h.u - ph.cx) / rx) ** 2 + ((h.v - ph.cy) / ry) ** 2;
+      const score = cos * cos * Math.min(1, 1.2 / h.z) * Math.max(0.2, 1 - 0.4 * r2);
+      const q = Math.max(1, Math.min(255, Math.round(score * 255)));
+      const b = h.b;
+      // Photo-consistency: where this photo disagrees with what the other photos saw there
+      // (averaged), it's likely looking at something else (an edge in front, a misplaced
+      // frame from fast head motion): don't texture from it.
+      if (b.c && b.cw && b.cw[h.vi] >= 2) {
+        const pp = ((h.v | 0) * ph.w + (h.u | 0)) * 4;
+        const o = h.vi * 3;
+        const diff = Math.abs(ph.rgba[pp] - b.c[o]) + Math.abs(ph.rgba[pp + 1] - b.c[o + 1]) + Math.abs(ph.rgba[pp + 2] - b.c[o + 2]);
+        if (diff > 75) continue;
+        for (let ch = 0; ch < 3; ch++) {
+          sumP[ch] += ph.rgba[pp + ch];
+          sumA[ch] += b.c[o + ch];
+        }
+      }
+      const cur = b.pq ? b.pq[h.vi] : 0;
+      if (q > cur * 1.1 + 3) better.push({ b, k: h.k, vi: h.vi, q });
+    }
+    if (better.length < 150) return;
+    let slot = -1;
+    let least = Infinity;
+    for (let i = 0; i < PHOTO_SLOTS; i++) {
+      if (this.slotUse[i] < least) {
+        least = this.slotUse[i];
+        slot = i;
+      }
+    }
+    if (least >= better.length) return; // every slot is worth more than this photo would add
+    if (least > 0) {
+      // Free the slot: its voxels fall back to their averaged color until a photo covers them.
+      for (const [k, b] of this.bricks) {
+        if (!b.ps) continue;
+        let hit = false;
+        for (let vi = 0; vi < B3; vi++) {
+          if (b.ps[vi] !== slot) continue;
+          b.ps[vi] = NO_SLOT;
+          b.pq![vi] = 0;
+          hit = true;
+        }
+        if (hit) this.dirty.add(k);
+      }
+      this.slotUse[slot] = 0;
+    }
+    for (const t of better) {
+      const b = t.b;
+      if (!b.ps) {
+        b.ps = new Uint8Array(B3).fill(NO_SLOT);
+        b.pq = new Uint8Array(B3);
+      }
+      const old = b.ps[t.vi];
+      if (old !== NO_SLOT) this.slotUse[old]--;
+      b.ps[t.vi] = slot;
+      b.pq![t.vi] = t.q;
+      this.slotUse[slot]++;
+      colored.add(t.k);
+      this.dirty.add(t.k);
+    }
+    this.lastSlot = slot;
+    const g = [0, 1, 2].map((ch) => (sumP[ch] > 1000 ? Math.max(0.6, Math.min(1.6, sumA[ch] / sumP[ch])) : 1));
+    this.lastGain = [g[0], g[1], g[2]];
   }
 
   /** Signed distance (fraction of trunc) and weight at a global voxel. */
@@ -302,7 +442,10 @@ export class TsdfVolume {
     const Wt = new Uint8Array(N * N * N);
     const Cc = new Uint8Array(N * N * N * 3);
     const Cw = new Uint8Array(N * N * N);
+    const Ps = new Uint8Array(N * N * N).fill(NO_SLOT);
+    const Pq = new Uint8Array(N * N * N);
     let anyColor = false;
+    let anyPhoto = false;
     const li = (x: number, y: number, z: number) => ((z + 1) * N + (y + 1)) * N + (x + 1);
     // Gather this brick and its neighbours' edge voxels.
     const nb = new Map<number, Brick | undefined>();
@@ -333,6 +476,11 @@ export class TsdfVolume {
             Cc[l * 3 + 2] = b.c![vi * 3 + 2];
             anyColor = true;
           }
+          if (b.ps && b.ps[vi] !== NO_SLOT) {
+            Ps[l] = b.ps[vi];
+            Pq[l] = b.pq![vi];
+            anyPhoto = true;
+          }
         }
       }
     }
@@ -344,6 +492,7 @@ export class TsdfVolume {
     const pos: number[] = [];
     const nrm: number[] = [];
     const col: number[] = [];
+    const pho: number[] = [];
     const corner = new Float32Array(8);
     for (let z = -1; z < BRICK; z++) {
       for (let y = -1; y < BRICK; y++) {
@@ -404,6 +553,19 @@ export class TsdfVolume {
             if (cn) col.push(Math.round(r / cn), Math.round(g / cn), Math.round(bl / cn));
             else col.push(128, 128, 128);
           }
+          if (anyPhoto) {
+            // The photo that sees this cell's corners best.
+            let bestQ = 0;
+            let bestS = NO_SLOT;
+            for (let c = 0; c < 8; c++) {
+              const l = li(x + (c & 1), y + ((c >> 1) & 1), z + ((c >> 2) & 1));
+              if (Ps[l] !== NO_SLOT && Pq[l] > bestQ) {
+                bestQ = Pq[l];
+                bestS = Ps[l];
+              }
+            }
+            pho.push(bestS);
+          }
         }
       }
     }
@@ -439,7 +601,7 @@ export class TsdfVolume {
         }
       }
     }
-    return { key: k, positions: new Float32Array(pos), normals: new Float32Array(nrm), indices: new Uint32Array(idx), colors: new Uint8Array(col) };
+    return { key: k, positions: new Float32Array(pos), normals: new Float32Array(nrm), indices: new Uint32Array(idx), colors: new Uint8Array(col), photos: new Uint8Array(pho) };
   }
 
   // --- Saving -------------------------------------------------------------------
