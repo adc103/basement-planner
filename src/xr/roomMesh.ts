@@ -220,12 +220,16 @@ export class RoomMesh {
   }
 
   /** Paint the mesh from a camera photo (copied pixels go to the fusion worker). */
-  colorize(photo: ColorPhoto): void {
-    if (!this.worker) return;
+  /** Called with each photo's camera once the worker has lined it up with the scan. */
+  onPhotoPlaced: ((id: number, camToRoot: number[]) => void) | null = null;
+
+  colorize(photo: ColorPhoto): number {
+    if (!this.worker) return 0;
     const rgba = photo.rgba.slice();
     const id = ++this.photoId;
     this.pendingPhotos.set(id, { ...photo, rgba: photo.rgba.slice() });
     this.send({ type: 'color', id, photo: { ...photo, rgba, camToRoot: Array.from(photo.camToRoot) } }, [rgba.buffer]);
+    return id;
   }
 
   /** Keep a photo the worker chose as a texture: upload it to its slot. */
@@ -277,6 +281,26 @@ export class RoomMesh {
   /** The rendered chunks (for drawing the mesh elsewhere, e.g. through a wall). */
   chunks(): IterableIterator<[string, Mesh]> {
     return this.pieces.entries();
+  }
+
+  /** The scan's colored points (meters, root frame), at most `max` of them: splat training starts from these. */
+  seedPoints(max = 200_000): { pos: Float32Array; rgb: Uint8Array } {
+    let n = 0;
+    for (const b of this.bricksMesh.values()) n += b.positions.length / 3;
+    const step = Math.max(1, Math.ceil(n / max));
+    const pos: number[] = [];
+    const rgb: number[] = [];
+    let i = 0;
+    for (const b of this.bricksMesh.values()) {
+      const has = b.colors.length === b.positions.length;
+      for (let v = 0; v < b.positions.length / 3; v++, i++) {
+        if (i % step) continue;
+        pos.push(b.positions[v * 3], b.positions[v * 3 + 1], b.positions[v * 3 + 2]);
+        if (has) rgb.push(b.colors[v * 3], b.colors[v * 3 + 1], b.colors[v * 3 + 2]);
+        else rgb.push(128, 128, 128);
+      }
+    }
+    return { pos: Float32Array.from(pos), rgb: Uint8Array.from(rgb) };
   }
 
   /** Mesh vertices and normals in plan inches, for fitting and checking walls. */
@@ -353,6 +377,7 @@ export class RoomMesh {
   private onMessage(m: FusionOut): void {
     if (m.type === 'photoSlot') {
       this.keepPhoto(m.id, m.slot, m.gain, m.camToRoot);
+      this.onPhotoPlaced?.(m.id, m.camToRoot);
       if (m.aligned !== null) this.photosAligned++;
       return;
     }

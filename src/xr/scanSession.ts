@@ -1,6 +1,7 @@
 import { Matrix4, Vector3, type Object3D, type World } from '@iwsdk/core';
 import { lensCamera } from '../core/camCalib.js';
 import { poseAt } from '../core/poseTrack.js';
+import { splatDataset, zipStore, type TrainingView } from '../core/splatDataset.js';
 import type { DepthFrame } from '../core/scanIngest.js';
 import { DepthSampler } from './depthSampler.js';
 import { RoomMesh } from './roomMesh.js';
@@ -21,6 +22,8 @@ const MAX_TURN = 45; // degrees per second
  */
 export class ScanSession {
   scanning = false;
+  /** This session's photos as splat-training views (sharp ones only), by colorize id. */
+  readonly views = new Map<number, TrainingView>();
   /** Whether the last depth frame came through (null before the first). */
   depthOk: boolean | null = null;
   readonly sampler: DepthSampler;
@@ -41,6 +44,10 @@ export class ScanSession {
   ) {
     this.sampler = new DepthSampler(world);
     this.mesh = new RoomMesh(root);
+    this.mesh.onPhotoPlaced = (id, camToRoot) => {
+      const v = this.views.get(id);
+      if (v) v.camToRoot = camToRoot;
+    };
     this.photos = new ScanPhotos(world);
     this.loaded = this.recorder.load();
   }
@@ -65,6 +72,14 @@ export class ScanSession {
   clear(): void {
     this.recorder.clear();
     this.mesh.clear();
+    this.views.clear();
+  }
+
+  /** This scan as a splat training set (zip), or null with no photos yet. */
+  splatData(): Uint8Array | null {
+    const views = [...this.views.values()];
+    if (views.length < 8) return null;
+    return zipStore(splatDataset(views, this.mesh.seedPoints()));
   }
 
   /** One depth frame into the room mesh and the recording. */
@@ -130,7 +145,10 @@ export class ScanSession {
       const at = poseAt(track, tc);
       if (at && at.turnDegPerS > MAX_TURN) return;
       const view = at ? at.m : pose.viewToRoot;
-      this.mesh.colorize({ rgba: r.rgba, w: 640, h: 480, ...lensCamera(lens, view, 640, 480) });
+      const cam = lensCamera(lens, view, 640, 480);
+      const id = this.mesh.colorize({ rgba: r.rgba, w: 640, h: 480, ...cam });
+      // Kept for splat training, with the camera as the worker lines it up.
+      if (id) this.views.set(id, { jpeg: r.jpeg, w: 640, h: 480, camToRoot: Array.from(cam.camToRoot), fx: cam.fx, fy: cam.fy, cx: cam.cx, cy: cam.cy });
     });
   }
 

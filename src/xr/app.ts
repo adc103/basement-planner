@@ -47,6 +47,7 @@ import { OpeningTool } from './tools/openingTool.js';
 import type { AimHit, Tool, ToolContext } from './tools/tool.js';
 import { TraceTool } from './tools/traceTool.js';
 import { VirtualHoles } from './holes.js';
+import { SplatView } from './splatView.js';
 import type { SetupPlane } from '../core/pickWall.js';
 import { WallTool } from './tools/wallTool.js';
 import { MainMenu, MENU_H, type MenuApi, type ToolName } from './ui/mainMenu.js';
@@ -114,6 +115,8 @@ export class PlannerApp {
   private snapEnabled = true;
   /** Planned openings in real walls and removed walls, seen through to the scanned room behind. */
   private holes!: VirtualHoles;
+  /** A Gaussian splat of the room (trained from the scan, or loaded), shown over it. */
+  splat!: SplatView;
   private lastRemoved: string[] = [];
   /** Door tool: measure real doorways on the scan (else place the chosen size). */
   private measureDoors = true;
@@ -188,6 +191,8 @@ export class PlannerApp {
     this.refAnchors = new RefAnchors(world);
     this.scan = new ScanSession(world, this.view.root);
     this.holes = new VirtualHoles(this.view.root, this.scan.mesh);
+    this.splat = new SplatView(this.view.root, world.scene, world.renderer);
+    void this.splat.restore();
     // Virtual holes clip the scan to what lies beyond a wall.
     world.renderer.localClippingEnabled = true;
 
@@ -369,11 +374,20 @@ export class PlannerApp {
         this.act('settings.set', { values: { realWalls: next } });
         this.toast(next === 'shown' ? 'Real walls shown' : next === 'outline' ? 'Real walls as outlines' : 'Real walls hidden (still used for snapping)', 3);
       },
-      roomMeshMode: () => (!this.scan.mesh.shown ? 'off' : this.scan.mesh.colored ? 'color' : 'mesh'),
-      // Mesh button cycles: see-through blue -> photo colors -> hidden.
+      roomMeshMode: () => (this.splat.shown ? 'splat' : !this.scan.mesh.shown ? 'off' : this.scan.mesh.colored ? 'color' : 'mesh'),
+      // Mesh button cycles: see-through blue -> photo colors -> (splat, when there is one) -> hidden.
       cycleRoomMesh: () => {
         const m = this.scan.mesh;
-        if (m.shown && !m.colored) {
+        if (this.splat.shown) {
+          void this.splat.setShown(false);
+          m.setColored(false);
+          m.setShown(false);
+          this.toast('Room scan hidden (still shows while scanning)', 3);
+        } else if (m.shown && m.colored && this.splat.available) {
+          m.setShown(false);
+          void this.splat.setShown(true);
+          this.toast(`Splat: ${this.splat.name}`, 3);
+        } else if (m.shown && !m.colored) {
           m.setColored(true);
           this.toast(this.scan.photos.lens ? 'Room mesh in color, painted from camera photos while you scan' : 'Color needs the browser\'s experimental WebXR flags for the camera calibration', 5);
         } else if (m.shown) {

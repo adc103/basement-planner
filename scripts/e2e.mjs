@@ -466,6 +466,35 @@ process.stdout.write(JSON.stringify(fr.map((f) => ({ t: f.t, w: f.w, h: f.h, d: 
     check(cyc === 'mesh > color > off > mesh', `Mesh button cycles see-through, color, hidden (${cyc})`);
   }
 
+  {
+    // A splat of the room: loaded, the Mesh button shows it over the room (Spark).
+    const r = await page.evaluate(async () => {
+      const app = window.basementPlanner;
+      // A tiny 3D Gaussian splat PLY (two splats).
+      const props = ['x', 'y', 'z', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'scale_0', 'scale_1', 'scale_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3'];
+      const head = new TextEncoder().encode(`ply\nformat binary_little_endian 1.0\nelement vertex 2\n${props.map((q) => `property float ${q}`).join('\n')}\nend_header\n`);
+      const body = new Float32Array([0, 1.5, -2, 1, 0, 0, 2, -3, -3, -3, 1, 0, 0, 0, 0.2, 1.5, -2, 0, 1, 0, 2, -3, -3, -3, 1, 0, 0, 0]);
+      const bytes = new Uint8Array(head.length + body.byteLength);
+      bytes.set(head);
+      bytes.set(new Uint8Array(body.buffer), head.length);
+      await app.splat.save('test.ply', bytes.buffer);
+      const api = app.menuApi();
+      const seen = [];
+      for (let i = 0; i < 5; i++) {
+        api.cycleRoomMesh();
+        seen.push(api.roomMeshMode());
+      }
+      await new Promise((res) => setTimeout(res, 3000));
+      while (api.roomMeshMode() !== 'splat') api.cycleRoomMesh();
+      await new Promise((res) => setTimeout(res, 3000));
+      const shown = !!app.splat.mesh && app.splat.mesh.visible;
+      while (api.roomMeshMode() !== 'mesh') api.cycleRoomMesh();
+      return { seen: seen.join(' > '), shown };
+    });
+    await frames(4);
+    check(r.seen.includes('splat') && r.shown, `a loaded splat shows from the Mesh button (${r.seen}; shown ${r.shown})`);
+  }
+
   // --- Measure and Tape says ------------------------------------------------------------
   {
     const r = await page.evaluate(() => {

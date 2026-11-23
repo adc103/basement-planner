@@ -21,6 +21,7 @@
     "@pmndrs/uikit": "^1.0.74",
     "@pmndrs/uikit-horizon": "^1.0.74",
     "@pmndrs/uikit-lucide": "^1.0.74",
+    "@sparkjsdev/spark": "^2.4.0",
     "1eurofilter": "^1.3.0",
     "immer": "^11.2.10",
     "three": "npm:super-three@0.185.0",

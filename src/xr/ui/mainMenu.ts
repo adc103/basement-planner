@@ -62,7 +62,7 @@ export interface MenuApi {
   // view
   realWalls(): 'shown' | 'outline' | 'hidden';
   cycleRealWalls(): void;
-  roomMeshMode(): 'off' | 'mesh' | 'color';
+  roomMeshMode(): 'off' | 'mesh' | 'color' | 'splat';
   cycleRoomMesh(): void;
   labels(): boolean;
   toggleLabels(): void;

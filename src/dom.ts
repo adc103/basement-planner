@@ -69,6 +69,17 @@ export function mountDom(app: PlannerApp): void {
       </div>
       <p class="sub" id="bp-rec-info"></p>
     </div>
+    <div class="card" id="bp-splat-card">
+      <div class="head">
+        <h2>Photoreal splat</h2>
+        <div class="row">
+          <button class="small" id="bp-splat-data">Save splat training set (.zip)</button>
+          <button class="small" id="bp-splat-load">Load splat (.ply / .spz)</button>
+          <input type="file" id="bp-splat-file" accept=".ply,.spz,.splat,.ksplat,.sog" style="display:none" />
+        </div>
+      </div>
+      <p class="sub" id="bp-splat-info"></p>
+    </div>
     <div class="card" id="bp-plan-card">
       <div class="head">
         <h2 id="bp-plan-title">Floor plan</h2>
@@ -163,6 +174,34 @@ export function mountDom(app: PlannerApp): void {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  };
+
+  // Splats: the scan as a training set (photos lined up with the scan, its points to
+  // start from), and loading a trained splat back to show over the room.
+  const renderSplat = () => {
+    const n = app.scan?.views.size ?? 0;
+    const name = app.splat?.name;
+    $('bp-splat-info').textContent =
+      `${n} sharp photos from this session's scan${n < 8 ? ' (scan more to make a training set)' : ''}. ` +
+      (name ? `Splat on this headset: ${name}. In the headset, the Mesh button shows it over the room.` : 'No splat loaded yet. Train one from the zip (in Brush, in this browser), then load the .ply here.');
+    ($('bp-splat-data') as HTMLButtonElement).disabled = n < 8;
+  };
+  setTimeout(renderSplat, 1600);
+  app.onSession((active) => {
+    if (!active) renderSplat();
+  });
+  $('bp-splat-data').onclick = () => {
+    const zip = app.scan?.splatData();
+    if (!zip) return msg('Scan the room with color on first (8 or more photos)');
+    download(zip as unknown as BlobPart, 'application/zip', 'splat-data.zip');
+  };
+  $('bp-splat-load').onclick = () => ($('bp-splat-file') as HTMLInputElement).click();
+  ($('bp-splat-file') as HTMLInputElement).onchange = async (e) => {
+    const f = (e.target as HTMLInputElement).files?.[0];
+    if (!f) return;
+    await app.splat?.save(f.name, await f.arrayBuffer());
+    msg(`Loaded ${f.name}: in the headset, the Mesh button shows it over the room`);
+    renderSplat();
   };
 
   const download = (data: BlobPart, type: string, ext: string) => {
