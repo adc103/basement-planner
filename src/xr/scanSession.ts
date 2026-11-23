@@ -82,6 +82,13 @@ export class ScanSession {
     return zipStore(splatDataset(views, this.mesh.seedPoints()));
   }
 
+  /** What on-device splat training starts from: the sharp photos and the colored surface. */
+  splatInput(): { views: TrainingView[]; seed: { pos: Float32Array; rgb: Uint8Array; normals: Float32Array } } | null {
+    const views = [...this.views.values()];
+    if (views.length < 8) return null;
+    return { views, seed: this.mesh.seedPoints(150_000, true) };
+  }
+
   /** One depth frame into the room mesh and the recording. */
   ingest(f: DepthFrame): void {
     this.mesh.push(f);

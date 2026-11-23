@@ -284,23 +284,27 @@ export class RoomMesh {
   }
 
   /** The scan's colored points (meters, root frame), at most `max` of them: splat training starts from these. */
-  seedPoints(max = 200_000): { pos: Float32Array; rgb: Uint8Array } {
+  seedPoints(max = 200_000, coloredOnly = false): { pos: Float32Array; rgb: Uint8Array; normals: Float32Array } {
     let n = 0;
-    for (const b of this.bricksMesh.values()) n += b.positions.length / 3;
+    for (const b of this.bricksMesh.values()) if (!coloredOnly || b.colors.length) n += b.positions.length / 3;
     const step = Math.max(1, Math.ceil(n / max));
     const pos: number[] = [];
     const rgb: number[] = [];
+    const nrm: number[] = [];
     let i = 0;
     for (const b of this.bricksMesh.values()) {
       const has = b.colors.length === b.positions.length;
+      // Points no photo has colored can't be trained, only get in the way.
+      if (coloredOnly && !has) continue;
       for (let v = 0; v < b.positions.length / 3; v++, i++) {
         if (i % step) continue;
         pos.push(b.positions[v * 3], b.positions[v * 3 + 1], b.positions[v * 3 + 2]);
+        nrm.push(b.normals[v * 3], b.normals[v * 3 + 1], b.normals[v * 3 + 2]);
         if (has) rgb.push(b.colors[v * 3], b.colors[v * 3 + 1], b.colors[v * 3 + 2]);
         else rgb.push(128, 128, 128);
       }
     }
-    return { pos: Float32Array.from(pos), rgb: Uint8Array.from(rgb) };
+    return { pos: Float32Array.from(pos), rgb: Uint8Array.from(rgb), normals: Float32Array.from(nrm) };
   }
 
   /** Mesh vertices and normals in plan inches, for fitting and checking walls. */

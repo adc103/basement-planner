@@ -33,6 +33,7 @@
     "@iwsdk/vite-plugin-dev": "1.1.0",
     "@meta-quest/metavr": "^1.8.1",
     "@types/three": "^0.185.0",
+    "@webgpu/types": "^0.1.74",
     "dxf-parser": "^1.1.2",
     "jpeg-js": "^0.4.4",
     "tsx": "^4.23.15",

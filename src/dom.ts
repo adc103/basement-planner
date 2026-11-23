@@ -3,6 +3,7 @@ import { exportDxf } from './core/exportDxf.js';
 import { exportIfc } from './core/exportIfc.js';
 import { FINISH_NAMES, renderPlanSvg, roomSummaries } from './core/plan2d.js';
 import type { PlannerApp } from './xr/app.js';
+import { SplatMaker } from './xr/splatMaker.js';
 
 /**
  * The flat page shown outside the headset session: enter AR, export/import,
@@ -73,6 +74,8 @@ export function mountDom(app: PlannerApp): void {
       <div class="head">
         <h2>Photoreal splat</h2>
         <div class="row">
+          <button class="small" id="bp-splat-make">Make splat on this headset</button>
+          <button class="small" id="bp-splat-finish" style="display:none">Finish now</button>
           <button class="small" id="bp-splat-data">Save splat training set (.zip)</button>
           <button class="small" id="bp-splat-load">Load splat (.ply / .spz)</button>
           <input type="file" id="bp-splat-file" accept=".ply,.spz,.splat,.ksplat,.sog" style="display:none" />
@@ -183,9 +186,37 @@ export function mountDom(app: PlannerApp): void {
     const name = app.splat?.name;
     $('bp-splat-info').textContent =
       `${n} sharp photos from this session's scan${n < 8 ? ' (scan more to make a training set)' : ''}. ` +
-      (name ? `Splat on this headset: ${name}. In the headset, the Mesh button shows it over the room.` : 'No splat loaded yet. Train one from the zip (in Brush, in this browser), then load the .ply here.');
+      (name ? `Splat on this headset: ${name}. In the headset, the Mesh button shows it over the room.` : 'No splat yet. Make one here (it trains on this headset in about 15 minutes), or train the zip elsewhere and load the .ply.');
     ($('bp-splat-data') as HTMLButtonElement).disabled = n < 8;
+    ($('bp-splat-make') as HTMLButtonElement).disabled = n < 8 || maker.running || !SplatMaker.supported;
+    if (!SplatMaker.supported) $('bp-splat-info').textContent += ' This browser has no WebGPU, so it cannot train here.';
   };
+  const maker = app.splatMaker;
+  $('bp-splat-make').onclick = async () => {
+    const input = app.scan?.splatInput();
+    if (!input) return msg('Scan the room with color on first (8 or more photos)');
+    const btn = $('bp-splat-make') as HTMLButtonElement;
+    btn.disabled = true;
+    $('bp-splat-finish').style.display = '';
+    const t0 = performance.now();
+    try {
+      const ply = await maker.make(input.views, input.seed, (p) => {
+        const min = (performance.now() - t0) / 60000;
+        const left = p.step ? (min / p.step) * (p.steps - p.step) : NaN;
+        $('bp-splat-info').textContent =
+          `Training the splat: step ${p.step} of ${p.steps}, ${Math.round(p.gaussians / 1000)}k splats` + (Number.isFinite(left) ? `, about ${Math.max(1, Math.round(left))} min left` : '') + '. Keep this page open.';
+      });
+      const name = `room-${new Date().toISOString().slice(0, 16).replace(':', '')}.ply`;
+      await app.splat?.save(name, ply.buffer as ArrayBuffer);
+      msg('Splat ready: in the headset, the Mesh button shows it over the room');
+    } catch (err) {
+      msg(`Splat training stopped: ${(err as Error).message}`);
+    } finally {
+      $('bp-splat-finish').style.display = 'none';
+      renderSplat();
+    }
+  };
+  $('bp-splat-finish').onclick = () => maker.finish();
   setTimeout(renderSplat, 1600);
   app.onSession((active) => {
     if (!active) renderSplat();

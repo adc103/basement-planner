@@ -16,7 +16,7 @@ const url = 'https://127.0.0.1:4179/';
 const browser = await chromium.launch({
   executablePath: chromePath,
   headless: true,
-  args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--no-proxy-server', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
+  args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--no-proxy-server', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-webgpu-adapter=swiftshader'],
 });
 const page = await browser.newPage({ viewport: { width: 1000, height: 800 }, ignoreHTTPSErrors: true });
 const errors = [];
@@ -495,6 +495,47 @@ process.stdout.write(JSON.stringify(fr.map((f) => ({ t: f.t, w: f.w, h: f.h, d: 
     check(r.seen.includes('splat') && r.shown, `a loaded splat shows from the Mesh button (${r.seen}; shown ${r.shown})`);
   }
 
+  {
+    // Training a splat on the device (WebGPU in a worker): a few steps on photos of a
+    // colored wall, the result loads into the splat view.
+    const r = await page.evaluate(async () => {
+      const app = window.basementPlanner;
+      if (!('gpu' in navigator)) return { skipped: 'no WebGPU' };
+      const W = 64, H = 48;
+      const c = new OffscreenCanvas(W, H);
+      const x = c.getContext('2d');
+      const views = [];
+      for (let i = 0; i < 8; i++) {
+        x.fillStyle = '#c04020';
+        x.fillRect(0, 0, W, H);
+        x.fillStyle = '#2040c0';
+        x.fillRect(W / 2, 0, W / 2, H);
+        const jpeg = new Uint8Array(await (await c.convertToBlob({ type: 'image/jpeg' })).arrayBuffer());
+        // Camera at z = 1.5 m looking down -z at a wall on z = 0, a little to either side.
+        const ox = (i - 3.5) * 0.05;
+        views.push({ jpeg, w: W, h: H, camToRoot: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ox, 1.2, 1.5, 1], fx: 50, fy: 50, cx: W / 2, cy: H / 2 });
+      }
+      const n = 400;
+      const pos = new Float32Array(n * 3), rgb = new Uint8Array(n * 3).fill(128), normals = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        pos.set([((i % 20) / 19 - 0.5) * 2, 1.2 + (Math.floor(i / 20) / 19 - 0.5) * 1.5, 0], i * 3);
+        normals.set([0, 0, 1], i * 3);
+      }
+      const t0 = performance.now();
+      let progress = 0;
+      try {
+        const ply = await app.splatMaker.make(views, { pos, rgb, normals }, () => progress++, { steps: 40, w: W, h: H });
+        const head = new TextDecoder().decode(ply.slice(0, 800));
+        await app.splat.save('trained.ply', ply.buffer);
+        return { ok: head.includes('element vertex') && head.includes('rot_3'), ms: Math.round(performance.now() - t0), name: app.splat.name, bytes: ply.length };
+      } catch (e) {
+        return { error: String(e) };
+      }
+    });
+    if (r.skipped) console.log(`  (splat training not checked: ${r.skipped})`);
+    else check(r.ok && r.name === 'trained.ply', `a splat trains on the device and loads (${JSON.stringify(r)})`);
+  }
+
   // --- Measure and Tape says ------------------------------------------------------------
   {
     const r = await page.evaluate(() => {
@@ -544,6 +585,14 @@ process.stdout.write(JSON.stringify(fr.map((f) => ({ t: f.t, w: f.w, h: f.h, d: 
   check(relevant.length === 0, `no page errors${relevant.length ? ':\n  ' + relevant.join('\n  ') : ''}`);
   await browser.close();
   await server.close();
+  // The splat trainer's GPU kernel against its CPU reference (same gradients).
+  try {
+    const { execFileSync } = await import('node:child_process');
+    const out = JSON.parse(execFileSync('node', ['scripts/gpu/run.mjs', 'scripts/gpu/check.ts'], { encoding: 'utf8', timeout: 300000 }));
+    check(!out.error && out.rel < 1e-3 && out.imgErr < 0.01, `splat GPU kernel matches the CPU reference (gradient error ${out.rel?.toExponential(1)}, image ${out.imgErr?.toFixed(3)})${out.error ? ' ' + out.error : ''}`);
+  } catch (e) {
+    check(false, `splat GPU kernel check ran (${e})`);
+  }
   console.log(failures ? `\n${failures} check(s) failed` : '\nAll e2e checks passed');
   process.exit(failures ? 1 : 0);
 }

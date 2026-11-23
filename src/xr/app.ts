@@ -48,6 +48,7 @@ import type { AimHit, Tool, ToolContext } from './tools/tool.js';
 import { TraceTool } from './tools/traceTool.js';
 import { VirtualHoles } from './holes.js';
 import { SplatView } from './splatView.js';
+import { SplatMaker } from './splatMaker.js';
 import type { SetupPlane } from '../core/pickWall.js';
 import { WallTool } from './tools/wallTool.js';
 import { MainMenu, MENU_H, type MenuApi, type ToolName } from './ui/mainMenu.js';
@@ -117,6 +118,8 @@ export class PlannerApp {
   private holes!: VirtualHoles;
   /** A Gaussian splat of the room (trained from the scan, or loaded), shown over it. */
   splat!: SplatView;
+  /** Trains a splat of the scanned room on this device (WebGPU, in a worker). */
+  readonly splatMaker = new SplatMaker();
   private lastRemoved: string[] = [];
   /** Door tool: measure real doorways on the scan (else place the chosen size). */
   private measureDoors = true;
