@@ -2,6 +2,7 @@ import {
   BufferAttribute,
   BufferGeometry,
   DoubleSide,
+  LessEqualDepth,
   Group,
   Mesh,
   MeshBasicMaterial,
@@ -36,7 +37,15 @@ export class RoomMesh {
   private bricksMesh = new Map<number, BrickMesh>();
   private chunkBricks = new Map<string, Set<number>>();
   private pieces = new Map<string, Mesh>();
-  private mat = new MeshLambertMaterial({ color: 0x8fd0ff, transparent: true, opacity: 0.32, depthWrite: false, side: DoubleSide });
+  /**
+   * See-through skin, drawn in two passes: depth first (no color), then the tint only
+   * where it is the nearest surface. One blended layer per pixel: no flicker from
+   * overlapping see-through chunks drawn in changing order, and far less GPU work than
+   * blending every layer of the room. Pushed back a hair so lines drawn on a real
+   * surface stay on top of it.
+   */
+  private mat = new MeshLambertMaterial({ color: 0x8fd0ff, transparent: true, opacity: 0.35, depthWrite: false, depthFunc: LessEqualDepth, side: DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 });
+  private matDepth = new MeshBasicMaterial({ colorWrite: false, depthWrite: true, side: DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 });
   /** Photo colors, solid: the room as the camera saw it. */
   private matColor = new MeshBasicMaterial({ vertexColors: true, side: DoubleSide });
   /** Show photo colors instead of the see-through blue. */
@@ -93,11 +102,15 @@ export class RoomMesh {
 
   setColored(on: boolean): void {
     this.colored = on;
-    for (const m of this.pieces.values()) m.material = on ? this.matColor : this.mat;
+    for (const m of this.pieces.values()) {
+      m.material = on ? this.matColor : this.mat;
+      m.children[0].visible = !on;
+    }
   }
 
   /** Per frame: ask for fresh mesh pieces now and then. */
   tick(time: number): void {
+    this.drain(3);
     if (!this.active || this.pending || time - this.lastMesh < MESH_EVERY) return;
     this.lastMesh = time;
     this.pending = true;
@@ -196,7 +209,24 @@ export class RoomMesh {
       }
       dirty.add(ck);
     }
-    for (const ck of dirty) this.rebuild(ck);
+    for (const ck of dirty) this.dirty.add(ck);
+    // Rebuild a few chunks now (so a small change shows at once), the rest over the
+    // next frames: a big update no longer lands on one frame as a hitch.
+    this.drain(4);
+  }
+
+  /** Chunks waiting to be rebuilt. */
+  private dirty = new Set<string>();
+
+  /** Rebuild waiting chunks for up to `budgetMs`. */
+  private drain(budgetMs: number): void {
+    if (!this.dirty.size) return;
+    const t0 = performance.now();
+    for (const ck of this.dirty) {
+      this.dirty.delete(ck);
+      this.rebuild(ck);
+      if (performance.now() - t0 > budgetMs) break;
+    }
     let t = 0;
     for (const x of this.pieces.values()) t += (x.geometry.index?.count ?? 0) / 3;
     this.triangles = t;
@@ -247,11 +277,18 @@ export class RoomMesh {
     if (old) {
       old.geometry.dispose();
       old.geometry = g;
+      (old.children[0] as Mesh).geometry = g;
       return;
     }
     const mesh = new Mesh(g, this.colored ? this.matColor : this.mat);
     mesh.raycast = () => {};
     mesh.renderOrder = -1;
+    // Depth pass (an opaque draw, so it runs before every see-through one).
+    const depth = new Mesh(g, this.matDepth);
+    depth.raycast = () => {};
+    depth.renderOrder = -2;
+    depth.visible = !this.colored;
+    mesh.add(depth);
     this.group.add(mesh);
     this.pieces.set(ck, mesh);
   }

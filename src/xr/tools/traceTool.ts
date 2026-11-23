@@ -27,7 +27,7 @@ interface Proposal {
   fit: WallFit | null;
 }
 
-type Found = { proposal: Proposal } | { miss: string };
+type Found = ({ proposal: Proposal } | { miss: string }) & { ray: Ray3; at: number };
 
 /** Last wall added: a tap on the same face moves its nearer end there. */
 interface Last {
@@ -51,7 +51,7 @@ const MISS_TEXT: Record<string, string> = {
 export class TraceTool implements Tool {
   readonly name = 'Real wall';
   private found: Found | null = null;
-  private asked: Ray3 | null = null;
+  private lastAsk = 0;
   private inFlight = false;
   private busy = false;
   private last: Last | null = null;
@@ -96,11 +96,24 @@ export class TraceTool implements Tool {
   /** Find the wall under a ray: room mesh first, then Space Setup. */
   private async find(ray: Ray3): Promise<Found> {
     const st = this.settings();
+    const at = performance.now();
     const r = this.src.hasMesh() ? await this.src.pick(ray, st.captureThickness, st.wallHeight) : null;
-    if (r && 'wall' in r.result) return { proposal: this.proposal('mesh', r.result.wall, r.fit) };
+    if (r && 'wall' in r.result) return { proposal: this.proposal('mesh', r.result.wall, r.fit), ray, at };
     const ss = pickSetupWall(this.src.setupPlanes(), ray);
-    if (ss) return { proposal: this.proposal('setup', ss, null) };
-    return { miss: r && 'miss' in r.result ? r.result.miss : 'nothing' };
+    if (ss) return { proposal: this.proposal('setup', ss, null), ray, at };
+    return { miss: r && 'miss' in r.result ? r.result.miss : 'nothing', ray, at };
+  }
+
+  /**
+   * The last answer, if it was for about the ray you're aiming now: a wall you've aimed
+   * well away from isn't shown, yet small hand motion between answers doesn't blink it.
+   */
+  private current(ray: Ray3): Found | null {
+    const f = this.found;
+    if (!f) return null;
+    const a = f.ray;
+    const cos = a.d.x * ray.d.x + a.d.y * ray.d.y + a.d.z * ray.d.z;
+    return cos > Math.cos((6 * Math.PI) / 180) && Math.hypot(a.o.x - ray.o.x, a.o.y - ray.o.y, a.o.z - ray.o.z) < 8 ? f : null;
   }
 
   private proposal(from: Proposal['from'], face: PickedWall, fit: WallFit | null): Proposal {
@@ -111,15 +124,17 @@ export class TraceTool implements Tool {
     return { from, face, a: back(face.a), b: back(face.b), thickness: st.captureThickness, fit: null };
   }
 
-  /** Keep one pick in flight for the live preview. */
+  /** One pick in flight at a time, at most ~12 a second, and only when the aim moved. */
   private request(ray: Ray3): void {
-    const a = this.asked;
     if (this.inFlight) return;
-    if (a && a.d.x * ray.d.x + a.d.y * ray.d.y + a.d.z * ray.d.z > 0.99995 && Math.hypot(a.o.x - ray.o.x, a.o.y - ray.o.y, a.o.z - ray.o.z) < 0.5 && this.found) return;
-    this.asked = { o: { ...ray.o }, d: { ...ray.d } };
+    const now = performance.now();
+    if (now - this.lastAsk < 80) return;
+    const f = this.found;
+    if (f && f.ray.d.x * ray.d.x + f.ray.d.y * ray.d.y + f.ray.d.z * ray.d.z > Math.cos((0.3 * Math.PI) / 180) && Math.hypot(f.ray.o.x - ray.o.x, f.ray.o.y - ray.o.y, f.ray.o.z - ray.o.z) < 0.5) return;
+    this.lastAsk = now;
     this.inFlight = true;
-    void this.find(this.asked).then((f) => {
-      this.found = f;
+    void this.find({ o: { ...ray.o }, d: { ...ray.d } }).then((r) => {
+      this.found = r;
       this.inFlight = false;
     });
   }
@@ -162,30 +177,41 @@ export class TraceTool implements Tool {
     const pv = this.ctx.preview;
     pv.clear();
     if (!aim) return;
-    const st = this.settings();
     if (this.first) {
       this.hoverTwoTap(aim);
       return;
     }
     this.request(aim.ray);
-    const f = this.found;
+    const f = this.current(aim.ray);
     const face = f && 'proposal' in f ? f.proposal.face : null;
     const t = this.trim(face, aim);
-    if (t) {
-      const w = this.ctx.store.plan.walls.find((x) => x.id === this.last!.id)!;
-      pv.showRubberWall(t.a, t.b, w.thickness, st.wallHeight, `${formatLength(Math.round(dist(t.a, t.b)))}: tap to end it here`);
+    if (t && face) {
+      // The wall's new extent, as a line along the wall where you're pointing.
+      pv.showSurfaceCursor(face.hit, face.n);
+      this.faceLine(t.a, t.b, face, `${formatLength(Math.round(dist(t.a, t.b)))}: tap to end it here`);
       return;
     }
     if (f && 'proposal' in f) {
       const p = f.proposal;
-      pv.showSurfaceCursor({ x: p.face.hit.x, y: p.face.hit.y, z: p.face.hit.z }, p.face.n);
-      const ends = p.face.ends.filter((e) => e === 'unseen').length;
-      const note = p.from === 'setup' ? ' (Space Setup)' : ends ? ' (scan ends: tap again to set the end)' : '';
+      pv.showSurfaceCursor(p.face.hit, p.face.n);
       const j = joinEnds(this.ctx.store.plan, p.a, p.b, p.thickness);
-      pv.showRubberWall(j.a, j.b, p.thickness, st.wallHeight, `${formatLength(Math.round(dist(p.face.a, p.face.b)))}${note}`);
+      const unseen = p.face.ends.includes('unseen');
+      const note = p.from === 'setup' ? ' (Space Setup)' : unseen ? ' (scan ends: tap again to set the end)' : '';
+      this.faceLine(j.a, j.b, p.face, `${formatLength(Math.round(dist(p.face.a, p.face.b)))}${note}`);
     } else if (f && 'miss' in f && aim.floor) {
       pv.showHint(MISS_TEXT[f.miss] ?? MISS_TEXT.nothing, aim.floor, 20);
     }
+  }
+
+  /**
+   * Show a wall to be added as a line across its face at the height you're pointing
+   * (centerline ends a, b brought forward to the face): light enough to see the real
+   * wall through, unlike a full-height slab.
+   */
+  private faceLine(a: Vec2, b: Vec2, face: PickedWall, label: string): void {
+    const off = (a.x - face.a.x) * face.n.x + (a.y - face.a.y) * face.n.y;
+    const f = (p: Vec2) => ({ x: p.x - face.n.x * off, y: p.y - face.n.y * off, z: face.hit.z });
+    this.ctx.preview.showMeasureLine(f(a), f(b), label);
   }
 
   commit(aim: AimHit): void {
@@ -256,11 +282,8 @@ export class TraceTool implements Tool {
     const q = aim.surface ? aim.surface.p : aim.floor;
     if (!q) return;
     if (aim.surface) pv.showSurfaceCursor({ x: q.x, y: q.y, z: aim.surface.z }, aim.surface.n);
-    const st = this.settings();
     const label = formatLength(Math.round(dist(f.p, q)));
     pv.showMeasureLine({ x: f.p.x, y: f.p.y, z: f.z }, { x: q.x, y: q.y, z: f.z }, label);
-    const w = captureWall(f.p, q, aim.eye, st.captureThickness);
-    if (w) pv.showRubberWall(w.a, w.b, st.captureThickness, st.wallHeight, label);
   }
 
   private commitTwoTap(aim: AimHit): void {

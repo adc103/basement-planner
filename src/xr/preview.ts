@@ -286,16 +286,27 @@ export class Preview {
       { x: b2.x + n.x * h, y: b2.y + n.y * h },
       { x: a2.x + n.x * h, y: a2.y + n.y * h },
     ];
+    // Rebuild the geometry only when the wall changed (hover calls this every frame).
+    const key = `${a.x.toFixed(2)},${a.y.toFixed(2)},${b.x.toFixed(2)},${b.y.toFixed(2)},${thickness},${height}`;
+    if (key !== this.rubberKey) {
+      this.rubberKey = key;
+      this.rebuildRubber(poly, height);
+    }
+    this.rubber.visible = true;
+    this.lengthLabel.setText(label);
+    planToLocal({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, Math.min(height + 4, 60), this.lengthLabel.sprite.position);
+    this.lengthLabel.sprite.visible = true;
+  }
+
+  private rubberKey = '';
+
+  private rebuildRubber(poly: Vec2[], height: number): void {
     const pos: number[] = [];
     appendPrism(pos, poly, 0, height);
     this.rubber.geometry.dispose();
     const g = new BufferGeometry();
     g.setAttribute('position', new Float32BufferAttribute(pos, 3));
     this.rubber.geometry = g;
-    this.rubber.visible = true;
-    this.lengthLabel.setText(label);
-    planToLocal({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, Math.min(height + 4, 60), this.lengthLabel.sprite.position);
-    this.lengthLabel.sprite.visible = true;
   }
 
   /** Box preview of an opening in a wall (plan center, along-wall direction). */
