@@ -1,6 +1,7 @@
 // Browser-side: train on /data (from scripts/scratch/mkds.ts), report held-out PSNR before/after.
 import { binTiles, gaussiansPly, project } from '../../src/core/splat/gs';
 import { GpuRaster } from '../../src/core/splat/gpuRaster';
+import { TrainViewAligner, thinPoints } from '../../src/core/splat/alignViews';
 import { scaledCam, seedGaussians, SplatTrainer, type TrainImage } from '../../src/core/splat/trainer';
 const q = new URLSearchParams(location.search);
 const W = Number(q.get('w') ?? 160), H = Number(q.get('h') ?? 120), STEPS = Number(q.get('steps') ?? 300);
@@ -27,7 +28,14 @@ function toPng(rgba: Uint8Array | Uint8ClampedArray): Promise<string> {
     const rgb = seed.slice(4 + n * 12, 4 + n * 15);
     const nrm = q.get('flat') === '0' ? undefined : new Float32Array(seed.buffer.slice(4 + n * 15, 4 + n * 27));
     const imgs: TrainImage[] = [];
-    for (const v of views) imgs.push({ cam: scaledCam(v.camToRoot, v.fx, v.fy, v.cx, v.cy, v.w, v.h, W, H), rgba: await decode('/data/' + v.file) });
+    const aligner = q.get('align') ? new TrainViewAligner(thinPoints(pos, 60000)) : null;
+    const ta = performance.now();
+    for (const v of views) {
+      const rgba = await decode('/data/' + v.file);
+      const c2r = aligner ? aligner.add({ ...v, w0: v.w, h0: v.h, rgba, w: W, h: H }) : v.camToRoot;
+      imgs.push({ cam: scaledCam(c2r, v.fx, v.fy, v.cx, v.cy, v.w, v.h, W, H), rgba });
+    }
+    out.alignMs = performance.now() - ta;
     const test = imgs.filter((_, i) => i % 6 === 3);
     const train = imgs.filter((_, i) => i % 6 !== 3);
     const g = seedGaussians(pos, rgb, nrm);
@@ -55,7 +63,12 @@ function toPng(rgba: Uint8Array | Uint8ClampedArray): Promise<string> {
     out.testAfter = await psnr(test, 'after');
     out.trainAfter = await psnr(train);
     out.gaussians = tr.g.n; out.added = tr.added; out.removed = tr.removed;
-    out.plyBytes = gaussiansPly(tr.g).length;
+    const plyBytes = gaussiansPly(tr.g, 0.05);
+    out.plyBytes = plyBytes.length;
+    if (q.get('saveply')) {
+      let bin = ''; for (let i = 0; i < plyBytes.length; i += 32768) bin += String.fromCharCode(...plyBytes.subarray(i, i + 32768));
+      out.files = { 'trained.ply': btoa(bin), 'cams.json': btoa(JSON.stringify(test.map((t) => ({ view: Array.from(t.cam.view), fx: t.cam.fx, fy: t.cam.fy, cx: t.cam.cx, cy: t.cam.cy, w: t.cam.w, h: t.cam.h })))) };
+    }
   } catch (e) { out.error = String((e as Error)?.stack ?? e); }
   (window as any).__result = out;
 })();

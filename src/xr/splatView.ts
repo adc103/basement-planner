@@ -58,7 +58,17 @@ export class SplatView {
         if (!s) return;
         const { SparkRenderer, SplatMesh } = await import('@sparkjsdev/spark');
         if (!this.spark) {
-          const spark = new SparkRenderer({ renderer: this.renderer as never });
+          // Tuned for a headset: a splat near your eye can cover the whole view, and every
+          // layer of it is blended (two eyes, 72+ fps). Draw each to 2.2 standard
+          // deviations instead of 2.8, cap its size on screen, skip near-invisible ones,
+          // and re-sort at most every 40 ms.
+          const spark = new SparkRenderer({
+            renderer: this.renderer as never,
+            maxStdDev: Math.sqrt(5),
+            maxPixelRadius: 128,
+            minAlpha: 2 / 255,
+            minSortIntervalMs: 40,
+          } as never);
           this.scene.add(spark as never);
           this.spark = spark as never;
         }

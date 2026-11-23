@@ -21,6 +21,7 @@ await page.goto(`http://127.0.0.1:${port}/${query}`);
 await page.waitForFunction(() => window.__result, null, { timeout: Number(process.env.TIMEOUT ?? 600000), polling: 500 });
 const result = await page.evaluate(() => window.__result);
 if (result.images && process.env.OUT) { const { writeFileSync } = await import('node:fs'); for (const [name, b64] of Object.entries(result.images)) writeFileSync(`${process.env.OUT}/${name}.png`, Buffer.from(b64.split(',')[1], 'base64')); delete result.images; }
+if (result.files && process.env.OUT) { const { writeFileSync } = await import('node:fs'); for (const [name, b64] of Object.entries(result.files)) writeFileSync(`${process.env.OUT}/${name}`, Buffer.from(b64, 'base64')); delete result.files; }
 console.log(JSON.stringify(result, null, 1));
 await browser.close();
 server.close();

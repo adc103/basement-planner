@@ -3,6 +3,8 @@ import type { TrainingView } from '../core/splatDataset.js';
 import type { SplatTrainIn, SplatTrainOut } from './splatTrainWorker.js';
 
 export interface SplatProgress {
+  /** Lining photos up, then training. */
+  phase: 'align' | 'train';
   step: number;
   steps: number;
   loss: number;
@@ -26,7 +28,7 @@ export class SplatMaker {
     views: TrainingView[],
     seed: { pos: Float32Array; rgb: Uint8Array; normals?: Float32Array },
     onProgress: (p: SplatProgress) => void,
-    opts: { steps?: number; w?: number; h?: number; maxGaussians?: number } = {},
+    opts: { steps?: number; w?: number; h?: number; fullW?: number; fullH?: number; maxGaussians?: number } = {},
   ): Promise<Uint8Array> {
     this.stop();
     const worker = new Worker(new URL('./splatTrainWorker.ts', import.meta.url), { type: 'module' });
@@ -53,9 +55,15 @@ export class SplatMaker {
         end();
         reject(new Error(e.message || 'Splat training stopped'));
       };
-      const msg: SplatTrainIn = { type: 'start', views, seed, steps: opts.steps ?? 2000, w: opts.w ?? 320, h: opts.h ?? 240, maxGaussians: opts.maxGaussians ?? 300_000 };
+      const msg: SplatTrainIn = { type: 'start', views, seed, steps: opts.steps ?? 3000, w: opts.w ?? 320, h: opts.h ?? 240, fullW: opts.fullW ?? 640, fullH: opts.fullH ?? 480, maxGaussians: opts.maxGaussians ?? 200_000 };
       worker.postMessage(msg);
     });
+  }
+
+  /** Hold training while the headset is drawing the room (they share the GPU). */
+  pause(on: boolean): void {
+    const m: SplatTrainIn = { type: 'pause', on };
+    this.worker?.postMessage(m);
   }
 
   /** Finish early: the worker stops and still returns what it has. */

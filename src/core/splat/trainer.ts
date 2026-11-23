@@ -10,6 +10,8 @@ export interface TrainImage {
   cam: SplatCam;
   /** RGBA, row 0 at the top, at cam.w x cam.h. */
   rgba: Uint8Array | Uint8ClampedArray;
+  /** The same photo at full size, decoded when needed (the last part of training uses it). */
+  full?: () => Promise<TrainImage>;
 }
 
 export interface TrainerOptions {
@@ -22,6 +24,8 @@ export interface TrainerOptions {
   maxGaussians?: number;
   /** Screen-space position gradient (per pixel of image height) above which a Gaussian is cloned or split. */
   gradThreshold?: number;
+  /** From this fraction of the run on, train on the photos at full size (sharper detail). */
+  fullFrom?: number;
 }
 
 /** A photo's lens at another image size (the photo scaled to w x h). */
@@ -84,6 +88,8 @@ export function seedGaussians(pos: Float32Array, rgb: Uint8Array, normals?: Floa
   return g;
 }
 
+const MAX_LOG_SCALE = Math.log(0.08);
+
 function gauss(): number {
   return Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
 }
@@ -131,7 +137,8 @@ export class SplatTrainer {
   }
 
   async train(): Promise<void> {
-    const im = this.next();
+    let im = this.next();
+    if (im.full && this.step >= (this.o.fullFrom ?? 1) * this.o.steps) im = await im.full();
     const { w, h } = im.cam;
     const t = this.step / Math.max(1, this.o.steps);
     this.opt.lr.mean = this.meanLr * Math.pow(0.01, t);
@@ -154,6 +161,10 @@ export class SplatTrainer {
       this.seen[i]++;
     }
     this.opt.step(gr);
+    // No splat bigger than 8 cm across an axis: big soft ones are what makes a splat slow
+    // to draw on a headset (and they're mostly fog standing in for missing detail).
+    const ls = this.g.logScale;
+    for (let i = 0; i < ls.length; i++) if (ls[i] > MAX_LOG_SCALE) ls[i] = MAX_LOG_SCALE;
     if (r.loss !== undefined) {
       const l = r.loss / (w * h);
       this.loss = Number.isNaN(this.loss) ? l : 0.8 * this.loss + 0.2 * l;

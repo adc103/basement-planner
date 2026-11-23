@@ -186,7 +186,7 @@ export function mountDom(app: PlannerApp): void {
     const name = app.splat?.name;
     $('bp-splat-info').textContent =
       `${n} sharp photos from this session's scan${n < 8 ? ' (scan more to make a training set)' : ''}. ` +
-      (name ? `Splat on this headset: ${name}. In the headset, the Mesh button shows it over the room.` : 'No splat yet. Make one here (it trains on this headset in about 15 minutes), or train the zip elsewhere and load the .ply.');
+      (name ? `Splat on this headset: ${name}. In the headset, the Mesh button shows it over the room.` : 'No splat yet. Make one here (it trains on this headset; it pauses while you are in the headset view), or train the zip elsewhere and load the .ply.');
     ($('bp-splat-data') as HTMLButtonElement).disabled = n < 8;
     ($('bp-splat-make') as HTMLButtonElement).disabled = n < 8 || maker.running || !SplatMaker.supported;
     if (!SplatMaker.supported) $('bp-splat-info').textContent += ' This browser has no WebGPU, so it cannot train here.';
@@ -198,10 +198,15 @@ export function mountDom(app: PlannerApp): void {
     const btn = $('bp-splat-make') as HTMLButtonElement;
     btn.disabled = true;
     $('bp-splat-finish').style.display = '';
-    const t0 = performance.now();
+    let trainT0 = 0;
     try {
       const ply = await maker.make(input.views, input.seed, (p) => {
-        const min = (performance.now() - t0) / 60000;
+        if (p.phase === 'align') {
+          $('bp-splat-info').textContent = `Lining up photos with the scan: ${p.step} of ${p.steps}. Keep this page open.`;
+          return;
+        }
+        if (!trainT0) trainT0 = performance.now();
+        const min = (performance.now() - trainT0) / 60000;
         const left = p.step ? (min / p.step) * (p.steps - p.step) : NaN;
         $('bp-splat-info').textContent =
           `Training the splat: step ${p.step} of ${p.steps}, ${Math.round(p.gaussians / 1000)}k splats` + (Number.isFinite(left) ? `, about ${Math.max(1, Math.round(left))} min left` : '') + '. Keep this page open.';
@@ -219,6 +224,8 @@ export function mountDom(app: PlannerApp): void {
   $('bp-splat-finish').onclick = () => maker.finish();
   setTimeout(renderSplat, 1600);
   app.onSession((active) => {
+    // Training and the headset view share the GPU: training waits while you're in there.
+    app.splatMaker.pause(active);
     if (!active) renderSplat();
   });
   $('bp-splat-data').onclick = () => {

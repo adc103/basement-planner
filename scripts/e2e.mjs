@@ -543,7 +543,7 @@ process.stdout.write(JSON.stringify(fr.map((f) => ({ t: f.t, w: f.w, h: f.h, d: 
       const t0 = performance.now();
       let progress = 0;
       try {
-        const ply = await app.splatMaker.make(views, { pos, rgb, normals }, () => progress++, { steps: 40, w: W, h: H });
+        const ply = await app.splatMaker.make(views, { pos, rgb, normals }, () => progress++, { steps: 40, w: W / 2, h: H / 2, fullW: W, fullH: H });
         const head = new TextDecoder().decode(ply.slice(0, 800));
         await app.splat.save('trained.ply', ply.buffer);
         return { ok: head.includes('element vertex') && head.includes('rot_3'), ms: Math.round(performance.now() - t0), name: app.splat.name, bytes: ply.length };
