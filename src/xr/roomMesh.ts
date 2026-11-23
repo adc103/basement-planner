@@ -6,7 +6,6 @@ import {
   Group,
   Mesh,
   MeshBasicMaterial,
-  MeshLambertMaterial,
   type Object3D,
 } from '@iwsdk/core';
 import type { DepthFrame } from '../core/scanIngest.js';
@@ -23,6 +22,28 @@ export interface WallPick {
 }
 
 const PREF = 'basement-planner:room-mesh:v1';
+
+/** How far the scan is drawn behind where it is, as seen from your eye (meters). */
+const PUSH_BACK = 0.025;
+
+/**
+ * Draw the scan an inch behind its true place, straight away from the eye (so it looks
+ * the same): plan walls and lines that sit on a real surface then always draw in
+ * front of it, instead of fighting it pixel by pixel (shimmering stripes, worse with
+ * the headset's coarse depth buffer). A fixed distance, unlike polygon offset.
+ */
+function pushBack<M extends MeshBasicMaterial>(m: M): M {
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader.replace(
+      '#include <project_vertex>',
+      `#include <project_vertex>
+      mvPosition.xyz *= 1.0 + ${PUSH_BACK.toFixed(3)} / max(length(mvPosition.xyz), 0.1);
+      gl_Position = projectionMatrix * mvPosition;`,
+    );
+  };
+  m.customProgramCacheKey = () => 'room-mesh-push-back';
+  return m;
+}
 const MESH_EVERY = 1; // s between mesh updates while scanning
 /** Bricks per render chunk edge: 4 x 32 cm = one draw call per ~1.3 m cube. */
 const CHUNK = 4;
@@ -42,13 +63,13 @@ export class RoomMesh {
    * See-through skin, drawn in two passes: depth first (no color), then the tint only
    * where it is the nearest surface. One blended layer per pixel: no flicker from
    * overlapping see-through chunks drawn in changing order, and far less GPU work than
-   * blending every layer of the room. Pushed back a hair so lines drawn on a real
-   * surface stay on top of it.
+   * blending every layer of the room. Unlit: the scan's normals are noisy at 4 cm, and
+   * shading them lights flat walls in blotches that shift as you move.
    */
-  private mat = new MeshLambertMaterial({ color: 0x8fd0ff, transparent: true, opacity: 0.35, depthWrite: false, depthFunc: LessEqualDepth, side: DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 });
-  private matDepth = new MeshBasicMaterial({ colorWrite: false, depthWrite: true, side: DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 });
+  private mat = pushBack(new MeshBasicMaterial({ color: 0x8fd0ff, transparent: true, opacity: 0.3, depthWrite: false, depthFunc: LessEqualDepth, side: DoubleSide }));
+  private matDepth = pushBack(new MeshBasicMaterial({ colorWrite: false, depthWrite: true, side: DoubleSide }));
   /** Photo colors, solid: the room as the camera saw it. */
-  private matColor = new MeshBasicMaterial({ vertexColors: true, side: DoubleSide });
+  private matColor = pushBack(new MeshBasicMaterial({ vertexColors: true, side: DoubleSide }));
   /** Show photo colors instead of the see-through blue. */
   colored = false;
   /** Bricks painted by at least one photo. */

@@ -330,6 +330,61 @@ process.stdout.write(JSON.stringify(fr.map((f) => ({ t: f.t, w: f.w, h: f.h, d: 
     check(r.undo === 'Measure door' && r.afterSolid === 1, `one undo step; solid wall adds nothing (${r.undo}, ${r.afterSolid})`);
   }
   {
+    // Select without moving: pressing an unselected wall (with hand jitter) only selects it;
+    // a selected wall moves only once the aim has clearly turned.
+    const r = await page.evaluate(() => {
+      const app = window.basementPlanner;
+      app.setTool('edit');
+      const id = app.cmd.run('wall.add', { a: { x: -200, y: -200 }, b: { x: -80, y: -200 }, kind: 'new', thickness: 4.5, height: 96 });
+      const ends = () => { const w = app.store.plan.walls.find((x) => x.id === id); const a = app.store.plan.nodes.find((n) => n.id === w.a); return a.y; };
+      const aim = (y, dz) => ({ floor: { x: -140, y }, wall: { wallId: id, point: { x: -140, y: -200 }, z: 40, distM: 2 }, ray: { o: { x: -140, y: -120, z: 60 }, d: { x: 0, y: -0.8, z: -0.6 + dz } }, surface: null, box: null, ceiling: null, eye: { x: -140, y: -120 } });
+      const tool = app.editTool;
+      tool.select(null);
+      tool.pressStart(aim(-200, 0));
+      tool.drag(aim(-197, 0.01)); // jitter: 3" on the floor, under a degree of aim
+      tool.drag(aim(-190, 0.2)); // even a real swing: not selected yet, so nothing moves
+      tool.commit(aim(-190, 0.2));
+      const afterFirst = ends();
+      const selected = tool.selection?.id === id;
+      // Now selected: a small wobble still doesn't move it, a clear drag does.
+      tool.pressStart(aim(-200, 0));
+      tool.drag(aim(-199, 0.01));
+      const wobble = ends();
+      tool.drag(aim(-188, 0.2));
+      tool.commit(aim(-188, 0.2));
+      const dragged = ends();
+      app.cmd.run('element.delete', { id });
+      return { afterFirst, selected, wobble, dragged };
+    });
+    check(r.selected && r.afterFirst === -200, `pressing an unselected wall selects it without moving it (${r.afterFirst})`);
+    check(r.wobble === -200 && Math.abs(r.dragged + 188) < 1.5, `a selected wall ignores wobble, then slides with a clear drag (${r.wobble} -> ${r.dragged})`);
+  }
+  {
+    // Real wall on a wall that's already in the plan (e.g. from Space Setup): fits it, no duplicate.
+    const r = await page.evaluate(async () => {
+      const app = window.basementPlanner;
+      const face = 28 / 0.0254;
+      const id = app.cmd.run('wall.add', { a: { x: 1120, y: face - 2.25 + 3 }, b: { x: 1240, y: face - 2.25 + 3 }, kind: 'existing', thickness: 4.5, height: 96 });
+      const before = app.store.plan.walls.length;
+      app.setTool('trace');
+      const tool = app.tools.trace;
+      const eye = { x: 1181, y: 1181, z: 60 };
+      const d = { x: 0, y: face - eye.y, z: -10 };
+      const L = Math.hypot(d.x, d.y, d.z);
+      tool.commit({ ray: { o: eye, d: { x: 0, y: d.y / L, z: d.z / L } }, surface: null, floor: null, wall: null, eye: { x: eye.x, y: eye.y } });
+      for (let i = 0; i < 100 && tool.busy; i++) await new Promise((res) => setTimeout(res, 50));
+      const count = app.store.plan.walls.length - before;
+      const dev = app.verifyWalls([id])?.[0]?.check.deviation ?? null;
+      const label = app.store.undoLabel;
+      app.undo();
+      app.cmd.run('element.delete', { id });
+      app.setTool('edit');
+      return { count, dev, label };
+    });
+    check(r.count === 0 && r.label === 'Fit real wall', `pointing at a wall already in the plan fits it instead of adding another (${r.count}, ${r.label})`);
+    check(r.dev !== null && r.dev < 0.3, `that wall now sits on the scanned surface (${r.dev?.toFixed(2)}" off)`);
+  }
+  {
     const cyc = await page.evaluate(() => {
       const app = window.basementPlanner;
       const api = app.menuApi();

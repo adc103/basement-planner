@@ -256,15 +256,73 @@ export class TraceTool implements Tool {
     this.ctx.toast(MISS_TEXT[f.miss] ?? MISS_TEXT.nothing, 3);
   }
 
+  /** A wall already in the plan along the same line as the proposal (overlapping half or more). */
+  private sameWall(p: Proposal): { id: string; a: Vec2; b: Vec2 } | null {
+    const plan = this.ctx.store.plan;
+    const nodes = new Map(plan.nodes.map((n) => [n.id, n]));
+    const L = dist(p.a, p.b);
+    if (L < 1) return null;
+    const u = { x: (p.b.x - p.a.x) / L, y: (p.b.y - p.a.y) / L };
+    for (const w of plan.walls) {
+      const na = nodes.get(w.a);
+      const nb = nodes.get(w.b);
+      if (!na || !nb) continue;
+      const LW = Math.hypot(nb.x - na.x, nb.y - na.y);
+      if (LW < 1) continue;
+      const v = { x: (nb.x - na.x) / LW, y: (nb.y - na.y) / LW };
+      if (Math.abs(u.x * v.x + u.y * v.y) < Math.cos((5 * Math.PI) / 180)) continue;
+      const mid = { x: (na.x + nb.x) / 2, y: (na.y + nb.y) / 2 };
+      const off = Math.abs((mid.x - p.a.x) * -u.y + (mid.y - p.a.y) * u.x);
+      if (off > Math.max(6, (w.thickness + p.thickness) / 2 + 2)) continue;
+      const s0 = (na.x - p.a.x) * u.x + (na.y - p.a.y) * u.y;
+      const s1 = (nb.x - p.a.x) * u.x + (nb.y - p.a.y) * u.y;
+      const overlap = Math.min(L, Math.max(s0, s1)) - Math.max(0, Math.min(s0, s1));
+      if (overlap >= 0.5 * Math.min(L, LW)) return { id: w.id, a: { x: na.x, y: na.y }, b: { x: nb.x, y: nb.y } };
+    }
+    return null;
+  }
+
   private add(p: Proposal): void {
     let id: string | null = null;
     // Meet the walls already there: a T, or one shared corner.
     const j = joinEnds(this.ctx.store.plan, p.a, p.b, p.thickness);
+    const same = this.sameWall(p);
+    if (same) {
+      // Already in the plan (Space Setup, drawn, or traced before): fit that wall to the
+      // measurement instead of adding a second one on top of it.
+      const w = this.ctx.store.plan.walls.find((x) => x.id === same.id)!;
+      const flip = (same.b.x - same.a.x) * (j.b.x - j.a.x) + (same.b.y - same.a.y) * (j.b.y - j.a.y) < 0;
+      const a = flip ? j.b : j.a;
+      const b = flip ? j.a : j.b;
+      const L = dist(a, b) || 1;
+      const u = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
+      // Openings keep their real place: offsets are measured from the wall's a end.
+      const shift = (same.a.x - a.x) * u.x + (same.a.y - a.y) * u.y;
+      const ops = this.ctx.store.plan.openings.filter((o) => o.wallId === w.id);
+      const ok = this.ctx.cmd.group('Fit real wall', () => {
+        if (w.kind !== 'existing') this.ctx.act('wall.setKind', { id: w.id, kind: 'existing' });
+        if (this.ctx.act('wall.place', { id: w.id, a, b }) === null) return false;
+        this.ctx.act('wall.setThickness', { id: w.id, thickness: p.thickness });
+        for (const o of ops) this.ctx.cmd.run('opening.update', { id: o.id, offset: o.offset + shift });
+        if (p.fit) this.ctx.cmd.run('scan.setEvidence', { items: [{ id: w.id, evidence: p.fit.evidence, confidence: p.fit.confidence }] }, 'scan');
+        return true;
+      });
+      if (!ok) return;
+      id = w.id;
+      const fu = { x: p.face.b.x - p.face.a.x, y: p.face.b.y - p.face.a.y };
+      const fl = Math.hypot(fu.x, fu.y) || 1;
+      this.last = { id, face: { a: p.face.a, n: p.face.n, u: { x: fu.x / fl, y: fu.y / fl } } };
+      this.ctx.toast(`That wall was already in your plan: fitted it to the scan (${formatLength(Math.round(dist(p.face.a, p.face.b)))}, ${p.thickness}" thick)`, 4);
+      this.ctx.refreshUi();
+      return;
+    }
     this.ctx.cmd.group('Trace real wall', () => {
       for (const m of j.moves) this.ctx.act('node.move', { id: m.node, x: m.to.x, y: m.to.y });
       id = this.ctx.act('wall.add', { a: j.a, b: j.b, kind: 'existing', source: 'capture', thickness: p.thickness });
       if (id && p.fit) this.ctx.cmd.run('scan.setEvidence', { items: [{ id, evidence: p.fit.evidence, confidence: p.fit.confidence }] }, 'scan');
     });
+    // All or nothing: if the wall couldn't be added, take back the corners moved for it.
+    if (!id && j.moves.length && this.ctx.store.undoLabel === 'Trace real wall') this.ctx.store.undo();
     if (!id) return;
     const u = { x: p.face.b.x - p.face.a.x, y: p.face.b.y - p.face.a.y };
     const ul = Math.hypot(u.x, u.y) || 1;

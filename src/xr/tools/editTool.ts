@@ -18,6 +18,8 @@ interface Drag {
   target: Target;
   start: Vec2;
   moved: boolean;
+  /** The aim ray at the press: nothing moves until the aim turns or moves well past it. */
+  ray0: { o: Vec3; d: Vec3 };
   /** Wall drags: the wall's normal and the corners' starting positions. */
   normal?: Vec2;
   orig?: Array<{ id: string; x: number; y: number }>;
@@ -34,6 +36,12 @@ export class EditTool implements Tool {
   selection: Target | null = null;
   private hovered: Target | null = null;
   private dragging: Drag | null = null;
+  /** Pressed on something not yet selected: selected on release, never moved. */
+  private pendingSelect: Target | null = null;
+
+  private sameTarget(a: Target | null, b: Target | null): boolean {
+    return !!a && !!b && a.kind === b.kind && (a as { id: string }).id === (b as { id: string }).id;
+  }
 
   constructor(private ctx: ToolContext) {}
 
@@ -54,10 +62,11 @@ export class EditTool implements Tool {
     if (this.dragging?.moved) return 'Release to drop';
     const h = this.hovered;
     if (h?.kind === 'node') return 'Pinch and drag to move this corner';
-    if (h?.kind === 'opening') return 'Drag to slide, tap to select';
+    const sel = this.sameTarget(h, this.selection);
+    if (h?.kind === 'opening') return sel ? 'Drag to slide it along the wall' : 'Tap to select';
     if (h?.kind === 'marker') return 'Drag to move this pin';
-    if (h?.kind === 'wall') return 'Tap to select, drag to slide this wall';
-    if (h?.kind === 'box') return 'Drag a face to push or pull it, tap to select';
+    if (h?.kind === 'wall') return sel ? 'Drag to slide this wall' : 'Tap to select';
+    if (h?.kind === 'box') return sel ? 'Drag a face to push or pull it' : 'Tap to select';
     return this.selection ? 'Edit the selection in the menu' : 'Point at a corner, wall, door or pin';
   }
 
@@ -120,8 +129,14 @@ export class EditTool implements Tool {
       this.ctx.toast('Locked. Unlock it in the Edit tab to change it.', 3);
       return;
     }
+    // A wall, door or box you haven't selected yet: the press selects it, nothing moves.
+    // Moving it is a second, deliberate press-and-drag once it's selected.
+    if (t.kind !== 'node' && t.kind !== 'marker' && !this.sameTarget(t, this.selection)) {
+      this.pendingSelect = t;
+      return;
+    }
     const start = aim.floor ?? aim.wall?.point ?? { x: 0, y: 0 };
-    this.dragging = { target: t, start, moved: false };
+    this.dragging = { target: t, start, moved: false, ray0: { o: { ...aim.ray.o }, d: { ...aim.ray.d } } };
     if (t.kind === 'box' && aim.box) {
       const el = this.boxEl(t);
       if (!el) {
@@ -162,6 +177,13 @@ export class EditTool implements Tool {
   drag(aim: AimHit): void {
     const d = this.dragging;
     if (!d) return;
+    // Hand jitter is not a drag: start only once the aim has turned 3 degrees or the
+    // hand moved 2" (a far floor point swings inches with a tiny wrist turn).
+    if (!d.moved) {
+      const r = d.ray0;
+      const cos = r.d.x * aim.ray.d.x + r.d.y * aim.ray.d.y + r.d.z * aim.ray.d.z;
+      if (cos > Math.cos((3 * Math.PI) / 180) && Math.hypot(r.o.x - aim.ray.o.x, r.o.y - aim.ray.o.y, r.o.z - aim.ray.o.z) < 2) return;
+    }
     const pv = this.ctx.preview;
     const plan = this.ctx.store.plan;
     pv.clear();
@@ -279,6 +301,12 @@ export class EditTool implements Tool {
   commit(aim: AimHit): void {
     const d = this.dragging;
     this.endDrag();
+    const pending = this.pendingSelect;
+    this.pendingSelect = null;
+    if (pending) {
+      this.select(pending);
+      return;
+    }
     if (d?.moved) {
       this.ctx.refreshUi();
       return;

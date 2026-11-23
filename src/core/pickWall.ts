@@ -53,6 +53,7 @@ const BIN = 3; // inches: steps when following the face
 const MAX_GAP = 24; // inches of unseen face bridged (a door with no header seen)
 const MAX_RUN = 600;
 const CHUNK = 48;
+const WALL_HIGH = 48; // inches above the floor: wall face, not furniture
 const CORNER_DEPTH = 18; // inches in front of the face where a crossing wall marks a corner
 const CORNER_TALL = 54; // inches of height a crossing wall shows (furniture is lower)
 const CORNER_POINTS = 150; // mesh points of it within one 3\" step
@@ -404,7 +405,9 @@ function follow(idx: SurfaceIndex, on: Vec2, u: Vec2, n: Vec2, dir: 1 | -1): { l
       if (Math.abs(nrm[k + 2]) > 0.5) continue;
       const q = Math.floor(s / BIN);
       if (Math.abs(off) <= ON_FACE) {
-        if (faces(nrm, k, n)) bins[q]++;
+        // Only the face standing above furniture height counts: a counter or a shelf
+        // lined up with the wall doesn't carry it on.
+        if (faces(nrm, k, n) && pos[k + 2] >= WALL_HIGH) bins[q]++;
       } else if (off > 2 && off < CORNER_DEPTH && Math.abs(nrm[k] * n.x + nrm[k + 1] * n.y) < 0.3) {
         cross[q]++;
         if (off < 6) touch[q]++;
