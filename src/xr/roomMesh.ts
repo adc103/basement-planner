@@ -229,7 +229,10 @@ export class RoomMesh {
   }
 
   /** Keep a photo the worker chose as a texture: upload it to its slot. */
-  private keepPhoto(id: number, slot: number | null, gain: [number, number, number]): void {
+  /** Photos lined up with earlier ones before painting. */
+  photosAligned = 0;
+
+  private keepPhoto(id: number, slot: number | null, gain: [number, number, number], camToRoot: number[]): void {
     const ph = this.pendingPhotos.get(id);
     this.pendingPhotos.delete(id);
     if (!ph || slot === null || ph.w !== PW || ph.h !== PH) return;
@@ -246,7 +249,8 @@ export class RoomMesh {
     (tex.image.data as Uint8Array).set(ph.rgba, slot * PW * PH * 4);
     tex.addLayerUpdate(slot);
     tex.needsUpdate = true;
-    this.photoU.photoView.value[slot].fromArray(Array.from(ph.camToRoot)).invert();
+    // The camera as lined up by the worker (not the raw head pose).
+    this.photoU.photoView.value[slot].fromArray(camToRoot).invert();
     this.photoU.photoK.value[slot].set(ph.fx / PW, ph.fy / PH, ph.cx / PW, ph.cy / PH);
     this.photoU.photoGain.value[slot].set(gain[0], gain[1], gain[2]);
   }
@@ -348,7 +352,8 @@ export class RoomMesh {
 
   private onMessage(m: FusionOut): void {
     if (m.type === 'photoSlot') {
-      this.keepPhoto(m.id, m.slot, m.gain);
+      this.keepPhoto(m.id, m.slot, m.gain, m.camToRoot);
+      if (m.aligned !== null) this.photosAligned++;
       return;
     }
     if (m.type === 'opening') {
