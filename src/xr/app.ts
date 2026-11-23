@@ -46,6 +46,7 @@ import { MeasureTool } from './tools/measureTool.js';
 import { OpeningTool } from './tools/openingTool.js';
 import type { AimHit, Tool, ToolContext } from './tools/tool.js';
 import { TraceTool } from './tools/traceTool.js';
+import { VirtualHoles } from './holes.js';
 import type { SetupPlane } from '../core/pickWall.js';
 import { WallTool } from './tools/wallTool.js';
 import { MainMenu, MENU_H, type MenuApi, type ToolName } from './ui/mainMenu.js';
@@ -111,6 +112,9 @@ export class PlannerApp {
   private toastUntil = 0;
   private time = 0;
   private snapEnabled = true;
+  /** Planned openings in real walls and removed walls, seen through to the scanned room behind. */
+  private holes!: VirtualHoles;
+  private lastRemoved: string[] = [];
   /** Door tool: measure real doorways on the scan (else place the chosen size). */
   private measureDoors = true;
   private preset: { type: 'door' | 'opening'; width: number; height: number } = { type: 'door', width: 32, height: 80 };
@@ -183,6 +187,9 @@ export class PlannerApp {
     this.planEntity.addComponent(XRAnchor);
     this.refAnchors = new RefAnchors(world);
     this.scan = new ScanSession(world, this.view.root);
+    this.holes = new VirtualHoles(this.view.root, this.scan.mesh);
+    // Virtual holes clip the scan to what lies beyond a wall.
+    world.renderer.localClippingEnabled = true;
 
     // Real-world hit testing (snapping, drawing on real surfaces), one target per hand.
     for (const side of ['left', 'right'] as Side[]) {
@@ -331,6 +338,8 @@ export class PlannerApp {
       cycleOpeningType: () => ed().cycleOpeningType(),
       flipDoor: () => ed().flipDoor(),
       toggleKind: () => ed().toggleKind(),
+      selectedRemoved: () => !!ed().selectedWall()?.demolish,
+      toggleRemove: () => ed().toggleRemove(),
       selectedLocked: () => {
         const s = ed().selection;
         return !!s && s.kind !== 'node' && ed().isLocked(s);
@@ -609,6 +618,11 @@ export class PlannerApp {
     if (!inXR) this.sessionT0 = -1;
     updateSurfaceOcclusion(world);
     this.view.updateLabels(world.camera);
+    this.holes.update(this.store.plan, world.camera);
+    if (this.holes.removedWalls !== this.lastRemoved) {
+      this.lastRemoved = this.holes.removedWalls;
+      this.view.setOpenWalls(this.holes.removedWalls);
+    }
     this.updateToast();
   }
 

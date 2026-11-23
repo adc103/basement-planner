@@ -46,6 +46,9 @@ export interface MenuApi {
   cycleOpeningType(): void;
   flipDoor(): void;
   toggleKind(): void;
+  /** The selected real wall is planned to be torn out. */
+  selectedRemoved(): boolean;
+  toggleRemove(): void;
   selectedLocked(): boolean;
   toggleLock(): void;
   deleteSelection(): void;
@@ -350,6 +353,18 @@ export class MainMenu {
             { id: 'e-lock', label: () => (a.selectedLocked() ? 'Unlock' : 'Lock'), col: 1, onClick: () => a.toggleLock(), active: () => a.selectedLocked(), visible: any },
             { id: 'e-del', label: () => 'Delete', icon: 'trash', tone: 'danger', col: 2, onClick: () => a.deleteSelection(), visible: any },
             { id: 'e-none', label: () => 'Deselect', col: 3, onClick: () => a.deselect(), visible: any },
+          ],
+          [
+            {
+              id: 'e-remove',
+              label: () => (a.selectedRemoved() ? 'Keep wall' : 'Remove wall'),
+              icon: 'trash',
+              span: 2,
+              col: 0,
+              onClick: () => a.toggleRemove(),
+              active: () => a.selectedRemoved(),
+              visible: () => a.selectionKind() === 'wall' && a.selectedIsReal(),
+            },
           ],
         ],
       },

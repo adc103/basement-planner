@@ -425,8 +425,18 @@ export class EditTool implements Tool {
     const w = this.selectedWall();
     if (!w) return;
     const next = w.kind === 'existing' ? 'new' : 'existing';
-    if (!this.ctx.act('wall.setKind', { id: w.id, kind: next })) return;
+    if (this.ctx.act('wall.setKind', { id: w.id, kind: next }) === null) return;
     this.ctx.toast(next === 'new' ? 'Now a planned (new) wall' : 'Now a real (existing) wall');
+  }
+
+  /** Plan to tear out the selected real wall (or keep it after all). */
+  toggleRemove(): void {
+    const w = this.selectedWall();
+    if (!w || w.kind !== 'existing') return;
+    const next = !w.demolish;
+    if (this.ctx.act('wall.setDemolish', { id: w.id, demolish: next }) === null) return;
+    this.ctx.toast(next ? 'Planned to remove: you see the room behind it (where it was scanned)' : 'Wall kept', 4);
+    this.ctx.refreshUi();
   }
 
   /** Is this target (or, for a corner, a wall meeting there) locked? */

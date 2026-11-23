@@ -1,5 +1,6 @@
 import { Matrix4, Vector3, type Object3D, type World } from '@iwsdk/core';
 import { lensCamera } from '../core/camCalib.js';
+import { poseAt } from '../core/poseTrack.js';
 import type { DepthFrame } from '../core/scanIngest.js';
 import { DepthSampler } from './depthSampler.js';
 import { RoomMesh } from './roomMesh.js';
@@ -9,6 +10,8 @@ import { ScanRecorder } from './scanRecorder.js';
 /** Seconds between the camera's capture time stamp and the head pose that matches it (fit on real captures). */
 const PHOTO_LAG = 0.03;
 const SAMPLE_EVERY = 0.25; // s between depth frames fused into the mesh
+/** Photos taken while the head turns faster than this are blurred and land poorly: kept in the recording, not painted. */
+const MAX_TURN = 45; // degrees per second
 
 /**
  * Scanning: the depth sensor builds the room mesh while you look around, and
@@ -121,11 +124,12 @@ export class ScanSession {
       this.recorder.addPhoto({ ...pose, jpeg: r.jpeg, captured, track });
       const lens = this.photos.lens;
       if (!lens) return;
-      // From where the camera was when it captured the frame.
+      // From where the camera was when it captured the frame: between the two head poses
+      // around that moment, not the nearest one.
       const tc = (Number.isFinite(captured) ? captured : pose.t) - PHOTO_LAG;
-      let view: Float32Array = pose.viewToRoot;
-      let best = Infinity;
-      for (const e of track) if (Math.abs(e.t - tc) < best) [best, view] = [Math.abs(e.t - tc), e.m];
+      const at = poseAt(track, tc);
+      if (at && at.turnDegPerS > MAX_TURN) return;
+      const view = at ? at.m : pose.viewToRoot;
       this.mesh.colorize({ rgba: r.rgba, w: 640, h: 480, ...lensCamera(lens, view, 640, 480) });
     });
   }

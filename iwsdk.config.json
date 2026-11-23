@@ -39,7 +39,7 @@
     },
     "render": {
       "fov": 70,
-      "near": 0.01,
+      "near": 0.05,
       "far": 200,
       "camera": {
         "position": [
@@ -52,7 +52,8 @@
           0.8,
           0
         ]
-      }
+      },
+      "stencil": true
     },
     "features": {
       "locomotion": false,

@@ -3,6 +3,8 @@ import {
   BufferGeometry,
   DataArrayTexture,
   DoubleSide,
+  EqualStencilFunc,
+  type Plane,
   LinearFilter,
   Matrix4,
   RGBAFormat,
@@ -52,6 +54,12 @@ function pushBack<M extends MeshBasicMaterial>(m: M): M {
   return m;
 }
 
+/**
+ * Stencil test for the scan's own drawing: only where no virtual hole is (stencil 0).
+ * Inside a hole the room behind is drawn instead (see holes.ts).
+ */
+const OUTSIDE_HOLES = { stencilWrite: true, stencilRef: 0, stencilFunc: EqualStencilFunc, stencilWriteMask: 0 } as const;
+
 /** Photo size kept as textures (the camera photos the scan takes). */
 const PW = 640;
 const PH = 480;
@@ -67,8 +75,11 @@ function photoTextured(m: MeshBasicMaterial, u: { photoTex: { value: DataArrayTe
     base.call(m, sh, r);
     Object.assign(sh.uniforms, u);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float photo;\nvarying float vPhoto;\nvarying vec3 vRootPos;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvPhoto = photo;\nvRootPos = position;');
+      .replace('#include <common>', '#include <common>\nattribute float photo;\nvarying float vPhoto;\nvarying vec3 vRootPos;\nvarying vec3 vWN;\nvarying vec3 vWP;')
+      .replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\nvPhoto = photo;\nvRootPos = position;\nvWN = mat3(modelMatrix) * normal;\nvWP = (modelMatrix * vec4(position, 1.0)).xyz;',
+      );
     sh.fragmentShader = sh.fragmentShader
       .replace(
         '#include <common>',
@@ -79,11 +90,16 @@ function photoTextured(m: MeshBasicMaterial, u: { photoTex: { value: DataArrayTe
         uniform vec4 photoK[${PHOTO_SLOTS}];
         uniform vec3 photoGain[${PHOTO_SLOTS}];
         varying float vPhoto;
-        varying vec3 vRootPos;`,
+        varying vec3 vRootPos;
+        varying vec3 vWN;
+        varying vec3 vWP;`,
       )
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
+        // Seen from behind (the scan's normals point into the room it was scanned from):
+        // nothing to show. Drawing it would paint the other side's colors on, mirrored.
+        if (dot(vWN, cameraPosition - vWP) < 0.0) discard;
         if (vPhoto < ${NO_SLOT - 0.5} && abs(vPhoto - floor(vPhoto + 0.5)) < 0.02) {
           int si = int(vPhoto + 0.5);
           vec4 c = photoView[si] * vec4(vRootPos, 1.0);
@@ -124,7 +140,7 @@ export class RoomMesh {
    * blending every layer of the room. Unlit: the scan's normals are noisy at 4 cm, and
    * shading them lights flat walls in blotches that shift as you move.
    */
-  private mat = pushBack(new MeshBasicMaterial({ color: 0x8fd0ff, transparent: true, opacity: 0.3, depthWrite: false, depthFunc: LessEqualDepth, side: DoubleSide }));
+  private mat = pushBack(new MeshBasicMaterial({ color: 0x8fd0ff, transparent: true, opacity: 0.3, depthWrite: false, depthFunc: LessEqualDepth, side: DoubleSide, ...OUTSIDE_HOLES }));
   private matDepth = pushBack(new MeshBasicMaterial({ colorWrite: false, depthWrite: true, side: DoubleSide }));
   /** Photo colors, solid: the room as the camera saw it. */
   /** Photos kept as textures, and where each was taken (root -> camera, intrinsics / size). */
@@ -134,7 +150,27 @@ export class RoomMesh {
     photoK: { value: Array.from({ length: PHOTO_SLOTS }, () => new Vector4()) },
     photoGain: { value: Array.from({ length: PHOTO_SLOTS }, () => new Vector3(1, 1, 1)) },
   };
-  private matColor = photoTextured(pushBack(new MeshBasicMaterial({ vertexColors: true, side: DoubleSide })), this.photoU);
+  private matColor = photoTextured(pushBack(new MeshBasicMaterial({ vertexColors: true, side: DoubleSide, ...OUTSIDE_HOLES })), this.photoU);
+
+  /**
+   * The scan as seen through a virtual hole (stencil value `ref`): colored, solid, and
+   * only beyond `beyond` (the wall's far face), so the wall itself and this side vanish.
+   */
+  portalMaterial(ref: number, beyond: Plane): MeshBasicMaterial {
+    const m = photoTextured(
+      new MeshBasicMaterial({
+        vertexColors: true,
+        side: DoubleSide,
+        stencilWrite: true,
+        stencilRef: ref,
+        stencilFunc: EqualStencilFunc,
+        stencilWriteMask: 0,
+        clippingPlanes: [beyond],
+      }),
+      this.photoU,
+    );
+    return m;
+  }
   /** Photos sent to the worker, waiting to hear whether they're kept as textures. */
   private pendingPhotos = new Map<number, ColorPhoto>();
   private photoId = 0;

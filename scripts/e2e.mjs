@@ -417,6 +417,42 @@ process.stdout.write(JSON.stringify(fr.map((f) => ({ t: f.t, w: f.w, h: f.h, d: 
     });
   }
   {
+    // Virtual holes: a door cut into a real wall, and a real wall removed, are seen through.
+    const r = await page.evaluate(() => {
+      const app = window.basementPlanner;
+      const stencil = !!app.world?.renderer?.getContext().getContextAttributes().stencil;
+      const id = app.cmd.run('wall.add', { a: { x: -300, y: -300 }, b: { x: -150, y: -300 }, kind: 'existing', thickness: 4.5, height: 92 });
+      app.editTool.select({ kind: 'wall', id });
+      const api = app.menuApi();
+      api.toggleRemove();
+      const removed = app.store.plan.walls.find((w) => w.id === id).demolish;
+      api.toggleRemove();
+      const kept = !app.store.plan.walls.find((w) => w.id === id).demolish;
+      app.setTool('doors');
+      app.menuApi().setPreset('door', 32);
+      const tool = app.tools.doors;
+      tool.commit({ wall: { wallId: id, point: { x: -225, y: -300 }, z: 40, distM: 2 }, floor: null, surface: null, eye: { x: -225, y: -200 } });
+      const o = app.store.plan.openings.find((x) => x.wallId === id);
+      app.cmd.run('wall.setDemolish', { id, demolish: true });
+      return { stencil, removed, kept, cutKind: o?.kind, id };
+    });
+    await frames(6);
+    const after = await page.evaluate((id) => {
+      const app = window.basementPlanner;
+      const removedShown = app.holes.removedWalls.includes(id);
+      app.cmd.run('element.delete', { id });
+      app.editTool.select(null);
+      app.setTool('edit');
+      app.menuApi().setMeasureDoors();
+      app.setTool('edit');
+      return { removedShown };
+    }, r.id);
+    check(r.stencil, 'the renderer has a stencil buffer (virtual holes need it)');
+    check(r.removed && r.kept, `Remove wall marks a real wall to tear out, and Keep wall undoes it (${r.removed}, ${r.kept})`);
+    check(r.cutKind === 'new', `a door placed on a real wall is a planned cut (${r.cutKind})`);
+    check(after.removedShown, 'a removed real wall is shown as a hole');
+  }
+  {
     const cyc = await page.evaluate(() => {
       const app = window.basementPlanner;
       const api = app.menuApi();

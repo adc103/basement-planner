@@ -166,7 +166,7 @@ export class OpeningTool implements Tool {
     const h = Math.min(preset.height, pl.wall.height - 1);
     pv.showOpening(pl.center, pl.dir, preset.width, h, 0, pl.wall.thickness, pl.ok);
     const fromA = pl.offset - preset.width / 2;
-    pv.showHint(`${formatLength(fromA)} from corner`, pl.center, h + 6);
+    pv.showHint(`${pl.wall.kind === 'existing' ? 'Cut here: ' : ''}${formatLength(fromA)} from corner`, pl.center, h + 6);
   }
 
   commit(aim: AimHit): void {
@@ -191,14 +191,18 @@ export class OpeningTool implements Tool {
       return;
     }
     const preset = this.ctx.openingPreset();
+    // On a real wall a chosen size is a cut you plan (not one that's there): a virtual hole.
+    const cut = pl.wall.kind === 'existing';
     const id = this.ctx.act('opening.add', {
       wallId: pl.wall.id,
       type: preset.type,
       offset: pl.offset,
       width: preset.width,
       height: preset.height,
+      kind: 'new',
     });
-    this.ctx.toast(id ? `${preset.type === 'door' ? 'Door' : 'Opening'} added` : "Doesn't fit there");
+    const what = preset.type === 'door' ? 'door' : 'opening';
+    this.ctx.toast(id ? (cut ? `New ${what} cut into the real wall: you see through it` : `${what === 'door' ? 'Door' : 'Opening'} added`) : "Doesn't fit there", 3);
   }
 
   private addMeasured(wall: Wall, f: FoundOpening | null): void {
