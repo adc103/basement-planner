@@ -13,6 +13,14 @@ const PHOTO_LAG = 0.03;
 const SAMPLE_EVERY = 0.25; // s between depth frames fused into the mesh
 /** Photos taken while the head turns faster than this are blurred and land poorly: kept in the recording, not painted. */
 const MAX_TURN = 45; // degrees per second
+/**
+ * Photos: as often as the view changes enough to add something (splats want many views
+ * of every surface from different places), but not more than about twice a second.
+ */
+const PHOTO_MIN_GAP = 0.45; // s
+const PHOTO_MOVE = 0.12; // m the head moved since the last photo
+const PHOTO_TURN = 8; // degrees it turned
+const PHOTO_MAX_GAP = 2; // s: one anyway, even standing still
 
 /**
  * Scanning: the depth sensor builds the room mesh while you look around, and
@@ -33,6 +41,13 @@ export class ScanSession {
   private loaded: Promise<void>;
   private lastSample = 0;
   private lastPhoto = 0;
+  private lastPhotoView: Float32Array | null = null;
+  private viewKey = 0;
+  /** Photos kept this session, and when one was last skipped for turning too fast (s). */
+  photosTaken = 0;
+  lastBlurry = -Infinity;
+  /** Called for each photo kept (a tick on the controller, as Hyperscape does). */
+  onPhoto: (() => void) | null = null;
   private scanT0 = -1;
   private rootInv = new Matrix4();
   private viewM = new Matrix4();
@@ -47,6 +62,7 @@ export class ScanSession {
     this.mesh.onPhotoPlaced = (id, camToRoot) => {
       const v = this.views.get(id);
       if (v) v.camToRoot = camToRoot;
+      else this.placed.set(id, camToRoot);
     };
     this.photos = new ScanPhotos(world);
     this.loaded = this.recorder.load();
@@ -73,6 +89,9 @@ export class ScanSession {
     this.recorder.clear();
     this.mesh.clear();
     this.views.clear();
+    this.placed.clear();
+    this.photosTaken = 0;
+    this.lastPhotoView = null;
   }
 
   /** This scan as a splat training set (zip), or null with no photos yet. */
@@ -84,8 +103,12 @@ export class ScanSession {
 
   /** What on-device splat training starts from: the sharp photos and the colored surface. */
   splatInput(): { views: TrainingView[]; seed: { pos: Float32Array; rgb: Uint8Array; normals: Float32Array } } | null {
-    const views = [...this.views.values()];
-    if (views.length < 8) return null;
+    const all = [...this.views.values()];
+    if (all.length < 8) return null;
+    // At most 400, spread over the whole scan (memory: each is decoded for training).
+    const step = Math.max(1, all.length / 400);
+    const views: TrainingView[] = [];
+    for (let i = 0; i < all.length && views.length < 400; i += step) views.push(all[Math.floor(i)]);
     return { views, seed: this.mesh.seedPoints(150_000, true) };
   }
 
@@ -129,34 +152,64 @@ export class ScanSession {
     this.depthOk = !!f;
     if (!f) return;
     this.ingest(f);
-    // A camera photo about once a second paints the mesh.
-    if (time - this.lastPhoto < 1 || !this.photos.ready) return;
-    this.lastPhoto = time;
+    if (!this.photos.ready || time - this.lastPhoto < PHOTO_MIN_GAP) return;
+    if (time - this.lastPhoto < PHOTO_MAX_GAP && !this.viewChanged(f.viewToRoot)) return;
     const pose = { t: f.t, viewToRoot: f.viewToRoot, proj: f.proj };
     const toScan = (ms: number) => ms / 1000 + this.clockOffset - this.scanT0;
-    // The head poses up to now, copied before the photo is encoded (which takes a while):
-    // the camera captured this frame a few tens of milliseconds ago.
+    // The head poses up to now: the camera captured this frame a few tens of milliseconds ago.
     const track = this.poseRing
       .filter((e) => e.ms > 0 && toScan(e.ms) > pose.t - 0.6)
       .map((e) => ({ t: toScan(e.ms), m: Float32Array.from(e.m) }))
       .sort((x, y) => x.t - y.t);
-    void this.photos.snap().then((r) => {
-      if (!r) return;
-      const captured = Number.isFinite(r.capturedMs) ? toScan(r.capturedMs) : NaN;
-      this.recorder.addPhoto({ ...pose, jpeg: r.jpeg, captured, track });
-      const lens = this.photos.lens;
-      if (!lens) return;
-      // From where the camera was when it captured the frame: between the two head poses
-      // around that moment, not the nearest one.
-      const tc = (Number.isFinite(captured) ? captured : pose.t) - PHOTO_LAG;
-      const at = poseAt(track, tc);
-      if (at && at.turnDegPerS > MAX_TURN) return;
-      const view = at ? at.m : pose.viewToRoot;
-      const cam = lensCamera(lens, view, 640, 480);
-      const id = this.mesh.colorize({ rgba: r.rgba, w: 640, h: 480, ...cam });
+    const lens = this.photos.lens;
+    const r = this.photos.snap();
+    if (!r) return;
+    const captured = Number.isFinite(r.capturedMs) ? toScan(r.capturedMs) : NaN;
+    // From where the camera was when it captured the frame: between the two head poses
+    // around that moment, not the nearest one.
+    const tc = (Number.isFinite(captured) ? captured : pose.t) - PHOTO_LAG;
+    const at = poseAt(track, tc);
+    const sharp = !at || at.turnDegPerS <= MAX_TURN;
+    if (!sharp) this.lastBlurry = time;
+    else {
+      this.lastPhoto = time;
+      this.lastPhotoView = Float32Array.from(f.viewToRoot);
+    }
+    let key = 0;
+    let cam: ReturnType<typeof lensCamera> | null = null;
+    if (lens && sharp) {
+      cam = lensCamera(lens, at ? at.m : pose.viewToRoot, 640, 480);
+      // Painted and lined up in the fusion worker when it keeps up; otherwise it still
+      // counts toward coverage and training (with the head pose's camera).
+      key = this.mesh.photosInFlight < 2 ? this.mesh.colorize({ rgba: r.rgba, w: 640, h: 480, ...cam }) : 0;
+      if (!key) {
+        this.mesh.markSeen({ w: 640, h: 480, ...cam });
+        key = -++this.viewKey;
+      }
+      this.photosTaken++;
+      this.onPhoto?.();
+    }
+    void r.jpeg.then((jpeg) => {
+      if (!jpeg) return;
+      this.recorder.addPhoto({ ...pose, jpeg, captured, track });
+      if (!cam) return;
       // Kept for splat training, with the camera as the worker lines it up.
-      if (id) this.views.set(id, { jpeg: r.jpeg, w: 640, h: 480, camToRoot: Array.from(cam.camToRoot), fx: cam.fx, fy: cam.fy, cx: cam.cx, cy: cam.cy });
+      const placed = this.placed.get(key);
+      this.placed.delete(key);
+      this.views.set(key, { jpeg, w: 640, h: 480, camToRoot: placed ?? Array.from(cam.camToRoot), fx: cam.fx, fy: cam.fy, cx: cam.cx, cy: cam.cy });
     });
+  }
+
+  /** Lined-up cameras that arrived before their photo's JPEG did. */
+  private placed = new Map<number, number[]>();
+
+  /** Has the head moved or turned enough since the last photo to see something new? */
+  private viewChanged(m: Float32Array): boolean {
+    const p = this.lastPhotoView;
+    if (!p) return true;
+    const moved = Math.hypot(m[12] - p[12], m[13] - p[13], m[14] - p[14]);
+    const cos = (m[8] * p[8] + m[9] * p[9] + m[10] * p[10]) / (Math.hypot(m[8], m[9], m[10]) * Math.hypot(p[8], p[9], p[10]) || 1);
+    return moved >= PHOTO_MOVE || Math.acos(Math.min(1, cos)) * (180 / Math.PI) >= PHOTO_TURN;
   }
 
   /** This frame's depth as a DepthFrame in the plan root's frame. */

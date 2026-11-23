@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import type { DepthFrame } from '../core/scanIngest.js';
-import { TsdfVolume, type BrickMesh, type ColorPhoto } from '../core/tsdf.js';
+import { TsdfVolume, type BrickMesh, type ColorPhoto, type PhotoCam } from '../core/tsdf.js';
 import { fitWall, SurfaceIndex, surfaceFromMeshes, type WallFit } from '../core/fit.js';
 import { pickWall, type PickResult, type Ray3 } from '../core/pickWall.js';
 import { findOpening, type FoundOpening, type OpeningWall } from '../core/findOpening.js';
@@ -16,6 +16,8 @@ export type FusionIn =
   | { type: 'frame'; frame: DepthFrame }
   | { type: 'mesh' }
   | { type: 'color'; id: number; photo: ColorPhoto }
+  /** A photo the worker had no time to paint with: just note what it saw (coverage). */
+  | { type: 'seen'; cam: PhotoCam }
   | { type: 'clear' }
   | { type: 'save' }
   | { type: 'load' }
@@ -104,6 +106,8 @@ self.onmessage = async (e: MessageEvent<FusionIn>) => {
     vol.integrate(m.frame);
     integrateMs = integrateMs * 0.9 + (performance.now() - t0) * 0.1;
     post({ type: 'stats', bricks: vol.brickCount, frames: vol.frames, integrateMs });
+  } else if (m.type === 'seen') {
+    vol.markSeen(m.cam);
   } else if (m.type === 'color') {
     // Line the photo up with the earlier ones first (its pose is often a few degrees off).
     const ph = m.photo;

@@ -112,6 +112,11 @@ export class PlannerApp {
   private toastLabel = new TextLabel('', { height: 0.045, bg: 'rgba(15,20,30,0.92)' });
   private toolChip = new TextLabel('', { height: 0.028, bg: 'rgba(61,139,255,0.9)' });
   private toastUntil = 0;
+  /** While scanning: what's been captured, and what to do next (top of the view). */
+  private scanHud = new TextLabel('', { height: 0.04, bg: 'rgba(15,20,30,0.85)' });
+  private scanTip = new TextLabel('', { height: 0.034, bg: 'rgba(15,20,30,0.85)' });
+  private scanStarted = 0;
+  private scanHudAt = 0;
   private time = 0;
   private snapEnabled = true;
   /** Planned openings in real walls and removed walls, seen through to the scanned room behind. */
@@ -193,6 +198,8 @@ export class PlannerApp {
     this.planEntity.addComponent(XRAnchor);
     this.refAnchors = new RefAnchors(world);
     this.scan = new ScanSession(world, this.view.root);
+    // A light tick on the controller for every photo taken, as Hyperscape does.
+    this.scan.onPhoto = () => this.hands[this.activeSide].pulse(this.world, 0.12, 10);
     this.holes = new VirtualHoles(this.view.root, this.scan.mesh);
     this.splat = new SplatView(this.view.root, world.scene, world.renderer);
     void this.splat.restore();
@@ -273,6 +280,11 @@ export class PlannerApp {
       tolerance: 0.2,
       speed: 4,
     });
+    for (const [label, y] of [[this.scanHud, 0.3], [this.scanTip, 0.245]] as const) {
+      const ent = world.createTransformEntity(label.sprite, { parent: world.sceneEntity, persistent: true });
+      ent.addComponent(Follower, { target: world.player.head, offsetPosition: [0, y, -1.0], behavior: FollowBehavior.FaceTarget, maxAngle: 25, tolerance: 0.2, speed: 4 });
+      label.sprite.visible = false;
+    }
     world.scene.add(this.toolChip.sprite);
     this.toastLabel.sprite.visible = false;
     this.toolChip.sprite.visible = false;
@@ -617,6 +629,7 @@ export class PlannerApp {
       this.hands.right.update(world, time);
       this.updateSurfaces(time);
       this.scan.tick(time);
+      this.updateScanHud();
       this.updateFloor(time);
       if (this.scan.scanning && this.scan.depthOk === false && !this.depthWarned) {
         this.depthWarned = true;
@@ -991,13 +1004,53 @@ export class PlannerApp {
     const s = this.scan;
     if (!s.scanning) {
       this.depthWarned = false;
+      this.scanStarted = this.time;
       void s.start();
-      this.toast('Scanning: look slowly at the walls you want to check. The mesh builds as you look.', 6);
     } else {
       s.stop();
       this.toast(`Scan saved: room mesh ${(s.mesh.triangles / 1000).toFixed(0)}k triangles. Select a wall and Snap to scan, or Check walls.`, 6);
     }
     this.refreshUi();
+  }
+
+  /**
+   * The scan's heads-up: photos taken, how much of the room is covered (photographed up
+   * close from enough sides), time, and the next thing to do, in two steps like Meta's
+   * Hyperscape capture: first the room's shape, then walking it to clear the blue.
+   */
+  private updateScanHud(): void {
+    const s = this.scan;
+    const on = s.scanning;
+    this.scanHud.sprite.visible = on;
+    this.scanTip.sprite.visible = on;
+    if (!on || this.time - this.scanHudAt < 0.5) return;
+    this.scanHudAt = this.time;
+    const t = this.time - this.scanStarted;
+    const clock = `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+    const cov = s.mesh.coverage();
+    const pct = Math.round(cov.covered * 100);
+    const camOk = s.photos.state === 'on' && !!s.photos.lens;
+    this.scanHud.setText(camOk ? `● ${s.photosTaken} photos  ·  ${pct}% covered  ·  ${clock}` : `● Scanning shape  ·  ${clock}`, '#ffffff');
+    let tip: string;
+    let color = '#cfe3ff';
+    if (s.depthOk === false) {
+      tip = 'No depth yet: check the camera permission';
+      color = '#ffb347';
+    } else if (s.photos.state === 'unavailable') {
+      tip = 'No camera photos (allow camera access for color and splats): shape only';
+      color = '#ffb347';
+    } else if (this.time - s.lastBlurry < 1.5) {
+      tip = 'Slow down: turning too fast for sharp photos';
+      color = '#ffb347';
+    } else if (t < 15 || s.mesh.triangles < 15000) {
+      tip = 'Step 1 of 2: look around slowly at the walls, floor and ceiling';
+    } else if (cov.covered < 0.8) {
+      tip = 'Step 2 of 2: walk the room, stop at each corner and look across. Get close to blue until it clears';
+    } else {
+      tip = 'Looks well covered. Catch any blue left, then Stop scan';
+      color = '#8ef0a8';
+    }
+    this.scanTip.setText(tip, color);
   }
 
   /** Real walls checked against the room mesh, worst first (null: no mesh yet). */

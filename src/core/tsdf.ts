@@ -44,7 +44,24 @@ interface Brick {
   /** Texture: per voxel, the photo slot that sees it best (NO_SLOT: none) and how well (1-255). */
   ps?: Uint8Array;
   pq?: Uint8Array;
+  /** Directions the voxel has been photographed from: bit i = azimuth sector i of 8 (camera around it). */
+  sv?: Uint8Array;
 }
+
+/** A camera that took a photo (no pixels): for marking what it saw. */
+export type PhotoCam = Omit<ColorPhoto, 'rgba'>;
+
+/** Distinct directions in a voxel's photo mask (0-8). */
+export function popcount8(b: number): number {
+  b = b - ((b >> 1) & 0x55);
+  b = (b & 0x33) + ((b >> 2) & 0x33);
+  return (b + (b >> 4)) & 0x0f;
+}
+
+/** Sides a surface should be photographed from to count as covered (splats need several). */
+export const COVERED_SIDES = 3;
+/** Photos further than this add detail too coarse to count toward coverage. */
+const SEEN_DIST = 3.5;
 
 /** Photos kept as textures for the mesh (slots), and "no photo". */
 export const PHOTO_SLOTS = 32;
@@ -75,6 +92,8 @@ export interface BrickMesh {
   colors: Uint8Array;
   /** Photo slot per vertex to texture it from (NO_SLOT: none); empty when no photo has. */
   photos: Uint8Array;
+  /** Per vertex: how many sides (of 8) it has been photographed from, up close. */
+  views: Uint8Array;
 }
 
 const key = (bx: number, by: number, bz: number) => ((bx + OFF) * 2048 + (by + OFF)) * 2048 + (bz + OFF);
@@ -237,8 +256,8 @@ export class TsdfVolume {
    */
   lastGain: [number, number, number] = [1, 1, 1];
 
-  colorize(ph: ColorPhoto, maxDist = 4.5, texture = false): number {
-    this.lastSlot = null;
+  /** The surface voxels a camera sees (nearest surface per pixel), with where they land in the image. */
+  private visible(ph: PhotoCam, maxDist: number): Array<{ b: Brick; k: number; vi: number; u: number; v: number; z: number }> {
     const { voxel: vs, minWeight } = this.o;
     const M = ph.camToRoot;
     const tx = M[12], ty = M[13], tz = M[14];
@@ -280,11 +299,44 @@ export class TsdfVolume {
         hits.push({ b, k, vi, u, v, z });
       }
     }
+    return hits.filter((h) => h.z <= zb[(h.v >> 2) * ZW + (h.u >> 2)] + 0.06);
+  }
+
+  /**
+   * Record the directions the surface it sees was photographed from (coverage, for
+   * guiding the scan): sectors of the camera's bearing around each voxel. Returns how many
+   * bricks gained a direction (they are marked for re-meshing).
+   */
+  markSeen(ph: PhotoCam, seen = this.visible(ph, SEEN_DIST)): number {
+    const M = ph.camToRoot;
+    const vs = this.o.voxel;
+    const changed = new Set<number>();
+    for (const h of seen) {
+      if (h.z > SEEN_DIST) continue;
+      const [bx, , bz] = brickCoords(h.k);
+      const x = h.vi % BRICK;
+      const zz = Math.floor(h.vi / (BRICK * BRICK));
+      const dx = M[12] - (bx * BRICK + x + 0.5) * vs;
+      const dz = M[14] - (bz * BRICK + zz + 0.5) * vs;
+      // Sectors centred on the axes, so square-on views of square rooms aren't split across two.
+      const sector = (Math.floor((Math.atan2(dz, dx) / (2 * Math.PI) + 1) * 8 + 0.5) % 8) | 0;
+      const b = h.b;
+      if (!b.sv) b.sv = new Uint8Array(B3);
+      const bit = 1 << sector;
+      if (b.sv[h.vi] & bit) continue;
+      b.sv[h.vi] |= bit;
+      changed.add(h.k);
+    }
+    for (const k of changed) this.dirty.add(k);
+    return changed.size;
+  }
+
+  colorize(ph: ColorPhoto, maxDist = 4.5, texture = false): number {
+    this.lastSlot = null;
+    const seen = this.visible(ph, maxDist);
+    this.markSeen(ph, seen);
     const colored = new Set<number>();
-    const seen: typeof hits = [];
-    for (const h of hits) {
-      if (h.z > zb[(h.v >> 2) * ZW + (h.u >> 2)] + 0.06) continue; // behind something nearer
-      seen.push(h);
+    for (const h of seen) {
       const b = h.b;
       if (!b.c) {
         b.c = new Uint8Array(B3 * 3);
@@ -444,6 +496,7 @@ export class TsdfVolume {
     const Cw = new Uint8Array(N * N * N);
     const Ps = new Uint8Array(N * N * N).fill(NO_SLOT);
     const Pq = new Uint8Array(N * N * N);
+    const Sv = new Uint8Array(N * N * N);
     let anyColor = false;
     let anyPhoto = false;
     const li = (x: number, y: number, z: number) => ((z + 1) * N + (y + 1)) * N + (x + 1);
@@ -476,6 +529,7 @@ export class TsdfVolume {
             Cc[l * 3 + 2] = b.c![vi * 3 + 2];
             anyColor = true;
           }
+          if (b.sv) Sv[l] = b.sv[vi];
           if (b.ps && b.ps[vi] !== NO_SLOT) {
             Ps[l] = b.ps[vi];
             Pq[l] = b.pq![vi];
@@ -493,6 +547,7 @@ export class TsdfVolume {
     const nrm: number[] = [];
     const col: number[] = [];
     const pho: number[] = [];
+    const views: number[] = [];
     const corner = new Float32Array(8);
     for (let z = -1; z < BRICK; z++) {
       for (let y = -1; y < BRICK; y++) {
@@ -538,6 +593,12 @@ export class TsdfVolume {
           const gzv = corner[4] + corner[5] + corner[6] + corner[7] - corner[0] - corner[1] - corner[2] - corner[3];
           const gl = Math.hypot(gxv, gyv, gzv) || 1;
           nrm.push(gxv / gl, gyv / gl, gzv / gl);
+          {
+            // Sides this spot was photographed from (its best-covered corner).
+            let most = 0;
+            for (let c = 0; c < 8; c++) most = Math.max(most, popcount8(Sv[li(x + (c & 1), y + ((c >> 1) & 1), z + ((c >> 2) & 1))]));
+            views.push(most);
+          }
           if (anyColor) {
             // The cell's colored corners, averaged; grey where no photo has reached.
             let r = 0, g = 0, bl = 0, cn = 0;
@@ -601,7 +662,7 @@ export class TsdfVolume {
         }
       }
     }
-    return { key: k, positions: new Float32Array(pos), normals: new Float32Array(nrm), indices: new Uint32Array(idx), colors: new Uint8Array(col), photos: new Uint8Array(pho) };
+    return { key: k, positions: new Float32Array(pos), normals: new Float32Array(nrm), indices: new Uint32Array(idx), colors: new Uint8Array(col), photos: new Uint8Array(pho), views: new Uint8Array(views) };
   }
 
   // --- Saving -------------------------------------------------------------------

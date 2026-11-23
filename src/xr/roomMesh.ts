@@ -18,7 +18,7 @@ import {
   type Object3D,
 } from '@iwsdk/core';
 import type { DepthFrame } from '../core/scanIngest.js';
-import { brickCoords, NO_SLOT, PHOTO_SLOTS, type BrickMesh, type ColorPhoto } from '../core/tsdf.js';
+import { brickCoords, COVERED_SIDES, NO_SLOT, PHOTO_SLOTS, type BrickMesh, type ColorPhoto } from '../core/tsdf.js';
 import { surfaceFromMeshes, type Surface } from '../core/fit.js';
 import type { FusionIn, FusionOut } from './fusionWorker.js';
 import type { WallFit } from '../core/fit.js';
@@ -118,6 +118,35 @@ function photoTextured(m: MeshBasicMaterial, u: { photoTex: { value: DataArrayTe
   m.customProgramCacheKey = () => 'room-mesh-photo-textured';
   return m;
 }
+/**
+ * While scanning, the see-through skin shows what still needs photos (as Hyperscape
+ * does): bright blue where a surface hasn't been photographed up close from enough
+ * sides, fading out as it is.
+ */
+function coverageTint(m: MeshBasicMaterial, on: { value: number }): MeshBasicMaterial {
+  const base = m.onBeforeCompile;
+  m.onBeforeCompile = (sh, r) => {
+    base.call(m, sh, r);
+    sh.uniforms.scanCoverage = on;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float views;\nvarying float vViews;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvViews = views;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float scanCoverage;\nvarying float vViews;')
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+        if (scanCoverage > 0.5) {
+          float cov = clamp(vViews / ${COVERED_SIDES.toFixed(1)}, 0.0, 1.0);
+          diffuseColor.rgb = mix(vec3(0.15, 0.5, 1.0), vec3(0.85, 0.95, 1.0), cov);
+          diffuseColor.a = mix(0.55, 0.06, cov);
+        }`,
+      );
+  };
+  m.customProgramCacheKey = () => 'room-mesh-coverage';
+  return m;
+}
+
 const MESH_EVERY = 1; // s between mesh updates while scanning
 /** Bricks per render chunk edge: 4 x 32 cm = one draw call per ~1.3 m cube. */
 const CHUNK = 4;
@@ -140,7 +169,11 @@ export class RoomMesh {
    * blending every layer of the room. Unlit: the scan's normals are noisy at 4 cm, and
    * shading them lights flat walls in blotches that shift as you move.
    */
-  private mat = pushBack(new MeshBasicMaterial({ color: 0x8fd0ff, transparent: true, opacity: 0.3, depthWrite: false, depthFunc: LessEqualDepth, side: DoubleSide, ...OUTSIDE_HOLES }));
+  private coverageOn = { value: 0 };
+  private mat = coverageTint(
+    pushBack(new MeshBasicMaterial({ color: 0x8fd0ff, transparent: true, opacity: 0.3, depthWrite: false, depthFunc: LessEqualDepth, side: DoubleSide, ...OUTSIDE_HOLES })),
+    this.coverageOn,
+  );
   private matDepth = pushBack(new MeshBasicMaterial({ colorWrite: false, depthWrite: true, side: DoubleSide }));
   /** Photo colors, solid: the room as the camera saw it. */
   /** Photos kept as textures, and where each was taken (root -> camera, intrinsics / size). */
@@ -261,10 +294,45 @@ export class RoomMesh {
 
   setColored(on: boolean): void {
     this.colored = on;
+    this.applyMaterials();
+  }
+
+  /** Photo colors when asked for, except while scanning: then the coverage skin. */
+  private get showColor(): boolean {
+    return this.colored && !this.active;
+  }
+
+  private applyMaterials(): void {
+    const on = this.showColor;
+    this.coverageOn.value = this.active ? 1 : 0;
     for (const m of this.pieces.values()) {
       m.material = on ? this.matColor : this.mat;
       m.children[0].visible = !on;
     }
+  }
+
+  /**
+   * How much of the scanned surface has been photographed up close from enough sides
+   * (0-1), and how many vertices that is out of.
+   */
+  coverage(): { covered: number; total: number } {
+    let total = 0;
+    let covered = 0;
+    for (const b of this.bricksMesh.values()) {
+      total += b.views.length;
+      for (let i = 0; i < b.views.length; i++) if (b.views[i] >= COVERED_SIDES) covered++;
+    }
+    return { covered: total ? covered / total : 0, total };
+  }
+
+  /** Photos sent to be painted with that haven't come back yet. */
+  get photosInFlight(): number {
+    return this.pendingPhotos.size;
+  }
+
+  /** A photo there's no time to paint with: still counts toward coverage. */
+  markSeen(cam: Omit<ColorPhoto, 'rgba'>): void {
+    this.send({ type: 'seen', cam: { ...cam, camToRoot: Array.from(cam.camToRoot) } });
   }
 
   /** Per frame: ask for fresh mesh pieces now and then. */
@@ -344,6 +412,7 @@ export class RoomMesh {
     if (this.active && !on) this.send({ type: 'mesh' });
     this.active = on;
     this.applyVisibility();
+    this.applyMaterials();
   }
 
   private applyVisibility(): void {
@@ -464,6 +533,7 @@ export class RoomMesh {
     // Vertex colors: grey where no photo has reached yet.
     const col = new Uint8Array(nv).fill(110);
     const pho = new Uint8Array(nv / 3).fill(NO_SLOT);
+    const vws = new Uint8Array(nv / 3);
     const idx = new Uint32Array(ni);
     let ov = 0;
     let oi = 0;
@@ -473,6 +543,7 @@ export class RoomMesh {
       nrm.set(b.normals, ov);
       if (b.colors.length === b.positions.length) col.set(b.colors, ov);
       if (b.photos.length * 3 === b.positions.length) pho.set(b.photos, ov / 3);
+      if (b.views.length * 3 === b.positions.length) vws.set(b.views, ov / 3);
       const base = ov / 3;
       for (let i = 0; i < b.indices.length; i++) idx[oi + i] = b.indices[i] + base;
       ov += b.positions.length;
@@ -483,6 +554,7 @@ export class RoomMesh {
     g.setAttribute('normal', new BufferAttribute(nrm, 3));
     g.setAttribute('color', new BufferAttribute(col, 3, true));
     g.setAttribute('photo', new BufferAttribute(pho, 1));
+    g.setAttribute('views', new BufferAttribute(vws, 1));
     g.setIndex(new BufferAttribute(idx, 1));
     g.computeBoundingSphere();
     if (old) {
@@ -491,14 +563,14 @@ export class RoomMesh {
       (old.children[0] as Mesh).geometry = g;
       return;
     }
-    const mesh = new Mesh(g, this.colored ? this.matColor : this.mat);
+    const mesh = new Mesh(g, this.showColor ? this.matColor : this.mat);
     mesh.raycast = () => {};
     mesh.renderOrder = -1;
     // Depth pass (an opaque draw, so it runs before every see-through one).
     const depth = new Mesh(g, this.matDepth);
     depth.raycast = () => {};
     depth.renderOrder = -2;
-    depth.visible = !this.colored;
+    depth.visible = !this.showColor;
     mesh.add(depth);
     this.group.add(mesh);
     this.pieces.set(ck, mesh);

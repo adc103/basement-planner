@@ -1,9 +1,10 @@
 import { CameraSource, CameraState, CameraUtils, type Entity, type World } from '@iwsdk/core';
 import type { LensData } from '../core/camCalib.js';
+import type { JpegIn, JpegOut } from './jpegWorker.js';
 
 /**
- * Passthrough camera photos during a scan, once a second, kept with the
- * depth view's pose. They're the raw material for working out where the
+ * Passthrough camera photos during a scan (a few a second, as the view changes), kept
+ * with the depth view's pose. They're the raw material for working out where the
  * camera points (the browser doesn't say) and then coloring the room mesh.
  */
 export class ScanPhotos {
@@ -95,19 +96,48 @@ export class ScanPhotos {
     return this.state === 'on' && !!this.entity && !this.busy;
   }
 
-  /** A 640x480 JPEG of the current camera frame and when it was captured (performance.now ms), or null. */
-  async snap(): Promise<{ jpeg: Uint8Array; capturedMs: number; rgba: Uint8ClampedArray } | null> {
-    if (!this.ready) return null;
+  private encoder: Worker | null = null;
+  private encodes = new Map<number, (j: Uint8Array | null) => void>();
+  private encodeId = 0;
+
+  /** JPEGs waiting on the encoder (photos are skipped while it is behind). */
+  get encoding(): number {
+    return this.encodes.size;
+  }
+
+  private encode(rgba: Uint8ClampedArray, w: number, h: number): Promise<Uint8Array | null> {
+    if (!this.encoder) {
+      this.encoder = new Worker(new URL('./jpegWorker.ts', import.meta.url), { type: 'module' });
+      this.encoder.onmessage = (e: MessageEvent<JpegOut>) => {
+        this.encodes.get(e.data.id)?.(e.data.jpeg);
+        this.encodes.delete(e.data.id);
+      };
+    }
+    const id = ++this.encodeId;
+    const copy = rgba.slice();
+    const msg: JpegIn = { id, rgba: copy, w, h, quality: 0.85 };
+    return new Promise((resolve) => {
+      this.encodes.set(id, resolve);
+      this.encoder!.postMessage(msg, [copy.buffer]);
+    });
+  }
+
+  /**
+   * The current camera frame (640x480 pixels, now) and when it was captured
+   * (performance.now ms), with its JPEG to follow (encoded off the main thread, so the
+   * next photo needn't wait for it).
+   */
+  snap(): { rgba: Uint8ClampedArray; capturedMs: number; jpeg: Promise<Uint8Array | null> } | null {
+    if (!this.ready || this.encodes.size > 2) return null;
     const frame = CameraUtils.captureFrame(this.entity!);
     if (!frame) return null;
     const capturedMs = this.lastCaptureMs;
     this.busy = true;
     try {
-      const ctx = this.canvas.getContext('2d')!;
+      const ctx = this.canvas.getContext('2d', { willReadFrequently: true })!;
       ctx.drawImage(frame, 0, 0, 640, 480);
       const rgba = ctx.getImageData(0, 0, 640, 480).data;
-      const blob = await new Promise<Blob | null>((r) => this.canvas.toBlob(r, 'image/jpeg', 0.82));
-      return blob ? { jpeg: new Uint8Array(await blob.arrayBuffer()), capturedMs, rgba } : null;
+      return { rgba, capturedMs, jpeg: this.encode(rgba, 640, 480) };
     } finally {
       this.busy = false;
     }

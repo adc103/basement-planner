@@ -180,3 +180,30 @@ describe('saved colors', () => {
     expect(colored(back)).toBe(before);
   });
 });
+
+describe('scan coverage', () => {
+  it('counts the sides a wall was photographed from, per mesh vertex', async () => {
+    const { TsdfVolume, COVERED_SIDES } = await import('../src/core/tsdf');
+    const vol = new TsdfVolume();
+    // A wall at z = -2 (facing +z), seen by a fake depth camera from in front.
+    const w = 64, h = 48;
+    const depthMM = new Uint16Array(w * h).fill(2000);
+    const proj = [1.5, 0, 0, 0, 0, 2, 0, 0, 0, 0, -1, -1, 0, 0, -0.2, 0];
+    const eye = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1.2, 0, 1];
+    for (let i = 0; i < 4; i++) vol.integrate({ t: i, w, h, depthMM, proj, viewToRoot: Float32Array.from(eye), head: [0, 1.2, 0], handL: [0, 0, 0], handR: [0, 0, 0] } as never);
+    const cam = (x: number, yaw: number) => {
+      const c = Math.cos(yaw), s = Math.sin(yaw);
+      return { w: 640, h: 480, fx: 400, fy: 400, cx: 320, cy: 240, camToRoot: [c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, x, 1.2, 0, 1] };
+    };
+    const views = () => Math.max(0, ...vol.meshAll().flatMap((m) => [...m.views]));
+    expect(views()).toBe(0);
+    vol.markSeen(cam(0, 0));
+    expect(views()).toBe(1);
+    vol.markSeen(cam(0.05, 0)); // same side again: almost nowhere gains a side
+    const all = vol.meshAll().flatMap((m) => [...m.views]);
+    expect(all.filter((v) => v >= 2).length / all.length).toBeLessThan(0.1);
+    vol.markSeen(cam(-1.5, -0.6));
+    vol.markSeen(cam(1.5, 0.6));
+    expect(views()).toBeGreaterThanOrEqual(COVERED_SIDES);
+  });
+});

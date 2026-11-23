@@ -204,6 +204,14 @@ try {
     .then((h) => h.jsonValue())
     .catch(() => 0);
   check(tris > 1000, `depth frames build the room mesh (${tris} triangles)`);
+  {
+    await page.waitForTimeout(700);
+    const hud = await page.evaluate(() => {
+      const app = window.basementPlanner;
+      return { shown: app.scanHud.sprite.visible && app.scanTip.sprite.visible, text: app.scanHud.text, tip: app.scanTip.text, coverageSkin: app.scan.mesh.coverageOn.value };
+    });
+    check(hud.shown && /Scanning|photos/.test(hud.text) && hud.tip.length > 10 && hud.coverageSkin === 1, `scanning shows what's captured and what to do next (${hud.text} | ${hud.tip})`);
+  }
   check(await clickButton(menu, 'btn:scan'), 'Stop scan');
   check(await page.evaluate(() => !window.basementPlanner.scan.scanning), 'scan stopped');
   {
@@ -404,13 +412,24 @@ process.stdout.write(JSON.stringify(fr.map((f) => ({ t: f.t, w: f.w, h: f.h, d: 
         for (let i = 0; i < a.count; i++) if (a.getX(i) !== 255) textured++;
       }
       const kept = !!m.photoU.photoTex.value;
+      // Two more photos from either side: the wall counts as covered (seen from 3 sides).
+      for (const [x, yaw] of [[28.6, -0.6], [31.4, 0.6]]) {
+        const c = Math.cos(yaw), s = Math.sin(yaw);
+        m.markSeen({ w, h, fx: 320, fy: 320, cx: 320, cy: 240, camToRoot: [c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, x, 1.5, 30, 1] });
+      }
+      await new Promise((res) => setTimeout(res, 800));
+      m.send({ type: 'mesh' });
+      await new Promise((res) => setTimeout(res, 2000));
+      const cv = m.coverage();
+      const coverage = Math.round(cv.covered * cv.total);
       // Draw it in color mode for a few frames (shader compiles, no GL errors).
       const api = app.menuApi();
       while (api.roomMeshMode() !== 'color') api.cycleRoomMesh();
-      return { textured, kept };
+      return { textured, kept, coverage };
     });
     await frames(10);
     check(r.kept && r.textured > 500, `a photo of the scanned wall is kept as its texture (${r.textured} vertices textured)`);
+    check(r.coverage > 1500, `photos from three sides cover the wall (${r.coverage} vertices covered)`);
     await page.evaluate(() => {
       const api = window.basementPlanner.menuApi();
       while (api.roomMeshMode() !== 'mesh') api.cycleRoomMesh();
