@@ -30,6 +30,9 @@ export interface MenuApi {
   typeLength(): void;
   hasLastWall(): boolean;
   preset(): { type: 'door' | 'opening'; width: number };
+  /** Door tool measures real doorways on the scan. */
+  measureDoors(): boolean;
+  setMeasureDoors(): void;
   setPreset(type: 'door' | 'opening', width: number): void;
   customWidth(): void;
   selectionKind(): 'wall' | 'opening' | null;
@@ -318,7 +321,7 @@ export class MainMenu {
               col: i,
               label: () => label,
               onClick: () => a.setPreset(type, w),
-              active: () => a.preset().type === type && a.preset().width === w,
+              active: () => !a.measureDoors() && a.preset().type === type && a.preset().width === w,
               visible: () => a.tool() === 'doors',
             })),
             { id: 'e-snap', label: () => 'Snap to scan', icon: 'scan', span: 2, col: 0, onClick: () => a.snapSelected(), enabled: () => a.hasRoomMesh(), visible: sel('wall') },
@@ -339,9 +342,10 @@ export class MainMenu {
               icon: 'keypad',
               span: 2,
               onClick: () => a.customWidth(),
-              active: () => ![30, 32, 36].includes(a.preset().width),
+              active: () => !a.measureDoors() && ![30, 32, 36].includes(a.preset().width),
               visible: () => a.tool() === 'doors',
             },
+            { id: 'measure-door', label: () => 'Real door', icon: 'capture', span: 2, col: 2, onClick: () => a.setMeasureDoors(), active: () => a.measureDoors(), visible: () => a.tool() === 'doors' },
             { id: 'e-kind', label: () => (a.selectedIsReal() ? 'Real' : 'Planned'), col: 0, onClick: () => a.toggleKind(), visible: sel('wall') },
             { id: 'e-lock', label: () => (a.selectedLocked() ? 'Unlock' : 'Lock'), col: 1, onClick: () => a.toggleLock(), active: () => a.selectedLocked(), visible: any },
             { id: 'e-del', label: () => 'Delete', icon: 'trash', tone: 'danger', col: 2, onClick: () => a.deleteSelection(), visible: any },

@@ -5,6 +5,7 @@ import { chromium } from 'playwright-core';
 import { preview } from 'vite';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { execSync } from 'node:child_process';
 
 const require = createRequire(import.meta.url);
 const iwerSrc = readFileSync(require.resolve('iwer/build/iwer.min.js'), 'utf8');
@@ -278,6 +279,55 @@ try {
     check(r.undo1 === 'Trace real wall', `adding is one undo step (${r.undo1})`);
     check(r.count2 === 1 && r.trimmed < r.full - 20, `tapping the same wall again ends it there (${r.full.toFixed(0)}" to ${r.trimmed.toFixed(0)}")`);
     check(r.undo2 === 'End real wall' && r.after === 0, `ending is its own undo step (${r.undo2})`);
+  }
+  {
+    // Real door: a wall with an open 32" x 80" doorway, scanned (synthetic depth frames,
+    // well away from the other test geometry), traced as a plan wall, then measured by
+    // pointing through the doorway.
+    const frames = JSON.parse(
+      execSync(
+        `npx tsx -e "
+import { depthFramesFor } from './tests/synthScan';
+const X = 2000, Y = 2000, H = 92;
+const box = (x0, y0, z0, x1, y1, z1) => ({ min: [X + x0, Y + y0, z0], max: [X + x1, Y + y1, z1] });
+const boxes = [box(-60, -60, -6, 160, 160, 0), box(-60, -60, H, 160, 160, H + 6),
+  box(0, -60, 0, 4.5, 30, H), box(0, 30, 80, 4.5, 62, H), box(0, 62, 0, 4.5, 160, H)];
+const fr = depthFramesFor({ boxes, eyes: [[X - 50, Y + 46], [X + 50, Y + 46], [X - 40, Y + 10], [X + 40, Y + 90]] }, { yawStep: 20 });
+process.stdout.write(JSON.stringify(fr.map((f) => ({ t: f.t, w: f.w, h: f.h, d: Array.from(f.depthMM), proj: Array.from(f.proj), v: Array.from(f.viewToRoot) }))));
+"`,
+        { maxBuffer: 1 << 28 },
+      ).toString(),
+    );
+    const r = await page.evaluate(async (frames) => {
+      const app = window.basementPlanner;
+      for (const f of frames) app.scan.mesh.push({ t: f.t, w: f.w, h: f.h, depthMM: new Uint16Array(f.d), proj: new Float32Array(f.proj), viewToRoot: new Float32Array(f.v), head: [0, 0, 0], handL: [0, 0, 0], handR: [0, 0, 0] });
+      app.scan.mesh.send({ type: 'mesh' }); // mesh the new frames (the app does this while scanning)
+      await new Promise((res) => setTimeout(res, 3000));
+      const wallId = app.cmd.run('wall.add', { a: { x: 2002.25, y: 1980 }, b: { x: 2002.25, y: 2140 }, kind: 'existing', thickness: 4.5, height: 92 });
+      app.menuApi().setMeasureDoors();
+      const tool = app.tools.doors;
+      // Pointing through the doorway 6" off its center, 40" up.
+      const aim = { wall: { wallId, point: { x: 2002.25, y: 2052 }, z: 40, distM: 1 }, floor: null, surface: null, eye: { x: 1950, y: 2046 } };
+      const before = app.store.plan.openings.length;
+      tool.commit(aim);
+      for (let i = 0; i < 100 && tool.busy; i++) await new Promise((res) => setTimeout(res, 50));
+      const o = app.store.plan.openings.at(-1);
+      const added = app.store.plan.openings.length - before;
+      // The door's center is 46" from the wall's a end (y 1980 -> 2026 + 20).
+      const res = { added, type: o?.type, kind: o?.kind, width: o?.width, height: o?.height, offset: o?.offset, undo: app.store.undoLabel };
+      // Pointing at solid wall finds nothing and adds nothing.
+      tool.commit({ ...aim, wall: { ...aim.wall, point: { x: 2002.25, y: 2110 } } });
+      for (let i = 0; i < 100 && tool.busy; i++) await new Promise((res) => setTimeout(res, 50));
+      res.afterSolid = app.store.plan.openings.length - before;
+      app.undo();
+      app.cmd.run('element.delete', { id: wallId });
+      app.setTool('edit');
+      return res;
+    }, frames);
+    check(r.added === 1 && r.type === 'door' && r.kind === 'existing', `pointing through a real doorway adds a real door (${r.added}, ${r.type}, ${r.kind})`);
+    check(Math.abs(r.width - 32) <= 1 && Math.abs(r.height - 80) <= 1.5, `the door is measured on the scan (${r.width}" x ${r.height}", truth 32 x 80)`);
+    check(Math.abs(r.offset - 66) <= 1, `the door is where the doorway is (center ${r.offset?.toFixed(1)}" along the wall, truth 66)`);
+    check(r.undo === 'Measure door' && r.afterSolid === 1, `one undo step; solid wall adds nothing (${r.undo}, ${r.afterSolid})`);
   }
   {
     const cyc = await page.evaluate(() => {

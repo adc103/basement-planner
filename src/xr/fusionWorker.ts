@@ -3,6 +3,7 @@ import type { DepthFrame } from '../core/scanIngest.js';
 import { TsdfVolume, type BrickMesh, type ColorPhoto } from '../core/tsdf.js';
 import { fitWall, SurfaceIndex, surfaceFromMeshes, type WallFit } from '../core/fit.js';
 import { pickWall, type PickResult, type Ray3 } from '../core/pickWall.js';
+import { findOpening, type FoundOpening, type OpeningWall } from '../core/findOpening.js';
 import { idbGet, idbSet } from './idb.js';
 
 /**
@@ -17,13 +18,15 @@ export type FusionIn =
   | { type: 'clear' }
   | { type: 'save' }
   | { type: 'load' }
-  | { type: 'pick'; id: number; ray: Ray3; thickness: number; height: number };
+  | { type: 'pick'; id: number; ray: Ray3; thickness: number; height: number }
+  | { type: 'opening'; id: number; wall: OpeningWall; at: number; atZ: number };
 
 export type FusionOut =
   | { type: 'meshes'; meshes: BrickMesh[]; bricks: number; frames: number; ms: number }
   | { type: 'stats'; bricks: number; frames: number; integrateMs: number }
   /** The wall under a ray; `fit` is that wall measured (both faces, thickness) when found. */
-  | { type: 'pick'; id: number; result: PickResult; fit: WallFit | null; ms: number };
+  | { type: 'pick'; id: number; result: PickResult; fit: WallFit | null; ms: number }
+  | { type: 'opening'; id: number; opening: FoundOpening | null };
 
 const KEY = 'scan-tsdf:v1';
 const vol = new TsdfVolume();
@@ -78,6 +81,8 @@ self.onmessage = async (e: MessageEvent<FusionIn>) => {
       fit = fitWall(idx, { a: { x: a.x - n.x * h, y: a.y - n.y * h }, b: { x: b.x - n.x * h, y: b.y - n.y * h }, thickness: m.thickness, z0: 0, z1: m.height, openings: [] });
     }
     post({ type: 'pick', id: m.id, result, fit, ms: performance.now() - t0 });
+  } else if (m.type === 'opening') {
+    post({ type: 'opening', id: m.id, opening: findOpening(surfaceIndex(), m.wall, m.at, m.atZ) });
   } else if (m.type === 'clear') {
     vol.clear();
     surfaceBricks.clear();

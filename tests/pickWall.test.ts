@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { fitWall, SurfaceIndex, surfaceFromMeshes } from '../src/core/fit';
+import { findOpening } from '../src/core/findOpening';
 import { pickSetupWall, pickWall, roomAxis, type PickedWall, type Ray3 } from '../src/core/pickWall';
 import { TsdfVolume } from '../src/core/tsdf';
 import { basementScene, depthFramesFor } from './synthScan';
@@ -102,5 +103,48 @@ describe('joining a traced wall to the walls already there', () => {
     expect(c.moves[0].to.y).toBeCloseTo(122.25);
     // Far away: no join.
     expect(joinEnds(plan, { x: 30, y: 60 }, { x: 100, y: 60 }, 4.5).a).toEqual({ x: 30, y: 60 });
+  });
+});
+
+describe('point at a real doorway', () => {
+  let idx: SurfaceIndex;
+  beforeAll(() => {
+    const vol = new TsdfVolume();
+    for (const f of depthFramesFor(basementScene())) vol.integrate(f);
+    idx = new SurfaceIndex(surfaceFromMeshes(vol.meshAll()));
+  }, 120_000);
+  // The partition: centerline x = 202.25 from y = 0 (a) to 240 (b), 4.5" thick, 92" tall.
+  const partition = { a: { x: 202.25, y: 0 }, b: { x: 202.25, y: 240 }, thickness: 4.5, height: 92 };
+
+  it('measures a door: sides from its jambs, top from its head', () => {
+    const o = findOpening(idx, partition, 50, 40)!; // aimed a little off center
+    expect(o.type).toBe('door');
+    expect(Math.abs(o.width - 32)).toBeLessThan(0.75);
+    expect(Math.abs(o.offset - 46)).toBeLessThan(0.5);
+    expect(Math.abs(o.height - 80)).toBeLessThan(1);
+    expect(o.sill).toBe(0);
+    expect(o.jambs).toBe(2);
+  });
+
+  it('measures a wide opening under a beam', () => {
+    const o = findOpening(idx, partition, 170, 50)!;
+    expect(Math.abs(o.width - 48)).toBeLessThan(0.75);
+    expect(Math.abs(o.offset - 174)).toBeLessThan(0.5);
+    expect(Math.abs(o.height - 84)).toBeLessThan(1);
+  });
+
+  it('measures a window: its sill from the wall below', () => {
+    // North wall inner face y = 240: centerline 244 (8" thick), from x = 0 to 360.
+    const north = { a: { x: 0, y: 244 }, b: { x: 360, y: 244 }, thickness: 8, height: 92 };
+    const o = findOpening(idx, north, 76, 70)!;
+    expect(o.type).toBe('window');
+    // Seen from below (eyes at 60", the sill at 62") its top is barely in view: looser.
+    expect(Math.abs(o.width - 32)).toBeLessThan(1);
+    expect(Math.abs(o.sill - 62)).toBeLessThan(1.5);
+    expect(Math.abs(o.sill + o.height - 80)).toBeLessThan(1);
+  });
+
+  it('finds nothing on solid wall away from openings', () => {
+    expect(findOpening(idx, partition, 110, 40)).toBeNull();
   });
 });

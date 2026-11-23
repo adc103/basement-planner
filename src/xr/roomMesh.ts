@@ -15,6 +15,7 @@ import { surfaceFromMeshes, type Surface } from '../core/fit.js';
 import type { FusionIn, FusionOut } from './fusionWorker.js';
 import type { WallFit } from '../core/fit.js';
 import type { PickResult, Ray3 } from '../core/pickWall.js';
+import type { FoundOpening, OpeningWall } from '../core/findOpening.js';
 
 export interface WallPick {
   result: PickResult;
@@ -157,6 +158,8 @@ export class RoomMesh {
   }
 
   setActive(on: boolean): void {
+    // Stopping: mesh the last frames too (else up to a second of scanning is left out).
+    if (this.active && !on) this.send({ type: 'mesh' });
     this.active = on;
     this.applyVisibility();
   }
@@ -181,7 +184,24 @@ export class RoomMesh {
     });
   }
 
+  private openings = new Map<number, (o: FoundOpening | null) => void>();
+
+  /** The open doorway (or window) in a wall near a spot along it, measured on the room mesh. */
+  findOpening(wall: OpeningWall, at: number, atZ: number): Promise<FoundOpening | null> {
+    if (!this.worker) return Promise.resolve(null);
+    const id = ++this.pickId;
+    return new Promise((resolve) => {
+      this.openings.set(id, resolve);
+      this.send({ type: 'opening', id, wall, at, atZ });
+    });
+  }
+
   private onMessage(m: FusionOut): void {
+    if (m.type === 'opening') {
+      this.openings.get(m.id)?.(m.opening);
+      this.openings.delete(m.id);
+      return;
+    }
     if (m.type === 'pick') {
       this.picks.get(m.id)?.({ result: m.result, fit: m.fit });
       this.picks.delete(m.id);

@@ -111,6 +111,8 @@ export class PlannerApp {
   private toastUntil = 0;
   private time = 0;
   private snapEnabled = true;
+  /** Door tool: measure real doorways on the scan (else place the chosen size). */
+  private measureDoors = true;
   private preset: { type: 'door' | 'opening'; width: number; height: number } = { type: 'door', width: 32, height: 80 };
   transform: SavedTransform;
   private axisAngle = 0;
@@ -221,7 +223,11 @@ export class PlannerApp {
     this.measureTool = new MeasureTool(ctx);
     this.tools = {
       walls: this.wallTool,
-      doors: new OpeningTool(ctx),
+      doors: new OpeningTool(ctx, {
+        active: () => this.measureDoors,
+        hasMesh: () => this.scan.mesh.triangles > 0,
+        find: (wall, at, atZ) => this.scan.mesh.findOpening(wall, at, atZ),
+      }),
       trace: new TraceTool(ctx, {
         pick: (ray, thickness, height) => this.scan.mesh.pick(ray, thickness, height),
         hasMesh: () => this.scan.mesh.triangles > 0,
@@ -299,6 +305,12 @@ export class PlannerApp {
       preset: () => this.preset,
       setPreset: (type, width) => {
         this.preset = { type, width, height: 80 };
+        this.measureDoors = false;
+        this.setTool('doors');
+      },
+      measureDoors: () => this.measureDoors,
+      setMeasureDoors: () => {
+        this.measureDoors = true;
         this.setTool('doors');
       },
       customWidth: () => this.customWidth(),
@@ -445,6 +457,7 @@ export class PlannerApp {
         return;
       }
       this.preset = { ...this.preset, width: w };
+      this.measureDoors = false;
       this.setTool('doors');
     });
   }
